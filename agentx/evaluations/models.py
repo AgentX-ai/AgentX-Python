@@ -81,6 +81,7 @@ class EvaluationSubject(BaseModel):
     framework: Optional[FrameworkKind] = None
     framework_version: Optional[str] = Field(default=None, alias="frameworkVersion")
     runtime: Optional[RuntimeKind] = "local"
+    agent_instructions: Optional[str] = Field(default=None, alias="agentInstructions")
     metadata: Optional[Dict[str, Union[str, int, bool]]] = None
 
     class Config:
