@@ -26,7 +26,7 @@ def build_crew():
             allow_delegation=False,
         )
 
-        def run_crew(query: str) -> str:
+        def run_crew(query: str):
             task = Task(
                 description=query,
                 agent=support_agent,
@@ -39,7 +39,7 @@ def build_crew():
                 verbose=False,
             )
             result = crew.kickoff()
-            return str(result)
+            return result, str(result)
 
         return run_crew
     except ImportError:
@@ -54,9 +54,12 @@ def make_eval_fn(crew_runner):
                 "metadata": {"framework": "crewai"},
             }
 
-        output = crew_runner(case.query)
+        result_obj, output = crew_runner(case.query)  # type: ignore[misc]
+        usage = getattr(result_obj, "usage_metrics", None)
         return {
             "output": output,
+            "input_tokens": getattr(usage, "prompt_tokens", None),
+            "output_tokens": getattr(usage, "completion_tokens", None),
             "metadata": {"framework": "crewai"},
         }
     return eval_subject

@@ -48,13 +48,21 @@ def build_autogen_agent():
             max_consecutive_auto_reply=0,
         )
 
-        def run_agent(query: str) -> str:
-            user_proxy.initiate_chat(assistant, message=query, max_turns=1, silent=True)
+        def run_agent(query: str):
+            chat_result = user_proxy.initiate_chat(assistant, message=query, max_turns=1, silent=True)
             messages = assistant.chat_messages.get(user_proxy, [])
+            output = ""
             for msg in reversed(messages):
                 if msg.get("role") == "assistant":
-                    return msg.get("content", "")
-            return ""
+                    output = msg.get("content", "")
+                    break
+            # best-effort token extraction from chat cost summary
+            cost = getattr(chat_result, "cost", None) or {}
+            usage = cost.get("usage_including_cached_inference", {}) if isinstance(cost, dict) else {}
+            total = usage.get("total", {}) if isinstance(usage, dict) else {}
+            input_tokens = total.get("prompt_tokens")
+            output_tokens = total.get("completion_tokens")
+            return output, input_tokens, output_tokens
 
         return run_agent
 
@@ -70,9 +78,11 @@ def make_eval_fn(autogen_runner):
                 "metadata": {"framework": "autogen"},
             }
 
-        output = autogen_runner(case.query)
+        output, input_tokens, output_tokens = autogen_runner(case.query)
         return {
             "output": output,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
             "metadata": {"framework": "autogen", "model": "gpt-4o-mini"},
         }
     return eval_subject

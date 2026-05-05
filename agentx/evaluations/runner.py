@@ -19,6 +19,9 @@ from agentx.evaluations.models import (
 from agentx.evaluations.redaction import redact_dict
 from agentx.evaluations.reporting import print_report
 from agentx.evaluations.results import normalize_result, normalize_error
+from agentx.evaluations._term import (
+    bold, cyan, green, yellow, red, dim, BOLD, RESET, Spinner,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +64,24 @@ class EvaluationRunContext:
         cases = _build_cases(self._dataset)
         max_batch = self._run.limits.max_batch_size
 
+        # Banner
+        sep = "─" * 60
+        name = self._dataset.name or self._dataset.id
+        framework = self._subject.framework or "custom"
+        runtime = self._subject.runtime or "local"
+        display = self._subject.display_name or ""
+        n_q = len(self._dataset.questions)
+        n_r = self._dataset.number_of_requests
+
+        print(cyan(sep))
+        print(f"  {bold('AgentX Evaluation')}  {dim('—')}  {name}")
+        print(cyan(sep))
+        print(f"  {dim('Run   :')} {dim(self._run.run_id)}")
+        if display:
+            print(f"  {dim('Agent :')} {display}  {dim(f'({framework} / {runtime})')}")
+        print()
+        print(f"{bold('Executing')}  {n_q} question{'s' if n_q != 1 else ''} × {n_r} run{'s' if n_r != 1 else ''}")
+
         # Resume: skip already-submitted keys
         already_done = self._fetch_submitted_keys()
 
@@ -82,7 +103,7 @@ class EvaluationRunContext:
             )
             self._results.append(result)
             batch.append(result)
-            _print_progress(idx, total, case)
+            _print_progress(idx, total, case, result=result)
 
             if len(batch) >= max_batch:
                 self._flush_batch(batch)
@@ -121,10 +142,14 @@ class EvaluationRunContext:
     # ------------------------------------------------------------------
 
     def finalize(self) -> "EvaluationRunContext":
+        print()
+        print(bold("Finalizing"), end="  ", flush=True)
         try:
             self._client.finalize_run(self._run.run_id)
+            print(green("✓"))
             logger.info("Run %s finalized", self._run.run_id)
         except Exception as exc:
+            print(red("✗") + f"  {dim(str(exc))}")
             logger.error("Finalize failed: %s", exc)
         return self
 
@@ -133,10 +158,14 @@ class EvaluationRunContext:
     # ------------------------------------------------------------------
 
     def analyze(self) -> Report:
-        try:
-            self._client.analyze_run(self._run.run_id)
-        except Exception as exc:
-            logger.warning("Analyze request failed: %s", exc)
+        print()
+        with Spinner("Analyzing — AI is reviewing your results"):
+            try:
+                self._client.analyze_run(self._run.run_id)
+                print(f"  {green('✓')}  Analysis complete")
+            except Exception as exc:
+                print(f"  {red('✗')}  Analyze failed: {dim(str(exc))}")
+                logger.warning("Analyze request failed: %s", exc)
 
         try:
             report = self._client.get_report(self._run.run_id)
@@ -149,6 +178,7 @@ class EvaluationRunContext:
             )
 
         self._report = report
+        print()
         print_report(report)
         return report
 
@@ -226,7 +256,34 @@ def _idem_key(run_id: str, case_id: str, run_number: int) -> str:
     return f"{run_id}:{case_id}:run-{run_number}"
 
 
-def _print_progress(idx: int, total: int, case: EvaluationCase, skipped: bool = False) -> None:
-    tag = "[skip]" if skipped else "[ ok ]"
-    query_preview = (case.query[:60] + "...") if len(case.query) > 60 else case.query
-    print(f"  {tag} [{idx}/{total}] Q{case.question_index+1} run#{case.run_number}: {query_preview}")
+def _print_progress(
+    idx: int,
+    total: int,
+    case: EvaluationCase,
+    skipped: bool = False,
+    result: Optional[EvaluationResult] = None,
+) -> None:
+    if skipped:
+        tag = yellow("↷")
+        suffix = dim("skipped")
+    elif result and result.error:
+        tag = red("✗")
+        suffix = red(f"error: {result.error.message[:60]}")
+    else:
+        tag = green("✓")
+        parts = []
+        if result and result.timings:
+            t = result.timings
+            if t.latency_ms is not None:
+                parts.append(dim(f"{t.latency_ms}ms"))
+            if t.input_tokens is not None and t.output_tokens is not None:
+                parts.append(dim(f"{t.input_tokens}→{t.output_tokens} tok"))
+        suffix = "  ".join(parts)
+
+    counter = dim(f"[{idx}/{total}]")
+    label = dim(f"Q{case.question_index + 1} run#{case.run_number}")
+    query_preview = (case.query[:55] + "…") if len(case.query) > 55 else case.query
+    line = f"  {tag}  {counter} {label}  {query_preview}"
+    if suffix:
+        line += f"  {suffix}"
+    print(line)

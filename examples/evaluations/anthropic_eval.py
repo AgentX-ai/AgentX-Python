@@ -33,11 +33,11 @@ def make_eval_fn(anthropic_client):
         )
         return {
             "output": message.content[0].text,
+            "input_tokens": message.usage.input_tokens,
+            "output_tokens": message.usage.output_tokens,
             "metadata": {
                 "framework": "anthropic",
                 "model": message.model,
-                "input_tokens": message.usage.input_tokens,
-                "output_tokens": message.usage.output_tokens,
             },
         }
     return eval_subject

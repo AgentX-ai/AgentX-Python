@@ -147,6 +147,8 @@ class ResultError(BaseModel):
 
 class ResultTimings(BaseModel):
     latency_ms: Optional[int] = Field(default=None, alias="latencyMs")
+    input_tokens: Optional[int] = Field(default=None, alias="inputTokens")
+    output_tokens: Optional[int] = Field(default=None, alias="outputTokens")
 
     class Config:
         populate_by_name = True

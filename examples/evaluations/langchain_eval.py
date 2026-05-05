@@ -36,8 +36,11 @@ def make_eval_fn(agent):
             return {"output": f"[stub] Response to: {case.query}", "metadata": {"framework": "langchain"}}
 
         result = agent.invoke({"query": case.query})
+        usage = getattr(result, "usage_metadata", None) or {}
         return {
             "output": result.content if hasattr(result, "content") else str(result),
+            "input_tokens": usage.get("input_tokens"),
+            "output_tokens": usage.get("output_tokens"),
             "metadata": {
                 "framework": "langchain",
                 "model": "gpt-4o-mini",

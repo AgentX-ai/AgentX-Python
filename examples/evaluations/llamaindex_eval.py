@@ -46,8 +46,12 @@ def make_eval_fn(engine):
 
         response = engine.query(case.query)
         source_nodes = getattr(response, "source_nodes", [])
+        raw = getattr(response, "raw", None) or {}
+        usage = raw.get("usage", {}) if isinstance(raw, dict) else {}
         return {
             "output": str(response),
+            "input_tokens": usage.get("prompt_tokens"),
+            "output_tokens": usage.get("completion_tokens"),
             "metadata": {
                 "framework": "llamaindex",
                 "sources_used": len(source_nodes),

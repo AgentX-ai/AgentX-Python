@@ -36,11 +36,11 @@ def make_eval_fn(oai_client):
         )
         return {
             "output": response.choices[0].message.content,
+            "input_tokens": response.usage.prompt_tokens,
+            "output_tokens": response.usage.completion_tokens,
             "metadata": {
                 "framework": "openai",
                 "model": response.model,
-                "prompt_tokens": response.usage.prompt_tokens,
-                "completion_tokens": response.usage.completion_tokens,
             },
         }
     return eval_subject
