@@ -33,7 +33,7 @@ setup(
     description="Official Python SDK for AgentX (https://www.agentx.so/)",
     long_description=get_long_description(),
     long_description_content_type="text/markdown",
-    url="https://github.com/AgentX-ai/AgentX-python-sdk",
+    url="https://github.com/AgentX-ai/AgentX-python",
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",

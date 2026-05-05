@@ -4,7 +4,7 @@ import requests
 import os
 import logging
 from dataclasses import dataclass
-from agentx.util import get_headers
+from agentx.util import get_headers, api_base
 from .conversation import Conversation
 
 
@@ -27,7 +27,7 @@ class Agent(BaseModel):
         )
 
     def list_conversations(self) -> List[Conversation]:
-        url = f"https://api.agentx.so/api/v1/access/agents/{self.id}/conversations"
+        url = f"{api_base()}/access/agents/{self.id}/conversations"
         response = requests.get(url, headers=get_headers())
         if response.status_code == 200:
             return [

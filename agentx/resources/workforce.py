@@ -4,7 +4,7 @@ import requests
 import os
 import json
 import logging
-from agentx.util import get_headers
+from agentx.util import get_headers, api_base
 from agentx.resources.agent import Agent
 from agentx.resources.conversation import Conversation, ChatResponse
 
@@ -48,7 +48,7 @@ class Workforce(BaseModel):
 
     def new_conversation(self) -> Conversation:
         """Create a new conversation for this workforce."""
-        url = f"https://api.agentx.so/api/v1/access/teams/{self.id}/conversations/new"
+        url = f"{api_base()}/access/teams/{self.id}/conversations/new"
         response = requests.post(
             url,
             headers=get_headers(),
@@ -66,7 +66,7 @@ class Workforce(BaseModel):
 
     def list_conversations(self) -> List[Conversation]:
         """List all conversations for this workforce."""
-        url = f"https://api.agentx.so/api/v1/access/teams/{self.id}/conversations"
+        url = f"{api_base()}/access/teams/{self.id}/conversations"
         response = requests.get(url, headers=get_headers())
         if response.status_code == 200:
             conversations = []
@@ -84,7 +84,7 @@ class Workforce(BaseModel):
         self, conversation_id: str, message: str, context: int = -1
     ) -> Iterator[ChatResponse]:
         """Send a message to a team conversation and stream the response."""
-        url = f"https://api.agentx.so/api/v1/access/teams/conversations/{conversation_id}/jsonmessagesse"
+        url = f"{api_base()}/access/teams/conversations/{conversation_id}/jsonmessagesse"
         response = requests.post(
             url, headers=get_headers(), json={"message": message, "context": context}
         )

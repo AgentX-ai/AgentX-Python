@@ -3,20 +3,40 @@ import requests
 import os
 import logging
 
-from agentx.util import get_headers
+from agentx.util import get_headers, api_base
 from agentx.resources.agent import Agent
 from agentx.resources.workforce import Workforce
 
 
 class AgentX:
 
-    def __init__(self, api_key: str = None):
+    def __init__(self, api_key: str = None, base_url: str = None):
         self.api_key = api_key or os.getenv("AGENTX_API_KEY")
         if self.api_key and not os.getenv("AGENTX_API_KEY"):
             os.environ["AGENTX_API_KEY"] = self.api_key
 
+        # base_url overrides AGENTX_API_BASE_URL env var (and the SDK default)
+        self.base_url = base_url or os.getenv("AGENTX_API_BASE_URL")
+        if self.base_url:
+            os.environ["AGENTX_API_BASE_URL"] = self.base_url
+
+        from agentx.evaluations.client import EvaluationsClient
+        from agentx.evaluations.runner import EvaluationsRunner
+        from agentx.version import VERSION
+        _eval_client = EvaluationsClient(
+            api_key=self.api_key,
+            sdk_version=VERSION,
+            base_url=self.base_url,
+        )
+        self.evaluations = EvaluationsRunner(_eval_client)
+
+    @classmethod
+    def from_env(cls) -> "AgentX":
+        """Create an AgentX client using AGENTX_API_KEY (and optionally AGENTX_API_BASE_URL) from the environment."""
+        return cls()
+
     def get_agent(self, id: str) -> Agent:
-        url = f"https://api.agentx.so/api/v1/access/agents/{id}"
+        url = f"{api_base()}/access/agents/{id}"
         # Make a GET request to the AgentX API
         response = requests.get(url, headers=get_headers())
         # Check if response was successful
@@ -33,7 +53,7 @@ class AgentX:
             raise Exception(f"Failed to retrieve agent: {response.reason}")
 
     def list_agents(self) -> List[Agent]:
-        url = "https://api.agentx.so/api/v1/access/agents"
+        url = f"{api_base()}/access/agents"
         # Make a GET request to the AgentX API
         response = requests.get(url, headers=get_headers())
         # Check if response was successful
@@ -45,7 +65,7 @@ class AgentX:
     @staticmethod
     def list_workforces() -> List["Workforce"]:
         """List all workforces/teams."""
-        url = "https://api.agentx.so/api/v1/access/teams"
+        url = f"{api_base()}/access/teams"
         response = requests.get(url, headers=get_headers())
         if response.status_code == 200:
             return [Workforce(**workforce) for workforce in response.json()]
@@ -56,7 +76,7 @@ class AgentX:
 
     def get_profile(self):
         """Get the current user's profile information."""
-        url = "https://api.agentx.so/api/v1/access/getProfile"
+        url = f"{api_base()}/access/getProfile"
         response = requests.get(url, headers=get_headers())
         if response.status_code == 200:
             return response.json()
