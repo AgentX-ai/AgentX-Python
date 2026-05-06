@@ -116,17 +116,21 @@ class EvaluationRunContext:
 
     def _flush_batch(self, batch: List[EvaluationResult]) -> None:
         batch_id = str(uuid.uuid4())
-        try:
-            resp = self._client.append_results(self._run.run_id, batch_id, batch)
-            logger.info(
-                "Batch %s: accepted=%d duplicates=%d failed=%d",
-                batch_id[:8],
-                resp.accepted,
-                resp.duplicates,
-                resp.failed_validation,
-            )
-        except Exception as exc:
-            logger.error("Failed to submit batch %s: %s", batch_id[:8], exc)
+        n = len(batch)
+        with Spinner(f"Scoring — AI is rating {n} result{'s' if n != 1 else ''}"):
+            try:
+                resp = self._client.append_results(self._run.run_id, batch_id, batch)
+                print(f"  {green('✓')}  Scored {resp.accepted} result{'s' if resp.accepted != 1 else ''}")
+                logger.info(
+                    "Batch %s: accepted=%d duplicates=%d failed=%d",
+                    batch_id[:8],
+                    resp.accepted,
+                    resp.duplicates,
+                    resp.failed_validation,
+                )
+            except Exception as exc:
+                print(f"  {red('✗')}  Scoring failed: {dim(str(exc))}")
+                logger.error("Failed to submit batch %s: %s", batch_id[:8], exc)
 
     def _fetch_submitted_keys(self) -> Set[str]:
         try:
@@ -143,14 +147,14 @@ class EvaluationRunContext:
 
     def finalize(self) -> "EvaluationRunContext":
         print()
-        print(bold("Finalizing"), end="  ", flush=True)
-        try:
-            self._client.finalize_run(self._run.run_id)
-            print(green("✓"))
-            logger.info("Run %s finalized", self._run.run_id)
-        except Exception as exc:
-            print(red("✗") + f"  {dim(str(exc))}")
-            logger.error("Finalize failed: %s", exc)
+        with Spinner("Finalizing — submitting results"):
+            try:
+                self._client.finalize_run(self._run.run_id)
+                print(f"  {green('✓')}  Finalized")
+                logger.info("Run %s finalized", self._run.run_id)
+            except Exception as exc:
+                print(f"  {red('✗')}  Finalize failed: {dim(str(exc))}")
+                logger.error("Finalize failed: %s", exc)
         return self
 
     # ------------------------------------------------------------------
@@ -281,7 +285,7 @@ def _print_progress(
         suffix = "  ".join(parts)
 
     counter = dim(f"[{idx}/{total}]")
-    label = dim(f"Q{case.question_index + 1} run#{case.run_number}")
+    label = dim(f"Q{case.question_index + 1} run #{case.run_number}")
     query_preview = (case.query[:55] + "…") if len(case.query) > 55 else case.query
     line = f"  {tag}  {counter} {label}  {query_preview}"
     if suffix:

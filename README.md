@@ -107,6 +107,41 @@ for chunk in response:
 
 ---
 
+## Custom Agent Evaluations — Installation
+
+Install only what you need, or everything at once:
+
+```bash
+# Minimum (AgentX SDK + env file support)
+pip install agentx-python python-dotenv==1.2.2
+
+# OpenAI
+pip install openai==2.34.0
+
+# Anthropic
+pip install anthropic==0.99.0
+
+# Google Gemini  (use google-genai, NOT the deprecated google-generativeai)
+pip install google-genai==1.75.0
+
+# LangChain
+pip install langchain==1.2.17 langchain-openai==1.2.1
+
+# LlamaIndex
+pip install llama-index==0.14.21
+
+# CrewAI
+pip install crewai==1.14.4
+
+# AutoGen
+pip install pyautogen==0.10.0
+
+# Everything at once (from the examples directory)
+pip install -r examples/evaluations/requirements.txt
+```
+
+---
+
 ## Custom Agent Evaluations
 
 Evaluate **any AI agent** — LangChain, CrewAI, AutoGen, LlamaIndex, OpenAI, Anthropic, HTTP endpoints, or plain Python — using AgentX as a scoring and reporting backend. Your agent runs locally; AgentX scores results and generates a full analysis report.

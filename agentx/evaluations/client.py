@@ -48,7 +48,11 @@ class EvaluationsClient:
         self._api_key = api_key
         self._sdk_version = sdk_version
         # Priority: constructor arg > env var > SDK default
-        self._base_url = (base_url or os.getenv("AGENTX_API_BASE_URL", _DEFAULT_BASE_URL)).rstrip("/")
+        # Always append /custom-agent-evaluations so users only need to provide /api/v1
+        _api_base = (base_url or os.getenv("AGENTX_API_BASE_URL", _UTIL_API_BASE)).rstrip("/")
+        if not _api_base.endswith("/custom-agent-evaluations"):
+            _api_base = f"{_api_base}/custom-agent-evaluations"
+        self._base_url = _api_base
         self._session = requests.Session()
         self._session.headers.update({
             "x-api-key": self._api_key,

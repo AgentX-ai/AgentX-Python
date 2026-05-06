@@ -1,0 +1,26 @@
+# Core
+agentx-python
+python-dotenv==1.2.2
+
+# OpenAI — openai_eval.py, langchain_eval.py, llamaindex_eval.py, crewai_eval.py, autogen_eval.py, multi_model_eval.py
+openai==2.34.0
+
+# Anthropic — anthropic_eval.py, multi_model_eval.py
+anthropic==0.99.0
+
+# Google Gemini — multi_model_eval.py
+# NOTE: use google-genai, NOT the deprecated google-generativeai
+google-genai==1.75.0
+
+# LangChain — langchain_eval.py
+langchain==1.2.17
+langchain-openai==1.2.1
+
+# LlamaIndex — llamaindex_eval.py
+llama-index==0.14.21
+
+# CrewAI — crewai_eval.py
+crewai==1.14.4
+
+# AutoGen — autogen_eval.py
+pyautogen==0.10.0
