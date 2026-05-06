@@ -20,8 +20,8 @@ class User(BaseModel):
     status: int
     customer: str
     resetPwdToken: Optional[str] = None
-    defaultWorkspace: str
-    workspaces: List[str]
+    defaultWorkspace: Optional[str] = None
+    workspaces: List[str] = []
 
     class Config:
         populate_by_name = True
@@ -38,7 +38,7 @@ class Workforce(BaseModel):
     creator: User
     context: int
     references: bool
-    workspace: str
+    workspace: Optional[str] = None
     createdAt: str
     updatedAt: str
 

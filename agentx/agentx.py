@@ -41,14 +41,7 @@ class AgentX:
         response = requests.get(url, headers=get_headers())
         # Check if response was successful
         if response.status_code == 200:
-            agent_res = response.json()
-            return Agent(
-                id=agent_res.get("_id"),
-                name=agent_res.get("name"),
-                avatar=agent_res.get("avatar"),
-                createdAt=agent_res.get("createdAt"),
-                updatedAt=agent_res.get("updatedAt"),
-            )
+            return Agent(**response.json())
         else:
             raise Exception(f"Failed to retrieve agent: {response.reason}")
 
