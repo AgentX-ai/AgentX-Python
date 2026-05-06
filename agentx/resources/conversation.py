@@ -2,7 +2,7 @@ import json
 import requests
 from typing import Optional, List, Any, Iterator
 from pydantic import BaseModel, Field
-from agentx.util import get_headers
+from agentx.util import get_headers, api_base
 
 
 class ChatResponse(BaseModel):
@@ -46,7 +46,7 @@ class Conversation(BaseModel):
         super().__init__(**data)
 
     def new_conversation(self) -> "Conversation":
-        url = f"https://api.agentx.so/api/v1/access/agents/{self.agent_id}/conversations/new"
+        url = f"{api_base()}/access/agents/{self.agent_id}/conversations/new"
         response = requests.post(
             url,
             headers=get_headers(),
@@ -62,7 +62,7 @@ class Conversation(BaseModel):
             )
 
     def list_messages(self) -> List[Message]:
-        url = f"https://api.agentx.so/api/v1/access/agents/{self.agent_id}/conversations/{self.id}"
+        url = f"{api_base()}/access/agents/{self.agent_id}/conversations/{self.id}"
         response = requests.get(url, headers=get_headers())
         if response.status_code == 200:
             res = response.json()
@@ -83,7 +83,7 @@ class Conversation(BaseModel):
             )
 
     def chat(self, message: str, context: int = None):
-        url = f"https://api.agentx.so/api/v1/access/conversations/{self.id}/message"
+        url = f"{api_base()}/access/conversations/{self.id}/message"
         response = requests.post(
             url,
             headers=get_headers(),
@@ -92,7 +92,7 @@ class Conversation(BaseModel):
         return response.json()
 
     def chat_stream(self, message: str, context: int = None) -> Iterator[ChatResponse]:
-        url = f"https://api.agentx.so/api/v1/access/conversations/{self.id}/jsonmessagesse"
+        url = f"{api_base()}/access/conversations/{self.id}/jsonmessagesse"
         response = requests.post(
             url, headers=get_headers(), json={"message": message, "context": context}
         )

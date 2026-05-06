@@ -4,7 +4,7 @@ import requests
 import os
 import logging
 from dataclasses import dataclass
-from agentx.util import get_headers
+from agentx.util import get_headers, api_base
 from .conversation import Conversation
 
 
@@ -12,12 +12,22 @@ from .conversation import Conversation
 class Agent(BaseModel):
     id: str = Field(alias="_id")
     name: str
-    avatar: Optional[str]
-    createdAt: Optional[str]
-    updatedAt: Optional[str]
+    avatar: Optional[str] = None
+    createdAt: Optional[str] = None
+    updatedAt: Optional[str] = None
 
     def __init__(self, **data):
         super().__init__(**data)
+
+    def new_conversation(self) -> Conversation:
+        url = f"{api_base()}/access/agents/{self.id}/conversations/new"
+        response = requests.post(url, headers=get_headers(), json={"type": "chat"})
+        if response.status_code == 200:
+            data = response.json()
+            data["agent_id"] = self.id
+            return Conversation(**data)
+        else:
+            raise Exception(f"Failed to create conversation: {response.reason}")
 
     def get_conversation(self, id: str) -> Conversation:
         list_of_conversations = self.list_conversations()
@@ -27,7 +37,7 @@ class Agent(BaseModel):
         )
 
     def list_conversations(self) -> List[Conversation]:
-        url = f"https://api.agentx.so/api/v1/access/agents/{self.id}/conversations"
+        url = f"{api_base()}/access/agents/{self.id}/conversations"
         response = requests.get(url, headers=get_headers())
         if response.status_code == 200:
             return [
