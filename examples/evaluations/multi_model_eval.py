@@ -23,6 +23,7 @@ Run a subset:
 import json
 import os
 import sys
+import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -193,7 +194,7 @@ def _anthropic_thinking_fn(model_id: str) -> Callable:
         msg = client.messages.create(
             model=model_id,
             max_tokens=8000,
-            thinking={"type": "enabled", "budget_tokens": 4000},
+            thinking={"type": "adaptive"},
             system=AGENT_INSTRUCTIONS,
             messages=[{"role": "user", "content": case.query}],
         )
@@ -228,6 +229,25 @@ def _anthropic_thinking_fn(model_id: str) -> Callable:
 # Google (Gemini) runners
 # ---------------------------------------------------------------------------
 
+_GOOGLE_RETRY_DELAYS = [5, 15, 30]
+
+
+def _google_call_with_retry(fn, *args, **kwargs):
+    """Retry Google API calls on 429 rate-limit errors with backoff."""
+    last_exc = None
+    for delay in [0] + _GOOGLE_RETRY_DELAYS:
+        if delay:
+            time.sleep(delay)
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            if "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc):
+                last_exc = exc
+                continue
+            raise
+    raise last_exc
+
+
 def _google_fn(model_id: str) -> Callable:
     """google-genai — gemini-2.5-flash, gemini-2.5-flash-lite, etc."""
     try:
@@ -241,7 +261,8 @@ def _google_fn(model_id: str) -> Callable:
         if client is None:
             return {"output": f"[stub] {model_id}: {case.query}"}
 
-        response = client.models.generate_content(
+        response = _google_call_with_retry(
+            client.models.generate_content,
             model=model_id,
             contents=case.query,
             config=gtypes.GenerateContentConfig(
@@ -275,7 +296,8 @@ def _google_thinking_fn(model_id: str) -> Callable:
         if client is None:
             return {"output": f"[stub] {model_id} thinking: {case.query}"}
 
-        response = client.models.generate_content(
+        response = _google_call_with_retry(
+            client.models.generate_content,
             model=model_id,
             contents=case.query,
             config=gtypes.GenerateContentConfig(
@@ -330,10 +352,10 @@ ALL_MODELS: list[ModelConfig] = [
     # Anthropic — thinking
     ModelConfig("anthropic", "claude-opus-4-7",    "Claude Opus 4.7 (thinking)", "anthropic", reasoning=True),
     # Google — standard
-    ModelConfig("google", "gemini-3-flash-preview",  "Gemini 3 Flash",          "other"),
-    ModelConfig("google", "gemini-3.1-pro-preview",  "Gemini 3.1 Pro",          "other"),
+    ModelConfig("google", "gemini-3-flash-preview",  "Gemini 3 Flash",          "google"),
+    ModelConfig("google", "gemini-3.1-pro-preview",  "Gemini 3.1 Pro",          "google"),
     # Google — thinking
-    ModelConfig("google", "gemini-3-pro-preview",    "Gemini 3 Pro (thinking)", "other", reasoning=True),
+    ModelConfig("google", "gemini-3-pro-preview",    "Gemini 3 Pro (thinking)", "google", reasoning=True),
 ]
 
 

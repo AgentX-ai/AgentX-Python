@@ -68,7 +68,7 @@ class Dataset(BaseModel):
 # ---------------------------------------------------------------------------
 
 FrameworkKind = Literal[
-    "raw_python", "openai", "anthropic", "langchain", "llamaindex",
+    "raw_python", "openai", "anthropic", "google", "langchain", "llamaindex",
     "crewai", "autogen", "n8n", "flowise", "other"
 ]
 
