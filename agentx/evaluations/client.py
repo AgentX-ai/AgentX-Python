@@ -68,14 +68,14 @@ class EvaluationsClient:
     # Low-level HTTP
     # ------------------------------------------------------------------
 
-    def _request(self, method: str, path: str, **kwargs) -> Any:
+    def _request(self, method: str, path: str, timeout: int = 30, **kwargs) -> Any:
         url = f"{self._base_url}{path}"
         last_exc: Optional[Exception] = None
         for attempt, wait in enumerate([0.0] + _RETRY_BACKOFF):
             if wait:
                 time.sleep(wait)
             try:
-                resp = self._session.request(method, url, timeout=30, **kwargs)
+                resp = self._session.request(method, url, timeout=timeout, **kwargs)
             except requests.RequestException as e:
                 last_exc = e
                 logger.debug("Request error (attempt %d): %s", attempt + 1, e)
@@ -150,7 +150,7 @@ class EvaluationsClient:
         return self._request("POST", f"/runs/{run_id}/finalize", json={"status": "completed"})
 
     def analyze_run(self, run_id: str) -> Dict[str, Any]:
-        return self._request("POST", f"/runs/{run_id}/analyze", json={})
+        return self._request("POST", f"/runs/{run_id}/analyze", json={}, timeout=300)
 
     def get_run(self, run_id: str) -> Dict[str, Any]:
         return self._request("GET", f"/runs/{run_id}")
