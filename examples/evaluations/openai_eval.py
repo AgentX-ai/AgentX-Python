@@ -18,7 +18,6 @@ import os
 from agentx import AgentX
 from agentx.evaluations.models import EvaluationCase
 
-
 # ---------------------------------------------------------------------------
 # Mode: chat completions (gpt-4o-mini) with optional tool use
 # ---------------------------------------------------------------------------
@@ -58,10 +57,16 @@ def _run_policy_tool(args: dict) -> str:
 def make_chat_fn(oai_client):
     def eval_subject(case: EvaluationCase) -> dict:
         if oai_client is None:
-            return {"output": f"[stub] Response to: {case.query}", "metadata": {"framework": "openai", "mode": "chat"}}
+            return {
+                "output": f"[stub] Response to: {case.query}",
+                "metadata": {"framework": "openai", "mode": "chat"},
+            }
 
         messages = [
-            {"role": "system", "content": "You are a helpful customer support agent. Use the lookup_policy tool when you need policy details."},
+            {
+                "role": "system",
+                "content": "You are a helpful customer support agent. Use the lookup_policy tool when you need policy details.",
+            },
             {"role": "user", "content": case.query},
         ]
         trace_events = []
@@ -82,13 +87,17 @@ def make_chat_fn(oai_client):
             for tc in msg.tool_calls:
                 args = json.loads(tc.function.arguments)
                 result = _run_policy_tool(args)
-                trace_events.append({
-                    "type": "tool_call",
-                    "name": tc.function.name,
-                    "summary": f"topic={args.get('topic')} → {result[:80]}",
-                })
+                trace_events.append(
+                    {
+                        "type": "tool_call",
+                        "name": tc.function.name,
+                        "summary": f"topic={args.get('topic')} → {result[:80]}",
+                    }
+                )
                 messages.append(msg)
-                messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+                messages.append(
+                    {"role": "tool", "tool_call_id": tc.id, "content": result}
+                )
 
             # Second call with tool result
             resp = oai_client.chat.completions.create(
@@ -116,15 +125,22 @@ def make_chat_fn(oai_client):
 # Mode: reasoning (o4-mini) via Responses API — returns reasoning summary
 # ---------------------------------------------------------------------------
 
+
 def make_reasoning_fn(oai_client):
     def eval_subject(case: EvaluationCase) -> dict:
         if oai_client is None:
-            return {"output": f"[stub] Reasoning response to: {case.query}", "metadata": {"framework": "openai", "mode": "reasoning"}}
+            return {
+                "output": f"[stub] Reasoning response to: {case.query}",
+                "metadata": {"framework": "openai", "mode": "reasoning"},
+            }
 
         response = oai_client.responses.create(
             model="o4-mini",
             input=[
-                {"role": "system", "content": "You are a helpful customer support agent. Answer accurately and concisely."},
+                {
+                    "role": "system",
+                    "content": "You are a helpful customer support agent. Answer accurately and concisely.",
+                },
                 {"role": "user", "content": case.query},
             ],
             reasoning={"effort": "medium"},
@@ -136,7 +152,9 @@ def make_reasoning_fn(oai_client):
         output_text = ""
         for item in response.output:
             if item.type == "reasoning" and getattr(item, "summary", None):
-                reasoning_summary = " ".join(s.text for s in item.summary if hasattr(s, "text"))
+                reasoning_summary = " ".join(
+                    s.text for s in item.summary if hasattr(s, "text")
+                )
             elif item.type == "message":
                 for block in item.content:
                     if hasattr(block, "text"):
@@ -144,14 +162,20 @@ def make_reasoning_fn(oai_client):
 
         trace_events = []
         if reasoning_summary:
-            trace_events.append({"type": "reasoning", "name": "o4-mini", "summary": reasoning_summary})
+            trace_events.append(
+                {"type": "reasoning", "name": "o4-mini", "summary": reasoning_summary}
+            )
 
         return {
             "output": output_text,
             "input_tokens": response.usage.input_tokens,
             "output_tokens": response.usage.output_tokens,
             "trace": {"events": trace_events} if trace_events else None,
-            "metadata": {"framework": "openai", "mode": "reasoning", "model": "o4-mini"},
+            "metadata": {
+                "framework": "openai",
+                "mode": "reasoning",
+                "model": "o4-mini",
+            },
         }
 
     return eval_subject
@@ -161,22 +185,29 @@ def make_reasoning_fn(oai_client):
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
     client = AgentX.from_env()
     mode = os.getenv("OPENAI_MODE", "chat").lower()
 
     try:
         from openai import OpenAI
+
         oai_client = OpenAI()
     except ImportError:
         oai_client = None
 
-    eval_fn = make_reasoning_fn(oai_client) if mode == "reason" else make_chat_fn(oai_client)
-    display = "OpenAI o4-mini (reasoning)" if mode == "reason" else "OpenAI GPT-4o-mini (chat + tools)"
+    eval_fn = (
+        make_reasoning_fn(oai_client) if mode == "reason" else make_chat_fn(oai_client)
+    )
+    display = (
+        "OpenAI o4-mini (reasoning)"
+        if mode == "reason"
+        else "OpenAI GPT-4o-mini (chat + tools)"
+    )
 
     dataset = (
-        client.evaluations.datasets
-        .builder(
+        client.evaluations.datasets.builder(
             name=f"OpenAI Agent Dataset ({mode})",
             description="Evaluates an OpenAI-based customer support agent on billing and account queries.",
             number_of_requests=2,
@@ -199,8 +230,7 @@ def main():
     )
 
     report = (
-        client.evaluations
-        .run(
+        client.evaluations.run(
             dataset_id=dataset.id,
             subject={
                 "kind": "custom_agent",

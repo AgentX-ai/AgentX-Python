@@ -5,10 +5,10 @@ from typing import Any, Dict
 
 # Patterns that look like secrets
 _SECRET_PATTERNS = [
-    re.compile(r"sk-[A-Za-z0-9]{20,}"),          # OpenAI / Anthropic style keys
+    re.compile(r"sk-[A-Za-z0-9]{20,}"),  # OpenAI / Anthropic style keys
     re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*", re.IGNORECASE),
     re.compile(r"(?i)(password|passwd|secret|token|api[_-]?key)\s*[=:]\s*\S+"),
-    re.compile(r"[A-Za-z0-9+/]{40,}={0,2}"),      # long base64-like strings
+    re.compile(r"[A-Za-z0-9+/]{40,}={0,2}"),  # long base64-like strings
 ]
 
 _REDACTED = "[REDACTED]"
@@ -33,9 +33,21 @@ def redact_dict(obj: Any, _depth: int = 0) -> Any:
 
 
 _SENSITIVE_KEYS = {
-    "password", "passwd", "secret", "token", "api_key", "apikey",
-    "authorization", "auth", "cookie", "session", "credential",
-    "private_key", "privatekey", "access_key", "accesskey",
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "api_key",
+    "apikey",
+    "authorization",
+    "auth",
+    "cookie",
+    "session",
+    "credential",
+    "private_key",
+    "privatekey",
+    "access_key",
+    "accesskey",
 }
 
 

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional, Union
-from pydantic import BaseModel, Field
-
+from pydantic import BaseModel, Field, model_validator
 
 # ---------------------------------------------------------------------------
 # Observable trace
 # ---------------------------------------------------------------------------
+
 
 class TraceEvent(BaseModel):
     type: str
@@ -29,6 +29,7 @@ class ObservableTrace(BaseModel):
 # ---------------------------------------------------------------------------
 # Dataset
 # ---------------------------------------------------------------------------
+
 
 class TestCase(BaseModel):
     query: str
@@ -68,8 +69,17 @@ class Dataset(BaseModel):
 # ---------------------------------------------------------------------------
 
 FrameworkKind = Literal[
-    "raw_python", "openai", "anthropic", "google", "langchain", "llamaindex",
-    "crewai", "autogen", "n8n", "flowise", "other"
+    "raw_python",
+    "openai",
+    "anthropic",
+    "google",
+    "langchain",
+    "llamaindex",
+    "crewai",
+    "autogen",
+    "n8n",
+    "flowise",
+    "other",
 ]
 
 RuntimeKind = Literal["local", "ci", "customer_hosted", "low_code"]
@@ -93,10 +103,15 @@ class EvaluationSubject(BaseModel):
 # Run
 # ---------------------------------------------------------------------------
 
+
 class ServerLimits(BaseModel):
     max_batch_size: int = Field(default=10, alias="maxBatchSize")
-    max_trace_bytes_per_result: int = Field(default=20000, alias="maxTraceBytesPerResult")
-    max_metadata_bytes_per_result: int = Field(default=4000, alias="maxMetadataBytesPerResult")
+    max_trace_bytes_per_result: int = Field(
+        default=20000, alias="maxTraceBytesPerResult"
+    )
+    max_metadata_bytes_per_result: int = Field(
+        default=4000, alias="maxMetadataBytesPerResult"
+    )
 
     class Config:
         populate_by_name = True
@@ -119,6 +134,7 @@ class EvaluationRun(BaseModel):
 # Evaluation case (one item from the dataset, passed to the user's callable)
 # ---------------------------------------------------------------------------
 
+
 class EvaluationCase(BaseModel):
     case_id: str
     question_index: int
@@ -136,6 +152,7 @@ class EvaluationCase(BaseModel):
 # ---------------------------------------------------------------------------
 # Result produced by the user's callable and normalised by the SDK
 # ---------------------------------------------------------------------------
+
 
 class ResultError(BaseModel):
     type: str
@@ -162,7 +179,9 @@ class EvaluationResult(BaseModel):
     run_number: int
     input: Dict[str, Any]
     output: Optional[Dict[str, Any]] = None
-    observable_trace: Optional[ObservableTrace] = Field(default=None, alias="observableTrace")
+    observable_trace: Optional[ObservableTrace] = Field(
+        default=None, alias="observableTrace"
+    )
     error: Optional[ResultError] = None
     timings: Optional[ResultTimings] = None
     metadata: Optional[Dict[str, Any]] = None
@@ -176,6 +195,7 @@ class EvaluationResult(BaseModel):
 # ---------------------------------------------------------------------------
 # Scored result (returned by API after scoring)
 # ---------------------------------------------------------------------------
+
 
 class ScoredResult(BaseModel):
     idempotency_key: str = Field(alias="idempotencyKey")
@@ -191,6 +211,7 @@ class ScoredResult(BaseModel):
 # Batch append response
 # ---------------------------------------------------------------------------
 
+
 class BatchAppendResponse(BaseModel):
     run_id: str = Field(alias="runId")
     batch_id: str = Field(alias="batchId")
@@ -198,7 +219,9 @@ class BatchAppendResponse(BaseModel):
     duplicates: int = 0
     failed_validation: int = Field(default=0, alias="failedValidation")
     status: str = "in_progress"
-    scored_results: List[ScoredResult] = Field(default_factory=list, alias="scoredResults")
+    scored_results: List[ScoredResult] = Field(
+        default_factory=list, alias="scoredResults"
+    )
 
     class Config:
         populate_by_name = True
@@ -209,11 +232,14 @@ class BatchAppendResponse(BaseModel):
 # Analysis / report
 # ---------------------------------------------------------------------------
 
+
 class ReportStatistics(BaseModel):
     number_of_runs: int = Field(default=0, alias="numberOfRuns")
     average_rating: float = Field(default=0.0, alias="averageRating")
     min_rating: float = Field(default=0.0, alias="minRating")
     max_rating: float = Field(default=0.0, alias="maxRating")
+    cosine_similarity: Optional[float] = Field(default=None, alias="cosineSimilarity")
+    jaccard_similarity: Optional[float] = Field(default=None, alias="jaccardSimilarity")
 
     class Config:
         populate_by_name = True
@@ -242,7 +268,9 @@ class ReportResponsePatterns(BaseModel):
 
 class ReportReasoningAnalysis(BaseModel):
     cot_quality: Optional[str] = Field(default=None, alias="cotQuality")
-    reasoning_patterns: List[str] = Field(default_factory=list, alias="reasoningPatterns")
+    reasoning_patterns: List[str] = Field(
+        default_factory=list, alias="reasoningPatterns"
+    )
     reasoning_gaps: List[str] = Field(default_factory=list, alias="reasoningGaps")
     rating: Optional[str] = None
 
@@ -278,17 +306,83 @@ class Report(BaseModel):
     statistics: Optional[ReportStatistics] = None
     summary: Optional[str] = None
     consistency_score: Optional[float] = Field(default=None, alias="consistencyScore")
-    instruction_adherence: Optional[ReportInstructionAdherence] = Field(default=None, alias="instructionAdherence")
-    response_patterns: Optional[ReportResponsePatterns] = Field(default=None, alias="responsePatterns")
-    reasoning_analysis: Optional[ReportReasoningAnalysis] = Field(default=None, alias="reasoningAnalysis")
-    tool_usage_analysis: Optional[ReportToolUsageAnalysis] = Field(default=None, alias="toolUsageAnalysis")
+    instruction_adherence: Optional[ReportInstructionAdherence] = Field(
+        default=None, alias="instructionAdherence"
+    )
+    response_patterns: Optional[ReportResponsePatterns] = Field(
+        default=None, alias="responsePatterns"
+    )
+    reasoning_analysis: Optional[ReportReasoningAnalysis] = Field(
+        default=None, alias="reasoningAnalysis"
+    )
+    tool_usage_analysis: Optional[ReportToolUsageAnalysis] = Field(
+        default=None, alias="toolUsageAnalysis"
+    )
     strengths: List[str] = Field(default_factory=list)
     weaknesses: List[str] = Field(default_factory=list)
     overall_rating: Optional[str] = Field(default=None, alias="overallRating")
     recommendations: List[ReportRecommendation] = Field(default_factory=list)
-    low_scoring_cases: List[Dict[str, Any]] = Field(default_factory=list, alias="lowScoringCases")
+    low_scoring_cases: List[Dict[str, Any]] = Field(
+        default_factory=list, alias="lowScoringCases"
+    )
     dashboard_url: Optional[str] = Field(default=None, alias="dashboardUrl")
 
     class Config:
         populate_by_name = True
         extra = "ignore"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _hoist_similarity_into_statistics(cls, data: Any) -> Any:
+        """Backend may send similarity metrics either at the top level (e.g.
+        ``cosineSimilarity``) or nested under ``statistics``. Normalize so the
+        nested form is always populated when either is present."""
+        if not isinstance(data, dict):
+            return data
+        stats = data.get("statistics")
+        stats = dict(stats) if isinstance(stats, dict) else {}
+        for top_key, nested_key in (
+            ("cosineSimilarity", "cosineSimilarity"),
+            ("cosine_similarity", "cosine_similarity"),
+            ("jaccardSimilarity", "jaccardSimilarity"),
+            ("jaccard_similarity", "jaccard_similarity"),
+        ):
+            top_val = data.get(top_key)
+            if top_val is None:
+                continue
+            if (
+                stats.get("cosineSimilarity") is None
+                and stats.get("cosine_similarity") is None
+                and "cosine" in nested_key.lower()
+            ):
+                stats[nested_key] = top_val
+            if (
+                stats.get("jaccardSimilarity") is None
+                and stats.get("jaccard_similarity") is None
+                and "jaccard" in nested_key.lower()
+            ):
+                stats[nested_key] = top_val
+        if stats:
+            data["statistics"] = stats
+        return data
+
+    @property
+    def cosine_similarity(self) -> Optional[float]:
+        """Average cosine similarity across scored results, or ``None`` if the
+        metric was not enabled for the dataset or no result has a value yet."""
+        return (
+            self.statistics.cosine_similarity if self.statistics is not None else None
+        )
+
+    @property
+    def jaccard_similarity(self) -> Optional[float]:
+        """Average Jaccard similarity across scored results, or ``None`` if the
+        metric was not enabled for the dataset or no result has a value yet."""
+        return (
+            self.statistics.jaccard_similarity if self.statistics is not None else None
+        )
+
+    @property
+    def average_rating(self) -> Optional[float]:
+        """Convenience accessor matching cosine_similarity / jaccard_similarity."""
+        return self.statistics.average_rating if self.statistics is not None else None

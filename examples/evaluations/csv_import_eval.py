@@ -28,9 +28,18 @@ from agentx.evaluations.adapters.precomputed import PrecomputedAdapter
 def create_sample_csv() -> str:
     """Write a temporary sample CSV and return its path."""
     rows = [
-        {"query": "How do I reset my password?", "expected_results": "Explain the password reset steps clearly."},
-        {"query": "What payment methods do you accept?", "expected_results": "List all supported payment methods."},
-        {"query": "How do I cancel my subscription?", "expected_results": "Describe the cancellation process step by step."},
+        {
+            "query": "How do I reset my password?",
+            "expected_results": "Explain the password reset steps clearly.",
+        },
+        {
+            "query": "What payment methods do you accept?",
+            "expected_results": "List all supported payment methods.",
+        },
+        {
+            "query": "How do I cancel my subscription?",
+            "expected_results": "Describe the cancellation process step by step.",
+        },
     ]
     tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False, newline="")
     writer = csv.DictWriter(tmp, fieldnames=["query", "expected_results"])
@@ -70,8 +79,7 @@ def main():
     adapter = PrecomputedAdapter(precomputed_outputs)
 
     report = (
-        client.evaluations
-        .run(
+        client.evaluations.run(
             dataset_id=dataset.id,
             subject={
                 "kind": "custom_agent",

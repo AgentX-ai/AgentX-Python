@@ -42,26 +42,33 @@ class AgentXValidationError(AgentXEvaluationsError):
 
 
 class EvaluationsClient:
-    def __init__(self, api_key: str, sdk_version: str = "unknown", base_url: str = None):
+    def __init__(
+        self, api_key: str, sdk_version: str = "unknown", base_url: str = None
+    ):
         if not api_key:
             raise AgentXAuthError("AGENTX_API_KEY is required")
         self._api_key = api_key
         self._sdk_version = sdk_version
         # Priority: constructor arg > env var > SDK default
         # Always append /custom-agent-evaluations so users only need to provide /api/v1
-        _api_base = (base_url or os.getenv("AGENTX_API_BASE_URL", _UTIL_API_BASE)).rstrip("/")
+        _api_base = (
+            base_url or os.getenv("AGENTX_API_BASE_URL", _UTIL_API_BASE)
+        ).rstrip("/")
         if not _api_base.endswith("/custom-agent-evaluations"):
             _api_base = f"{_api_base}/custom-agent-evaluations"
         self._base_url = _api_base
         self._session = requests.Session()
-        self._session.headers.update({
-            "x-api-key": self._api_key,
-            "Content-Type": "application/json",
-            "User-Agent": f"{SDK_NAME}/{self._sdk_version}",
-            "accept": "*/*",
-        })
+        self._session.headers.update(
+            {
+                "x-api-key": self._api_key,
+                "Content-Type": "application/json",
+                "User-Agent": f"{SDK_NAME}/{self._sdk_version}",
+                "accept": "*/*",
+            }
+        )
         # Expose dataset builder factory
         from agentx.evaluations.datasets import DatasetClient
+
         self.datasets = DatasetClient(self)
 
     # ------------------------------------------------------------------
@@ -86,7 +93,9 @@ class EvaluationsClient:
             if resp.status_code == 422:
                 raise AgentXValidationError(resp.text)
             if resp.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES - 1:
-                logger.debug("Retryable status %d (attempt %d)", resp.status_code, attempt + 1)
+                logger.debug(
+                    "Retryable status %d (attempt %d)", resp.status_code, attempt + 1
+                )
                 last_exc = AgentXEvaluationsError(f"HTTP {resp.status_code}")
                 continue
             if not resp.ok:
@@ -107,7 +116,10 @@ class EvaluationsClient:
 
     def list_datasets(self) -> List[Dataset]:
         data = self._request("GET", "/datasets")
-        return [Dataset(**d) for d in (data if isinstance(data, list) else data.get("datasets", []))]
+        return [
+            Dataset(**d)
+            for d in (data if isinstance(data, list) else data.get("datasets", []))
+        ]
 
     def get_dataset(self, dataset_id: str) -> Dataset:
         data = self._request("GET", f"/datasets/{dataset_id}")
@@ -124,6 +136,7 @@ class EvaluationsClient:
         python_version: Optional[str] = None,
     ) -> EvaluationRun:
         from agentx.version import VERSION
+
         payload = {
             "datasetId": dataset_id,
             "evaluationSubject": subject.model_dump(by_alias=True, exclude_none=True),
@@ -138,7 +151,9 @@ class EvaluationsClient:
         data = self._request("POST", "/runs", json=payload)
         return EvaluationRun(**data)
 
-    def append_results(self, run_id: str, batch_id: str, results: List[EvaluationResult]) -> BatchAppendResponse:
+    def append_results(
+        self, run_id: str, batch_id: str, results: List[EvaluationResult]
+    ) -> BatchAppendResponse:
         payload = {
             "batchId": batch_id,
             "results": [_result_to_payload(r) for r in results],
@@ -147,7 +162,9 @@ class EvaluationsClient:
         return BatchAppendResponse(**data)
 
     def finalize_run(self, run_id: str) -> Dict[str, Any]:
-        return self._request("POST", f"/runs/{run_id}/finalize", json={"status": "completed"})
+        return self._request(
+            "POST", f"/runs/{run_id}/finalize", json={"status": "completed"}
+        )
 
     def analyze_run(self, run_id: str) -> Dict[str, Any]:
         return self._request("POST", f"/runs/{run_id}/analyze", json={}, timeout=300)
@@ -168,6 +185,7 @@ class EvaluationsClient:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _result_to_payload(r: EvaluationResult) -> dict:
     d = r.model_dump(by_alias=True, exclude_none=True)
     # Rename snake_case fields the model may have stored locally
@@ -180,4 +198,5 @@ def _result_to_payload(r: EvaluationResult) -> dict:
 
 def _python_version() -> str:
     import sys
+
     return f"{sys.version_info.major}.{sys.version_info.minor}"

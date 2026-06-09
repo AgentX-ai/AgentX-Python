@@ -57,16 +57,22 @@ class DatasetBuilder:
             main["expectedKnowledgeBase"] = expected_knowledge_base
         if expected_delegations:
             main["expectedDelegations"] = expected_delegations
-        self._payload["questions"].append({
-            "main_question": main,
-            "follow_up_questions": follow_up_questions or [],
-        })
+        self._payload["questions"].append(
+            {
+                "main_question": main,
+                "follow_up_questions": follow_up_questions or [],
+            }
+        )
         return self
 
     def publish(self) -> Dataset:
         if not self._payload["questions"]:
             raise ValueError("Dataset must have at least one case before publishing")
-        logger.info("Publishing dataset '%s' with %d case(s)", self._payload["name"], len(self._payload["questions"]))
+        logger.info(
+            "Publishing dataset '%s' with %d case(s)",
+            self._payload["name"],
+            len(self._payload["questions"]),
+        )
         return self._client.create_dataset(self._payload)
 
     # ------------------------------------------------------------------
@@ -109,9 +115,15 @@ class DatasetBuilder:
                 builder.add_case(
                     query=query,
                     expected_results=row.get("expected_results", "").strip() or None,
-                    expected_capabilities=_split_semi(row.get("expected_capabilities", "")),
-                    expected_knowledge_base=_split_semi(row.get("expected_knowledge_base", "")),
-                    expected_delegations=_split_semi(row.get("expected_delegations", "")),
+                    expected_capabilities=_split_semi(
+                        row.get("expected_capabilities", "")
+                    ),
+                    expected_knowledge_base=_split_semi(
+                        row.get("expected_knowledge_base", "")
+                    ),
+                    expected_delegations=_split_semi(
+                        row.get("expected_delegations", "")
+                    ),
                 )
 
         if invalid:
@@ -150,7 +162,9 @@ class DatasetBuilder:
                 query=query,
                 expected_results=_str_or_none(row.get("expected_results")),
                 expected_capabilities=_split_semi(row.get("expected_capabilities", "")),
-                expected_knowledge_base=_split_semi(row.get("expected_knowledge_base", "")),
+                expected_knowledge_base=_split_semi(
+                    row.get("expected_knowledge_base", "")
+                ),
                 expected_delegations=_split_semi(row.get("expected_delegations", "")),
             )
 
@@ -203,6 +217,7 @@ class DatasetClient:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _split_semi(value: Any) -> Optional[List[str]]:
     if not value:

@@ -34,8 +34,7 @@ def main():
     )
 
     dataset = (
-        client.evaluations.datasets
-        .builder(
+        client.evaluations.datasets.builder(
             name="HTTP Endpoint Agent Dataset",
             description="Evaluates an agent deployed as an HTTP service, called once per case by the SDK.",
             number_of_requests=2,
@@ -56,8 +55,7 @@ def main():
     print(f"Dataset: {dataset.id}")
 
     report = (
-        client.evaluations
-        .run(
+        client.evaluations.run(
             dataset_id=dataset.id,
             subject={
                 "kind": "custom_agent",

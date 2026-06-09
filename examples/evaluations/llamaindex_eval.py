@@ -17,10 +17,10 @@ import os
 from agentx import AgentX
 from agentx.evaluations.models import EvaluationCase
 
-
 # ---------------------------------------------------------------------------
 # Mode: RAG query engine
 # ---------------------------------------------------------------------------
+
 
 def build_rag_engine():
     try:
@@ -28,12 +28,24 @@ def build_rag_engine():
         from llama_index.llms.openai import OpenAI
 
         documents = [
-            Document(text="Our refund policy allows full refunds within 30 days of purchase. Contact support@example.com."),
-            Document(text="We support credit cards, PayPal, and bank transfers as payment methods."),
-            Document(text="Team plans support up to 50 seats. Contact sales for enterprise pricing."),
-            Document(text="Technical support is available 24/7 via live chat and email."),
-            Document(text="To export data go to Settings → Data → Export. CSV and JSON formats are available."),
-            Document(text="Free trial is 14 days, no credit card required. Upgrade anytime from the billing page."),
+            Document(
+                text="Our refund policy allows full refunds within 30 days of purchase. Contact support@example.com."
+            ),
+            Document(
+                text="We support credit cards, PayPal, and bank transfers as payment methods."
+            ),
+            Document(
+                text="Team plans support up to 50 seats. Contact sales for enterprise pricing."
+            ),
+            Document(
+                text="Technical support is available 24/7 via live chat and email."
+            ),
+            Document(
+                text="To export data go to Settings → Data → Export. CSV and JSON formats are available."
+            ),
+            Document(
+                text="Free trial is 14 days, no credit card required. Upgrade anytime from the billing page."
+            ),
         ]
 
         llm = OpenAI(model="gpt-4o-mini", temperature=0)
@@ -47,7 +59,10 @@ def build_rag_engine():
 def make_rag_fn(engine):
     def eval_subject(case: EvaluationCase) -> dict:
         if engine is None:
-            return {"output": f"[stub] RAG response to: {case.query}", "metadata": {"framework": "llamaindex", "mode": "rag"}}
+            return {
+                "output": f"[stub] RAG response to: {case.query}",
+                "metadata": {"framework": "llamaindex", "mode": "rag"},
+            }
 
         response = engine.query(case.query)
 
@@ -61,18 +76,28 @@ def make_rag_fn(engine):
         source_nodes = getattr(response, "source_nodes", [])
         trace_events = []
         for node in source_nodes:
-            trace_events.append({
-                "type": "retrieval",
-                "name": "vector_search",
-                "summary": f"score={node.score:.3f} text={node.text[:80]}…" if hasattr(node, "score") else node.text[:80],
-            })
+            trace_events.append(
+                {
+                    "type": "retrieval",
+                    "name": "vector_search",
+                    "summary": (
+                        f"score={node.score:.3f} text={node.text[:80]}…"
+                        if hasattr(node, "score")
+                        else node.text[:80]
+                    ),
+                }
+            )
 
         return {
             "output": str(response),
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "trace": {"events": trace_events} if trace_events else None,
-            "metadata": {"framework": "llamaindex", "mode": "rag", "sources_used": len(source_nodes)},
+            "metadata": {
+                "framework": "llamaindex",
+                "mode": "rag",
+                "sources_used": len(source_nodes),
+            },
         }
 
     return eval_subject
@@ -81,6 +106,7 @@ def make_rag_fn(engine):
 # ---------------------------------------------------------------------------
 # Mode: ReAct agent with tools
 # ---------------------------------------------------------------------------
+
 
 def build_react_agent():
     try:
@@ -114,7 +140,10 @@ def build_react_agent():
 def make_agent_fn(agent):
     def eval_subject(case: EvaluationCase) -> dict:
         if agent is None:
-            return {"output": f"[stub] Agent response to: {case.query}", "metadata": {"framework": "llamaindex", "mode": "agent"}}
+            return {
+                "output": f"[stub] Agent response to: {case.query}",
+                "metadata": {"framework": "llamaindex", "mode": "agent"},
+            }
 
         response = agent.chat(case.query)
         output = str(response)
@@ -125,12 +154,18 @@ def make_agent_fn(agent):
         for source in sources:
             tool_name = getattr(source, "tool_name", "unknown_tool")
             content = str(getattr(source, "content", ""))[:100]
-            trace_events.append({"type": "tool_call", "name": tool_name, "summary": content})
+            trace_events.append(
+                {"type": "tool_call", "name": tool_name, "summary": content}
+            )
 
         return {
             "output": output,
             "trace": {"events": trace_events} if trace_events else None,
-            "metadata": {"framework": "llamaindex", "mode": "agent", "model": "gpt-4o-mini"},
+            "metadata": {
+                "framework": "llamaindex",
+                "mode": "agent",
+                "model": "gpt-4o-mini",
+            },
         }
 
     return eval_subject
@@ -139,6 +174,7 @@ def make_agent_fn(agent):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main():
     client = AgentX.from_env()
@@ -154,8 +190,7 @@ def main():
         display = "LlamaIndex RAG Engine"
 
     dataset = (
-        client.evaluations.datasets
-        .builder(
+        client.evaluations.datasets.builder(
             name=f"LlamaIndex Agent Dataset ({mode})",
             description="Evaluates a LlamaIndex agent on product documentation queries.",
             number_of_requests=2,
@@ -178,8 +213,7 @@ def main():
     )
 
     report = (
-        client.evaluations
-        .run(
+        client.evaluations.run(
             dataset_id=dataset.id,
             subject={
                 "kind": "custom_agent",

@@ -17,10 +17,10 @@ import os
 from agentx import AgentX
 from agentx.evaluations.models import EvaluationCase
 
-
 # ---------------------------------------------------------------------------
 # Mode: single specialist agent
 # ---------------------------------------------------------------------------
+
 
 def build_single_crew():
     try:
@@ -40,7 +40,12 @@ def build_single_crew():
                 agent=support_agent,
                 expected_output="A clear, concise customer support response.",
             )
-            crew = Crew(agents=[support_agent], tasks=[task], process=Process.sequential, verbose=False)
+            crew = Crew(
+                agents=[support_agent],
+                tasks=[task],
+                process=Process.sequential,
+                verbose=False,
+            )
             result = crew.kickoff()
             return result, str(result), []
 
@@ -52,6 +57,7 @@ def build_single_crew():
 # ---------------------------------------------------------------------------
 # Mode: multi-agent crew (researcher + writer)
 # ---------------------------------------------------------------------------
+
 
 def build_multi_crew():
     try:
@@ -94,8 +100,18 @@ def build_multi_crew():
 
             # Build trace events from task outputs
             trace_events = [
-                {"type": "agent_step", "name": "policy_researcher", "summary": str(research_task.output)[:200] if research_task.output else ""},
-                {"type": "agent_step", "name": "support_writer", "summary": str(result)[:200]},
+                {
+                    "type": "agent_step",
+                    "name": "policy_researcher",
+                    "summary": (
+                        str(research_task.output)[:200] if research_task.output else ""
+                    ),
+                },
+                {
+                    "type": "agent_step",
+                    "name": "support_writer",
+                    "summary": str(result)[:200],
+                },
             ]
 
             return result, str(result), trace_events
@@ -108,6 +124,7 @@ def build_multi_crew():
 # ---------------------------------------------------------------------------
 # Shared eval function factory
 # ---------------------------------------------------------------------------
+
 
 def make_eval_fn(crew_runner, mode: str):
     def eval_subject(case: EvaluationCase) -> dict:
@@ -135,17 +152,19 @@ def make_eval_fn(crew_runner, mode: str):
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
     client = AgentX.from_env()
     mode = os.getenv("CREWAI_MODE", "single").lower()
 
     crew_runner = build_multi_crew() if mode == "multi" else build_single_crew()
     eval_fn = make_eval_fn(crew_runner, mode)
-    display = "CrewAI Multi-Agent Crew" if mode == "multi" else "CrewAI Single Specialist"
+    display = (
+        "CrewAI Multi-Agent Crew" if mode == "multi" else "CrewAI Single Specialist"
+    )
 
     dataset = (
-        client.evaluations.datasets
-        .builder(
+        client.evaluations.datasets.builder(
             name=f"CrewAI Support Agent Dataset ({mode})",
             description="Evaluates a CrewAI agent on team account and integration queries.",
             number_of_requests=2,
@@ -168,8 +187,7 @@ def main():
     )
 
     report = (
-        client.evaluations
-        .run(
+        client.evaluations.run(
             dataset_id=dataset.id,
             subject={
                 "kind": "custom_agent",

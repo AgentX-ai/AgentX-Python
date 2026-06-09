@@ -17,15 +17,18 @@ import os
 from agentx import AgentX
 from agentx.evaluations.models import EvaluationCase
 
-
 # ---------------------------------------------------------------------------
 # Mode: standard (claude-haiku-4-5)
 # ---------------------------------------------------------------------------
 
+
 def make_standard_fn(anthropic_client):
     def eval_subject(case: EvaluationCase) -> dict:
         if anthropic_client is None:
-            return {"output": f"[stub] Response to: {case.query}", "metadata": {"framework": "anthropic", "mode": "standard"}}
+            return {
+                "output": f"[stub] Response to: {case.query}",
+                "metadata": {"framework": "anthropic", "mode": "standard"},
+            }
 
         message = anthropic_client.messages.create(
             model="claude-haiku-4-5",
@@ -38,7 +41,11 @@ def make_standard_fn(anthropic_client):
             "output": message.content[0].text,
             "input_tokens": message.usage.input_tokens,
             "output_tokens": message.usage.output_tokens,
-            "metadata": {"framework": "anthropic", "mode": "standard", "model": message.model},
+            "metadata": {
+                "framework": "anthropic",
+                "mode": "standard",
+                "model": message.model,
+            },
         }
 
     return eval_subject
@@ -48,10 +55,14 @@ def make_standard_fn(anthropic_client):
 # Mode: extended thinking (claude-opus-4-7)
 # ---------------------------------------------------------------------------
 
+
 def make_thinking_fn(anthropic_client):
     def eval_subject(case: EvaluationCase) -> dict:
         if anthropic_client is None:
-            return {"output": f"[stub] Thinking response to: {case.query}", "metadata": {"framework": "anthropic", "mode": "thinking"}}
+            return {
+                "output": f"[stub] Thinking response to: {case.query}",
+                "metadata": {"framework": "anthropic", "mode": "thinking"},
+            }
 
         message = anthropic_client.messages.create(
             model="claude-opus-4-7",
@@ -72,18 +83,25 @@ def make_thinking_fn(anthropic_client):
 
         trace_events = []
         if thinking_text:
-            trace_events.append({
-                "type": "thinking",
-                "name": "claude-opus-4-7",
-                "summary": thinking_text[:500] + ("…" if len(thinking_text) > 500 else ""),
-            })
+            trace_events.append(
+                {
+                    "type": "thinking",
+                    "name": "claude-opus-4-7",
+                    "summary": thinking_text[:500]
+                    + ("…" if len(thinking_text) > 500 else ""),
+                }
+            )
 
         return {
             "output": answer_text,
             "input_tokens": message.usage.input_tokens,
             "output_tokens": message.usage.output_tokens,
             "trace": {"events": trace_events} if trace_events else None,
-            "metadata": {"framework": "anthropic", "mode": "thinking", "model": message.model},
+            "metadata": {
+                "framework": "anthropic",
+                "mode": "thinking",
+                "model": message.model,
+            },
         }
 
     return eval_subject
@@ -93,22 +111,31 @@ def make_thinking_fn(anthropic_client):
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
     client = AgentX.from_env()
     mode = os.getenv("ANTHROPIC_MODE", "standard").lower()
 
     try:
         import anthropic
+
         anthropic_client = anthropic.Anthropic()
     except ImportError:
         anthropic_client = None
 
-    eval_fn = make_thinking_fn(anthropic_client) if mode == "thinking" else make_standard_fn(anthropic_client)
-    model_label = "claude-opus-4-7 (extended thinking)" if mode == "thinking" else "claude-haiku-4-5 (standard)"
+    eval_fn = (
+        make_thinking_fn(anthropic_client)
+        if mode == "thinking"
+        else make_standard_fn(anthropic_client)
+    )
+    model_label = (
+        "claude-opus-4-7 (extended thinking)"
+        if mode == "thinking"
+        else "claude-haiku-4-5 (standard)"
+    )
 
     dataset = (
-        client.evaluations.datasets
-        .builder(
+        client.evaluations.datasets.builder(
             name=f"Anthropic Claude Agent Dataset ({mode})",
             description="Evaluates a Claude customer support agent on refund, support, and account queries.",
             number_of_requests=2,
@@ -131,8 +158,7 @@ def main():
     )
 
     report = (
-        client.evaluations
-        .run(
+        client.evaluations.run(
             dataset_id=dataset.id,
             subject={
                 "kind": "custom_agent",

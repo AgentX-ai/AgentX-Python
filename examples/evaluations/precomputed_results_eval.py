@@ -11,7 +11,6 @@ Run:
 from agentx import AgentX
 from agentx.evaluations.adapters.precomputed import PrecomputedAdapter
 
-
 # Outputs keyed by case index (0-based) or case_id string
 PRECOMPUTED_OUTPUTS = {
     "case-0": "To reset your password, go to Settings > Security > Reset Password.",
@@ -26,8 +25,7 @@ def main():
     client = AgentX.from_env()
 
     dataset = (
-        client.evaluations.datasets
-        .builder(
+        client.evaluations.datasets.builder(
             name="Precomputed Outputs Dataset",
             number_of_requests=1,
         )
@@ -45,8 +43,7 @@ def main():
     adapter = PrecomputedAdapter(PRECOMPUTED_OUTPUTS)
 
     report = (
-        client.evaluations
-        .run(
+        client.evaluations.run(
             dataset_id=dataset.id,
             subject={
                 "kind": "custom_agent",
