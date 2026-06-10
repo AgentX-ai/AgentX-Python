@@ -20,7 +20,15 @@ from agentx.evaluations.redaction import redact_dict
 from agentx.evaluations.reporting import print_report
 from agentx.evaluations.results import normalize_result, normalize_error
 from agentx.evaluations._term import (
-    bold, cyan, green, yellow, red, dim, BOLD, RESET, Spinner,
+    bold,
+    cyan,
+    green,
+    yellow,
+    red,
+    dim,
+    BOLD,
+    RESET,
+    Spinner,
 )
 
 logger = logging.getLogger(__name__)
@@ -80,7 +88,9 @@ class EvaluationRunContext:
         if display:
             print(f"  {dim('Agent :')} {display}  {dim(f'({framework} / {runtime})')}")
         print()
-        print(f"{bold('Executing')}  {n_q} question{'s' if n_q != 1 else ''} × {n_r} run{'s' if n_r != 1 else ''}")
+        print(
+            f"{bold('Executing')}  {n_q} question{'s' if n_q != 1 else ''} × {n_r} run{'s' if n_r != 1 else ''}"
+        )
 
         # Resume: skip already-submitted keys
         already_done = self._fetch_submitted_keys()
@@ -120,7 +130,9 @@ class EvaluationRunContext:
         with Spinner(f"Scoring — AI is rating {n} result{'s' if n != 1 else ''}"):
             try:
                 resp = self._client.append_results(self._run.run_id, batch_id, batch)
-                print(f"  {green('✓')}  Scored {resp.accepted} result{'s' if resp.accepted != 1 else ''}")
+                print(
+                    f"  {green('✓')}  Scored {resp.accepted} result{'s' if resp.accepted != 1 else ''}"
+                )
                 logger.info(
                     "Batch %s: accepted=%d duplicates=%d failed=%d",
                     batch_id[:8],
@@ -229,12 +241,17 @@ class EvaluationsRunner:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _wrap_adapter(adapter: AdapterLike) -> Callable[[EvaluationCase], EvaluationResult]:
-    if isinstance(adapter, (RawCallableAdapter, PrecomputedAdapter, HttpEndpointAdapter)):
+    if isinstance(
+        adapter, (RawCallableAdapter, PrecomputedAdapter, HttpEndpointAdapter)
+    ):
         return adapter.run
     if callable(adapter):
         return RawCallableAdapter(adapter).run
-    raise TypeError(f"adapter must be callable or an Adapter instance, got {type(adapter)}")
+    raise TypeError(
+        f"adapter must be callable or an Adapter instance, got {type(adapter)}"
+    )
 
 
 def _build_cases(dataset: Dataset) -> List[EvaluationCase]:
@@ -243,16 +260,18 @@ def _build_cases(dataset: Dataset) -> List[EvaluationCase]:
     for q_idx, question in enumerate(dataset.questions):
         mq = question.main_question
         for run_num in range(1, n_runs + 1):
-            cases.append(EvaluationCase(
-                case_id=f"case-{q_idx}",
-                question_index=q_idx,
-                run_number=run_num,
-                query=mq.query,
-                expected_results=mq.expected_results,
-                expected_capabilities=mq.expected_capabilities,
-                expected_knowledge_base=mq.expected_knowledge_base,
-                expected_delegations=mq.expected_delegations,
-            ))
+            cases.append(
+                EvaluationCase(
+                    case_id=f"case-{q_idx}",
+                    question_index=q_idx,
+                    run_number=run_num,
+                    query=mq.query,
+                    expected_results=mq.expected_results,
+                    expected_capabilities=mq.expected_capabilities,
+                    expected_knowledge_base=mq.expected_knowledge_base,
+                    expected_delegations=mq.expected_delegations,
+                )
+            )
     return cases
 
 

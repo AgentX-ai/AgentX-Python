@@ -30,6 +30,7 @@ from typing import Callable, Optional
 # Load .env if present (optional — keys can also be set in the shell)
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
 except ImportError:
     pass
@@ -56,12 +57,13 @@ SYSTEM_PROMPT = f"System: {AGENT_INSTRUCTIONS}"
 # Model descriptor
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ModelConfig:
-    provider: str          # "openai" | "anthropic" | "google"
-    model_id: str          # API model name
-    display_name: str      # shown in AgentX dashboard
-    framework: str         # agentx framework tag
+    provider: str  # "openai" | "anthropic" | "google"
+    model_id: str  # API model name
+    display_name: str  # shown in AgentX dashboard
+    framework: str  # agentx framework tag
     reasoning: bool = False  # uses extended thinking / reasoning
 
 
@@ -69,11 +71,13 @@ class ModelConfig:
 # OpenAI runners
 # ---------------------------------------------------------------------------
 
+
 def _openai_chat_fn(model_id: str) -> Callable:
     """Responses API — works for gpt-4.1, gpt-5.x, etc.
     gpt-5.x does not support temperature so we omit it for those models."""
     try:
         from openai import OpenAI
+
         client = OpenAI()
     except ImportError:
         client = None
@@ -107,6 +111,7 @@ def _openai_reasoning_fn(model_id: str) -> Callable:
     """Responses API — o4-mini with reasoning summary in trace."""
     try:
         from openai import OpenAI
+
         client = OpenAI()
     except ImportError:
         client = None
@@ -136,7 +141,9 @@ def _openai_reasoning_fn(model_id: str) -> Callable:
 
         trace_events = []
         if reasoning_summary:
-            trace_events.append({"type": "reasoning", "name": model_id, "summary": reasoning_summary})
+            trace_events.append(
+                {"type": "reasoning", "name": model_id, "summary": reasoning_summary}
+            )
 
         return {
             "output": output_text,
@@ -153,10 +160,12 @@ def _openai_reasoning_fn(model_id: str) -> Callable:
 # Anthropic runners
 # ---------------------------------------------------------------------------
 
+
 def _anthropic_fn(model_id: str) -> Callable:
     """Standard messages API — haiku, sonnet, etc."""
     try:
         import anthropic
+
         client = anthropic.Anthropic()
     except ImportError:
         client = None
@@ -184,6 +193,7 @@ def _anthropic_thinking_fn(model_id: str) -> Callable:
     """Extended thinking — claude-opus-4-7."""
     try:
         import anthropic
+
         client = anthropic.Anthropic()
     except ImportError:
         client = None
@@ -208,11 +218,14 @@ def _anthropic_thinking_fn(model_id: str) -> Callable:
 
         trace_events = []
         if thinking_text:
-            trace_events.append({
-                "type": "thinking",
-                "name": model_id,
-                "summary": thinking_text[:500] + ("…" if len(thinking_text) > 500 else ""),
-            })
+            trace_events.append(
+                {
+                    "type": "thinking",
+                    "name": model_id,
+                    "summary": thinking_text[:500]
+                    + ("…" if len(thinking_text) > 500 else ""),
+                }
+            )
 
         return {
             "output": answer_text,
@@ -253,6 +266,7 @@ def _google_fn(model_id: str) -> Callable:
     try:
         from google import genai as ggenai
         from google.genai import types as gtypes
+
         client = ggenai.Client(api_key=os.environ.get("GOOGLE_API_KEY", ""))
     except ImportError:
         client = None
@@ -288,6 +302,7 @@ def _google_thinking_fn(model_id: str) -> Callable:
     try:
         from google import genai as ggenai
         from google.genai import types as gtypes
+
         client = ggenai.Client(api_key=os.environ.get("GOOGLE_API_KEY", ""))
     except ImportError:
         client = None
@@ -316,11 +331,14 @@ def _google_thinking_fn(model_id: str) -> Callable:
 
         trace_events = []
         if thinking_text:
-            trace_events.append({
-                "type": "reasoning",
-                "name": model_id,
-                "summary": thinking_text[:500] + ("…" if len(thinking_text) > 500 else ""),
-            })
+            trace_events.append(
+                {
+                    "type": "reasoning",
+                    "name": model_id,
+                    "summary": thinking_text[:500]
+                    + ("…" if len(thinking_text) > 500 else ""),
+                }
+            )
 
         input_tokens = getattr(response.usage_metadata, "prompt_token_count", None)
         output_tokens = getattr(response.usage_metadata, "candidates_token_count", None)
@@ -342,30 +360,54 @@ def _google_thinking_fn(model_id: str) -> Callable:
 
 ALL_MODELS: list[ModelConfig] = [
     # OpenAI — chat
-    ModelConfig("openai", "gpt-5.4",      "OpenAI GPT-5.4",       "openai"),
-    ModelConfig("openai", "gpt-5.5",      "OpenAI GPT-5.5",       "openai"),
+    ModelConfig("openai", "gpt-5.4", "OpenAI GPT-5.4", "openai"),
+    ModelConfig("openai", "gpt-5.5", "OpenAI GPT-5.5", "openai"),
     # OpenAI — reasoning
-    ModelConfig("openai", "o4-mini",      "OpenAI o4-mini",       "openai", reasoning=True),
+    ModelConfig("openai", "o4-mini", "OpenAI o4-mini", "openai", reasoning=True),
     # Anthropic — standard
-    ModelConfig("anthropic", "claude-haiku-4-5",   "Claude Haiku 4.5",   "anthropic"),
-    ModelConfig("anthropic", "claude-sonnet-4-6",  "Claude Sonnet 4.6",  "anthropic"),
+    ModelConfig("anthropic", "claude-haiku-4-5", "Claude Haiku 4.5", "anthropic"),
+    ModelConfig("anthropic", "claude-sonnet-4-6", "Claude Sonnet 4.6", "anthropic"),
     # Anthropic — thinking
-    ModelConfig("anthropic", "claude-opus-4-7",    "Claude Opus 4.7 (thinking)", "anthropic", reasoning=True),
+    ModelConfig(
+        "anthropic",
+        "claude-opus-4-7",
+        "Claude Opus 4.7 (thinking)",
+        "anthropic",
+        reasoning=True,
+    ),
     # Google — standard
-    ModelConfig("google", "gemini-3-flash-preview",  "Gemini 3 Flash",          "google"),
-    ModelConfig("google", "gemini-3.1-pro-preview",  "Gemini 3.1 Pro",          "google"),
+    ModelConfig("google", "gemini-3-flash-preview", "Gemini 3 Flash", "google"),
+    ModelConfig("google", "gemini-3.1-pro-preview", "Gemini 3.1 Pro", "google"),
     # Google — thinking
-    ModelConfig("google", "gemini-3-pro-preview",    "Gemini 3 Pro (thinking)", "google", reasoning=True),
+    ModelConfig(
+        "google",
+        "gemini-3-pro-preview",
+        "Gemini 3 Pro (thinking)",
+        "google",
+        reasoning=True,
+    ),
 ]
 
 
 def _make_runner(cfg: ModelConfig) -> Callable:
     if cfg.provider == "openai":
-        return _openai_reasoning_fn(cfg.model_id) if cfg.reasoning else _openai_chat_fn(cfg.model_id)
+        return (
+            _openai_reasoning_fn(cfg.model_id)
+            if cfg.reasoning
+            else _openai_chat_fn(cfg.model_id)
+        )
     if cfg.provider == "anthropic":
-        return _anthropic_thinking_fn(cfg.model_id) if cfg.reasoning else _anthropic_fn(cfg.model_id)
+        return (
+            _anthropic_thinking_fn(cfg.model_id)
+            if cfg.reasoning
+            else _anthropic_fn(cfg.model_id)
+        )
     if cfg.provider == "google":
-        return _google_thinking_fn(cfg.model_id) if cfg.reasoning else _google_fn(cfg.model_id)
+        return (
+            _google_thinking_fn(cfg.model_id)
+            if cfg.reasoning
+            else _google_fn(cfg.model_id)
+        )
     raise ValueError(f"Unknown provider: {cfg.provider}")
 
 
@@ -373,14 +415,18 @@ def _make_runner(cfg: ModelConfig) -> Callable:
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
     # Filter by PROVIDERS env var, e.g. PROVIDERS=openai,google
-    providers_filter = {p.strip().lower() for p in os.getenv("PROVIDERS", "").split(",") if p.strip()}
+    providers_filter = {
+        p.strip().lower() for p in os.getenv("PROVIDERS", "").split(",") if p.strip()
+    }
     # Filter by MODEL env var (partial match on model_id), e.g. MODEL=gpt-5.5
     model_filter = os.getenv("MODEL", "").strip().lower()
 
     models = [
-        m for m in ALL_MODELS
+        m
+        for m in ALL_MODELS
         if (not providers_filter or m.provider in providers_filter)
         and (not model_filter or model_filter in m.model_id.lower())
     ]
@@ -395,8 +441,7 @@ def main():
 
     # One shared dataset — all models evaluated on identical questions
     dataset = (
-        client.evaluations.datasets
-        .builder(
+        client.evaluations.datasets.builder(
             name="Multi-Model Benchmark",
             description=(
                 "Benchmark dataset for comparing multiple LLM providers and models "
@@ -437,8 +482,7 @@ def main():
         try:
             runner = _make_runner(cfg)
             report = (
-                client.evaluations
-                .run(
+                client.evaluations.run(
                     dataset_id=dataset.id,
                     subject={
                         "kind": "custom_agent",

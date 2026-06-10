@@ -1,4 +1,5 @@
 """Minimal ANSI terminal helpers — no external dependencies."""
+
 from __future__ import annotations
 
 import itertools
@@ -13,23 +14,42 @@ def _c(code: str) -> str:
     return f"\033[{code}m" if _IS_TTY else ""
 
 
-RESET  = _c("0")
-BOLD   = _c("1")
-DIM    = _c("2")
-GREEN  = _c("32")
+RESET = _c("0")
+BOLD = _c("1")
+DIM = _c("2")
+GREEN = _c("32")
 YELLOW = _c("33")
-RED    = _c("31")
-CYAN   = _c("36")
+RED = _c("31")
+CYAN = _c("36")
 MAGENTA = _c("35")
 
 
-def green(s: str) -> str:   return f"{GREEN}{s}{RESET}"
-def yellow(s: str) -> str:  return f"{YELLOW}{s}{RESET}"
-def red(s: str) -> str:     return f"{RED}{s}{RESET}"
-def cyan(s: str) -> str:    return f"{CYAN}{s}{RESET}"
-def bold(s: str) -> str:    return f"{BOLD}{s}{RESET}"
-def dim(s: str) -> str:     return f"{DIM}{s}{RESET}"
-def magenta(s: str) -> str: return f"{MAGENTA}{s}{RESET}"
+def green(s: str) -> str:
+    return f"{GREEN}{s}{RESET}"
+
+
+def yellow(s: str) -> str:
+    return f"{YELLOW}{s}{RESET}"
+
+
+def red(s: str) -> str:
+    return f"{RED}{s}{RESET}"
+
+
+def cyan(s: str) -> str:
+    return f"{CYAN}{s}{RESET}"
+
+
+def bold(s: str) -> str:
+    return f"{BOLD}{s}{RESET}"
+
+
+def dim(s: str) -> str:
+    return f"{DIM}{s}{RESET}"
+
+
+def magenta(s: str) -> str:
+    return f"{MAGENTA}{s}{RESET}"
 
 
 class Spinner:
@@ -64,6 +84,8 @@ class Spinner:
         for frame in itertools.cycle(self._FRAMES):
             if self._stop.is_set():
                 break
-            sys.stdout.write(f"\r  {CYAN}{frame}{RESET}  {self._message}  {DIM}(this may take ~60s+){RESET}")
+            sys.stdout.write(
+                f"\r  {CYAN}{frame}{RESET}  {self._message}  {DIM}(this may take ~60s+){RESET}"
+            )
             sys.stdout.flush()
             time.sleep(0.08)

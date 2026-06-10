@@ -2,15 +2,23 @@ from __future__ import annotations
 
 from agentx.evaluations.models import Report
 from agentx.evaluations._term import (
-    bold, cyan, dim, green, yellow, red, magenta, RESET, BOLD,
+    bold,
+    cyan,
+    dim,
+    green,
+    yellow,
+    red,
+    magenta,
+    RESET,
+    BOLD,
 )
 
-_SEP  = "─" * 60
+_SEP = "─" * 60
 _THIN = "─" * 40
 
 _RATING_COLORS = {"high": green, "medium": yellow, "low": red}
-_RATING_ICONS  = {"high": "●", "medium": "◑", "low": "○"}
-_PRI_COLORS    = {"high": red, "medium": yellow, "low": dim}
+_RATING_ICONS = {"high": "●", "medium": "◑", "low": "○"}
+_PRI_COLORS = {"high": red, "medium": yellow, "low": dim}
 
 
 def _rating_badge(rating: str | None) -> str:
@@ -32,14 +40,32 @@ def print_report(report: Report) -> None:
     print(cyan(_SEP))
     print(f"  {dim('Run     :')} {dim(report.run_id)}")
     print(f"  {dim('Dataset :')} {dim(report.dataset_id)}")
-    print(f"  {dim('Status  :')} {green(report.status) if report.status == 'completed' else yellow(report.status)}")
+    print(
+        f"  {dim('Status  :')} {green(report.status) if report.status == 'completed' else yellow(report.status)}"
+    )
 
     if report.statistics:
         s = report.statistics
         avg = s.average_rating
         avg_color = green if avg >= 7 else (yellow if avg >= 4 else red)
         print(f"  {dim('Cases   :')} {s.number_of_runs}")
-        print(f"  {dim('Rating  :')} {avg_color(f'{avg:.1f}/10')}  {dim(f'(min {s.min_rating:.1f} / max {s.max_rating:.1f})')}")
+        print(
+            f"  {dim('Rating  :')} {avg_color(f'{avg:.1f}/10')}  {dim(f'(min {s.min_rating:.1f} / max {s.max_rating:.1f})')}"
+        )
+
+    cos = report.cosine_similarity
+    if cos is not None:
+        cos_color = green if cos >= 0.85 else (yellow if cos >= 0.6 else red)
+        print(
+            f"  {dim('Cosine  :')} {cos_color(f'{cos * 100:.1f}%')}  {dim('(vector similarity)')}"
+        )
+
+    jac = report.jaccard_similarity
+    if jac is not None:
+        jac_color = green if jac >= 0.6 else (yellow if jac >= 0.3 else red)
+        print(
+            f"  {dim('Jaccard :')} {jac_color(f'{jac * 100:.1f}%')}  {dim('(token-set overlap)')}"
+        )
 
     if report.consistency_score is not None:
         cs = report.consistency_score
@@ -120,8 +146,8 @@ def print_report(report: Report) -> None:
         )
         for rec in sorted_recs:
             pri_fn = _PRI_COLORS.get(rec.priority or "low", dim)
-            pri  = pri_fn(f"[{rec.priority.upper()}]") if rec.priority else ""
-            cat  = dim(f"({rec.category})") if rec.category else ""
+            pri = pri_fn(f"[{rec.priority.upper()}]") if rec.priority else ""
+            cat = dim(f"({rec.category})") if rec.category else ""
             print(f"  {pri} {cat} {rec.recommendation}")
             if rec.reasoning:
                 print(f"       {dim('→')} {dim(rec.reasoning)}")

@@ -23,8 +23,11 @@ class RawCallableAdapter:
     def __init__(self, fn: Callable[[EvaluationCase], Any]):
         self._fn = fn
 
-    def run(self, case: EvaluationCase, latency_ms: int | None = None) -> EvaluationResult:
+    def run(
+        self, case: EvaluationCase, latency_ms: int | None = None
+    ) -> EvaluationResult:
         import time
+
         start = time.monotonic()
         try:
             raw = self._fn(case)

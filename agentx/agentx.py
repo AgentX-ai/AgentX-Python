@@ -23,6 +23,7 @@ class AgentX:
         from agentx.evaluations.client import EvaluationsClient
         from agentx.evaluations.runner import EvaluationsRunner
         from agentx.version import VERSION
+
         _eval_client = EvaluationsClient(
             api_key=self.api_key,
             sdk_version=VERSION,

@@ -69,7 +69,14 @@ report = (
     .analyze()
 )
 
-print(f"Average rating: {report.average_rating:.2f}")
+print(f"Average rating:    {report.average_rating:.2f}")
+
+# Optional similarity metrics — present only when enabled on the dataset.
+if report.cosine_similarity is not None:
+    print(f"Cosine similarity: {report.cosine_similarity:.3f}")   # 0–1
+if report.jaccard_similarity is not None:
+    print(f"Jaccard similarity:{report.jaccard_similarity:.3f}")  # 0–1
+
 print(f"Dashboard: {report.dashboard_url}")
 ```
 
@@ -400,6 +407,44 @@ Full example: [`examples/evaluations/csv_import_eval.py`](examples/evaluations/c
 | `runtime` | `local`, `ci`, `customer_hosted`, `low_code` | Where the agent runs |
 | `version` | any string | Optional version tag for the agent |
 | `endpoint` | URL | Optional, for HTTP-based agents |
+
+### Similarity metrics (optional)
+
+Each scored result can be enriched with two reference-based similarity scores comparing your agent's response to the `expected_results` of the case:
+
+| Metric | What it measures | Cost |
+|---|---|---|
+| **Cosine** (vector similarity) | Cosine of OpenAI embeddings of `expected_results` vs the actual response. Captures semantic similarity. | One embedding API call per case. |
+| **Jaccard** | Token-set overlap `|A ∩ B| / |A ∪ B|` over lowercased word tokens. Pure lexical match. | Free — no API calls. |
+
+Both metrics are returned in the range `[0, 1]` and averaged across all scored results in the report.
+
+**Enable them on the dataset** (via the AgentX dashboard or the dataset API):
+
+```jsonc
+{
+  "vectorSimilarity":  { "enabled": true, "model": "text-embedding-3-small" },
+  "jaccardSimilarity": { "enabled": true }
+}
+```
+
+**Read them on the report:**
+
+```python
+report = client.evaluations.run(...).execute(my_agent).finalize().analyze()
+
+# Top-level convenience accessors — return None when the metric was not
+# enabled on the dataset, or no case has a value yet.
+report.average_rating       # float | None  — same as report.statistics.average_rating
+report.cosine_similarity    # float | None  — averaged across cases (0–1)
+report.jaccard_similarity   # float | None  — averaged across cases (0–1)
+
+# Same values are also available nested under the statistics block:
+report.statistics.cosine_similarity
+report.statistics.jaccard_similarity
+```
+
+Cases where `expected_results` is empty or the agent returned an error are skipped from the average, so a sparse dataset still produces a meaningful score. If neither toggle was on for the dataset, both properties return `None`.
 
 ### Return value from your agent function
 

@@ -84,7 +84,9 @@ class Workforce(BaseModel):
         self, conversation_id: str, message: str, context: int = -1
     ) -> Iterator[ChatResponse]:
         """Send a message to a team conversation and stream the response."""
-        url = f"{api_base()}/access/teams/conversations/{conversation_id}/jsonmessagesse"
+        url = (
+            f"{api_base()}/access/teams/conversations/{conversation_id}/jsonmessagesse"
+        )
         response = requests.post(
             url, headers=get_headers(), json={"message": message, "context": context}
         )

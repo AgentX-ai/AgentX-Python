@@ -17,7 +17,6 @@ import os
 from agentx import AgentX
 from agentx.evaluations.models import EvaluationCase
 
-
 # ---------------------------------------------------------------------------
 # Shared: mock tool for policy lookups
 # ---------------------------------------------------------------------------
@@ -41,16 +40,19 @@ def _policy_lookup(topic: str) -> str:
 # Mode: chain (LCEL) with usage_metadata token tracking
 # ---------------------------------------------------------------------------
 
+
 def build_chain():
     try:
         from langchain_openai import ChatOpenAI
         from langchain_core.prompts import ChatPromptTemplate
 
         llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", "You are a helpful support agent. Answer concisely."),
-            ("human", "{query}"),
-        ])
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", "You are a helpful support agent. Answer concisely."),
+                ("human", "{query}"),
+            ]
+        )
         return prompt | llm
     except ImportError:
         return None
@@ -59,7 +61,10 @@ def build_chain():
 def make_chain_fn(chain):
     def eval_subject(case: EvaluationCase) -> dict:
         if chain is None:
-            return {"output": f"[stub] Chain response to: {case.query}", "metadata": {"framework": "langchain", "mode": "chain"}}
+            return {
+                "output": f"[stub] Chain response to: {case.query}",
+                "metadata": {"framework": "langchain", "mode": "chain"},
+            }
 
         result = chain.invoke({"query": case.query})
         usage = getattr(result, "usage_metadata", None) or {}
@@ -68,7 +73,11 @@ def make_chain_fn(chain):
             "output": result.content if hasattr(result, "content") else str(result),
             "input_tokens": usage.get("input_tokens"),
             "output_tokens": usage.get("output_tokens"),
-            "metadata": {"framework": "langchain", "mode": "chain", "model": "gpt-4o-mini"},
+            "metadata": {
+                "framework": "langchain",
+                "mode": "chain",
+                "model": "gpt-4o-mini",
+            },
         }
 
     return eval_subject
@@ -77,6 +86,7 @@ def make_chain_fn(chain):
 # ---------------------------------------------------------------------------
 # Mode: ReAct agent with tools + step-level trace events
 # ---------------------------------------------------------------------------
+
 
 def build_agent():
     try:
@@ -100,7 +110,9 @@ def build_agent():
         )
 
         agent = create_react_agent(llm, tools, prompt)
-        return AgentExecutor(agent=agent, tools=tools, verbose=False, return_intermediate_steps=True)
+        return AgentExecutor(
+            agent=agent, tools=tools, verbose=False, return_intermediate_steps=True
+        )
     except ImportError:
         return None
 
@@ -108,7 +120,10 @@ def build_agent():
 def make_agent_fn(agent_executor):
     def eval_subject(case: EvaluationCase) -> dict:
         if agent_executor is None:
-            return {"output": f"[stub] Agent response to: {case.query}", "metadata": {"framework": "langchain", "mode": "agent"}}
+            return {
+                "output": f"[stub] Agent response to: {case.query}",
+                "metadata": {"framework": "langchain", "mode": "agent"},
+            }
 
         result = agent_executor.invoke({"input": case.query})
         output = result.get("output", "")
@@ -116,17 +131,23 @@ def make_agent_fn(agent_executor):
         # Build trace events from intermediate steps (tool calls)
         trace_events = []
         for action, observation in result.get("intermediate_steps", []):
-            trace_events.append({
-                "type": "tool_call",
-                "name": action.tool,
-                "summary": f"input={action.tool_input!r} → {str(observation)[:100]}",
-            })
+            trace_events.append(
+                {
+                    "type": "tool_call",
+                    "name": action.tool,
+                    "summary": f"input={action.tool_input!r} → {str(observation)[:100]}",
+                }
+            )
 
         # Token counts not easily available from AgentExecutor — use callback if needed
         return {
             "output": output,
             "trace": {"events": trace_events} if trace_events else None,
-            "metadata": {"framework": "langchain", "mode": "agent", "model": "gpt-4o-mini"},
+            "metadata": {
+                "framework": "langchain",
+                "mode": "agent",
+                "model": "gpt-4o-mini",
+            },
         }
 
     return eval_subject
@@ -135,6 +156,7 @@ def make_agent_fn(agent_executor):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main():
     client = AgentX.from_env()
@@ -150,8 +172,7 @@ def main():
         display = "LangChain LCEL Chain"
 
     dataset = (
-        client.evaluations.datasets
-        .builder(
+        client.evaluations.datasets.builder(
             name=f"LangChain Support Agent Dataset ({mode})",
             description="Evaluates a LangChain-based support agent on subscription and trial queries.",
             number_of_requests=2,
@@ -174,8 +195,7 @@ def main():
     )
 
     report = (
-        client.evaluations
-        .run(
+        client.evaluations.run(
             dataset_id=dataset.id,
             subject={
                 "kind": "custom_agent",

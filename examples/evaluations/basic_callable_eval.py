@@ -37,7 +37,11 @@ def my_agent(case: EvaluationCase) -> dict:
         "output": response,
         "trace": {
             "events": [
-                {"type": "agent_step", "name": "response_generator", "summary": f"Generated response for: {case.query[:60]}"},
+                {
+                    "type": "agent_step",
+                    "name": "response_generator",
+                    "summary": f"Generated response for: {case.query[:60]}",
+                },
             ]
         },
         "metadata": {"framework": "raw_python", "version": "1.0"},
@@ -48,8 +52,7 @@ def main():
     client = AgentX.from_env()
 
     dataset = (
-        client.evaluations.datasets
-        .builder(
+        client.evaluations.datasets.builder(
             name="Basic Regression Dataset",
             description="Regression dataset for a plain Python callable agent handling common support queries.",
             number_of_requests=2,
@@ -68,8 +71,7 @@ def main():
     )
 
     report = (
-        client.evaluations
-        .run(
+        client.evaluations.run(
             dataset_id=dataset.id,
             subject={
                 "kind": "custom_agent",

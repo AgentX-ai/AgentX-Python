@@ -27,7 +27,9 @@ class PrecomputedAdapter:
             self._lookup = {str(k): v for k, v in outputs.items()}
 
     def run(self, case: EvaluationCase) -> EvaluationResult:
-        raw = self._lookup.get(case.case_id) or self._lookup.get(str(case.question_index))
+        raw = self._lookup.get(case.case_id) or self._lookup.get(
+            str(case.question_index)
+        )
         if raw is None:
             raw = ""
         return normalize_result(case, raw, latency_ms=0)

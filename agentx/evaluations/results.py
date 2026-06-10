@@ -58,9 +58,13 @@ def normalize_result(
         input_tokens = _to_int(raw.get("input_tokens"))
         output_tokens = _to_int(raw.get("output_tokens"))
         if input_tokens is None and isinstance(meta_raw, dict):
-            input_tokens = _to_int(meta_raw.get("input_tokens") or meta_raw.get("prompt_tokens"))
+            input_tokens = _to_int(
+                meta_raw.get("input_tokens") or meta_raw.get("prompt_tokens")
+            )
         if output_tokens is None and isinstance(meta_raw, dict):
-            output_tokens = _to_int(meta_raw.get("output_tokens") or meta_raw.get("completion_tokens"))
+            output_tokens = _to_int(
+                meta_raw.get("output_tokens") or meta_raw.get("completion_tokens")
+            )
 
         err_raw = raw.get("error")
         if err_raw:
@@ -77,7 +81,9 @@ def normalize_result(
     else:
         output = {"text": str(raw)} if raw is not None else {"text": ""}
 
-    has_timings = latency_ms is not None or input_tokens is not None or output_tokens is not None
+    has_timings = (
+        latency_ms is not None or input_tokens is not None or output_tokens is not None
+    )
     return EvaluationResult(
         case_id=case.case_id,
         question_index=case.question_index,
@@ -86,12 +92,22 @@ def normalize_result(
         output=output,
         observableTrace=trace,
         error=error,
-        timings=ResultTimings(latencyMs=latency_ms, inputTokens=input_tokens, outputTokens=output_tokens) if has_timings else None,
+        timings=(
+            ResultTimings(
+                latencyMs=latency_ms,
+                inputTokens=input_tokens,
+                outputTokens=output_tokens,
+            )
+            if has_timings
+            else None
+        ),
         metadata=metadata,
     )
 
 
-def normalize_error(case: EvaluationCase, exc: Exception, latency_ms: Optional[int] = None) -> EvaluationResult:
+def normalize_error(
+    case: EvaluationCase, exc: Exception, latency_ms: Optional[int] = None
+) -> EvaluationResult:
     """Build a failed-case result from an exception."""
     return EvaluationResult(
         case_id=case.case_id,

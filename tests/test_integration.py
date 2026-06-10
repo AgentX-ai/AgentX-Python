@@ -8,11 +8,13 @@ Run:
     pytest tests/test_integration.py -v
     pytest tests/test_integration.py -v -k "not chat"   # skip slow streaming tests
 """
+
 import os
 import pytest
 
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
 except ImportError:
     pass
@@ -24,6 +26,7 @@ pytestmark = pytest.mark.skipif(not API_KEY, reason="AGENTX_API_KEY not set")
 @pytest.fixture(scope="session")
 def client():
     from agentx import AgentX
+
     return AgentX.from_env()
 
 
@@ -48,6 +51,7 @@ def workforces(client):
 # Profile
 # ---------------------------------------------------------------------------
 
+
 def test_get_profile(client):
     profile = client.get_profile()
     assert isinstance(profile, dict)
@@ -57,6 +61,7 @@ def test_get_profile(client):
 # ---------------------------------------------------------------------------
 # Agents
 # ---------------------------------------------------------------------------
+
 
 def test_list_agents_returns_list(agents):
     assert isinstance(agents, list)
@@ -82,6 +87,7 @@ def test_get_agent_invalid_id(client):
 # ---------------------------------------------------------------------------
 # Agent conversations
 # ---------------------------------------------------------------------------
+
 
 def test_list_agent_conversations(first_agent):
     convs = first_agent.list_conversations()
@@ -135,6 +141,7 @@ def test_agent_chat_stream(first_agent):
 # ---------------------------------------------------------------------------
 # Workforces
 # ---------------------------------------------------------------------------
+
 
 def test_list_workforces_returns_list(workforces):
     assert isinstance(workforces, list)
