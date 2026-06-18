@@ -14,6 +14,7 @@ from agentx.evaluations.models import (
     EvaluationResult,
     EvaluationRun,
     EvaluationSubject,
+    ModelInfo,
     Report,
 )
 from agentx.evaluations.redaction import redact_dict
@@ -108,6 +109,12 @@ class EvaluationRunContext:
 
             result = normalized(case)
             result.idempotency_key = idem_key
+            # Tag the result with the case's model so the server can group it into
+            # the Sovereignty & Portability matrix (the callable may also set it).
+            if case.model:
+                meta = dict(result.metadata or {})
+                meta.setdefault("model", case.model)
+                result.metadata = meta
             result = EvaluationResult(
                 **{**result.model_dump(), "idempotencyKey": idem_key}
             )
@@ -217,6 +224,13 @@ class EvaluationsRunner:
         self._client = client
         self.datasets = client.datasets
 
+    def list_models(self, provider: Optional[str] = None) -> List[ModelInfo]:
+        """List the LLM models AgentX supports — the same set selectable for
+        the Sovereignty & Portability Index. Pass ``provider`` (e.g. "Google")
+        to filter. Useful for discovering valid model identifiers to compare
+        against."""
+        return self._client.list_models(provider)
+
     def run(
         self,
         dataset_id: str,
@@ -257,21 +271,29 @@ def _wrap_adapter(adapter: AdapterLike) -> Callable[[EvaluationCase], Evaluation
 def _build_cases(dataset: Dataset) -> List[EvaluationCase]:
     cases: List[EvaluationCase] = []
     n_runs = max(dataset.number_of_requests, 1)
+    # Sovereignty & Portability: when the dataset selects comparison models, run
+    # every question/run once per model in this single run so the report groups
+    # results into a per-model portability matrix (mirrors the native route).
+    # ``[None]`` keeps legacy single-model behavior (case.model stays unset).
+    models: List[Optional[str]] = list(dataset.sovereignty_models) or [None]
     for q_idx, question in enumerate(dataset.questions):
         mq = question.main_question
         for run_num in range(1, n_runs + 1):
-            cases.append(
-                EvaluationCase(
-                    case_id=f"case-{q_idx}",
-                    question_index=q_idx,
-                    run_number=run_num,
-                    query=mq.query,
-                    expected_results=mq.expected_results,
-                    expected_capabilities=mq.expected_capabilities,
-                    expected_knowledge_base=mq.expected_knowledge_base,
-                    expected_delegations=mq.expected_delegations,
+            for model in models:
+                suffix = f"::{model}" if model else ""
+                cases.append(
+                    EvaluationCase(
+                        case_id=f"case-{q_idx}{suffix}",
+                        question_index=q_idx,
+                        run_number=run_num,
+                        query=mq.query,
+                        expected_results=mq.expected_results,
+                        expected_capabilities=mq.expected_capabilities,
+                        expected_knowledge_base=mq.expected_knowledge_base,
+                        expected_delegations=mq.expected_delegations,
+                        model=model,
+                    )
                 )
-            )
     return cases
 
 

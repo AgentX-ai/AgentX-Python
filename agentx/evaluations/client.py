@@ -14,6 +14,7 @@ from agentx.evaluations.models import (
     EvaluationResult,
     EvaluationRun,
     EvaluationSubject,
+    ModelInfo,
     Report,
 )
 
@@ -105,6 +106,19 @@ class EvaluationsClient:
             except Exception:
                 return resp.text
         raise AgentXEvaluationsError(f"Request failed after retries: {last_exc}")
+
+    # ------------------------------------------------------------------
+    # Model registry
+    # ------------------------------------------------------------------
+
+    def list_models(self, provider: Optional[str] = None) -> List[ModelInfo]:
+        """List the LLM models AgentX supports — the same set selectable for
+        the Sovereignty & Portability Index. Pass ``provider`` (e.g. "Google")
+        to filter."""
+        params = {"provider": provider} if provider else None
+        data = self._request("GET", "/models", params=params)
+        items = data if isinstance(data, list) else data.get("models", [])
+        return [ModelInfo(**m) for m in items]
 
     # ------------------------------------------------------------------
     # Dataset endpoints

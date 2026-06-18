@@ -27,6 +27,10 @@ class DatasetBuilder:
         acceptance_criteria: Optional[str] = None,
         rejection_criteria: Optional[str] = None,
         evaluation_criteria: Optional[str] = None,
+        vector_similarity: bool = False,
+        jaccard_similarity: bool = False,
+        similarity_model: Optional[str] = None,
+        sovereignty_models: Optional[List[str]] = None,
     ):
         self._client = client
         self._payload: Dict[str, Any] = {
@@ -38,6 +42,22 @@ class DatasetBuilder:
             "evaluationCriteria": evaluation_criteria,
             "questions": [],
         }
+        # Opt-in similarity metrics, surfaced on the report as cosine_similarity /
+        # jaccard_similarity (computed against each case's expected_results).
+        if vector_similarity:
+            vs: Dict[str, Any] = {"enabled": True}
+            if similarity_model:
+                vs["model"] = similarity_model
+            self._payload["vectorSimilarity"] = vs
+        if jaccard_similarity:
+            self._payload["jaccardSimilarity"] = {"enabled": True}
+        # Sovereignty & Portability — the models to compare on this dataset (use
+        # client.evaluations.list_models() to discover valid ids).
+        if sovereignty_models:
+            self._payload["sovereigntyIndex"] = {
+                "enabled": True,
+                "models": list(sovereignty_models),
+            }
 
     def add_case(
         self,
@@ -190,6 +210,10 @@ class DatasetClient:
         acceptance_criteria: Optional[str] = None,
         rejection_criteria: Optional[str] = None,
         evaluation_criteria: Optional[str] = None,
+        vector_similarity: bool = False,
+        jaccard_similarity: bool = False,
+        similarity_model: Optional[str] = None,
+        sovereignty_models: Optional[List[str]] = None,
     ) -> DatasetBuilder:
         return DatasetBuilder(
             self._client,
@@ -199,6 +223,10 @@ class DatasetClient:
             acceptance_criteria=acceptance_criteria,
             rejection_criteria=rejection_criteria,
             evaluation_criteria=evaluation_criteria,
+            vector_similarity=vector_similarity,
+            jaccard_similarity=jaccard_similarity,
+            similarity_model=similarity_model,
+            sovereignty_models=sovereignty_models,
         )
 
     def from_csv(self, path: str, name: str, **kwargs) -> DatasetBuilder:

@@ -58,6 +58,18 @@ class Dataset(BaseModel):
     questions: List[DatasetQuestion] = Field(default_factory=list)
     status: str = "published"
     version_id: Optional[str] = Field(default=None, alias="versionId")
+    # Sovereignty & Portability — models selected to compare on this dataset.
+    # Hoisted from the nested ``sovereigntyIndex`` object when enabled.
+    sovereignty_models: List[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _extract_sovereignty_models(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            sov = data.get("sovereigntyIndex") or data.get("sovereignty_index") or {}
+            if isinstance(sov, dict) and sov.get("enabled") and sov.get("models"):
+                data = {**data, "sovereignty_models": list(sov.get("models") or [])}
+        return data
 
     class Config:
         populate_by_name = True
@@ -93,6 +105,30 @@ class EvaluationSubject(BaseModel):
     runtime: Optional[RuntimeKind] = "local"
     agent_instructions: Optional[str] = Field(default=None, alias="agentInstructions")
     metadata: Optional[Dict[str, Union[str, int, bool]]] = None
+
+    class Config:
+        populate_by_name = True
+        extra = "ignore"
+
+
+# ---------------------------------------------------------------------------
+# Supported models (the AgentX model registry / portability set)
+# ---------------------------------------------------------------------------
+
+
+class ModelInfo(BaseModel):
+    """One entry from the AgentX supported-model registry — the set selectable
+    for the Sovereignty & Portability Index. Returned by ``list_models()``."""
+
+    name: str
+    display: Optional[str] = None
+    provider: Optional[str] = None
+    context_window: Optional[int] = Field(default=None, alias="contextWindow")
+    max_output_tokens: Optional[int] = Field(default=None, alias="maxOutputTokens")
+    input_cost: Optional[float] = Field(default=None, alias="inputCost")
+    output_cost: Optional[float] = Field(default=None, alias="outputCost")
+    knowledge_cutoff: Optional[str] = Field(default=None, alias="knowledgeCutOff")
+    legacy: Optional[bool] = None
 
     class Config:
         populate_by_name = True
@@ -144,6 +180,10 @@ class EvaluationCase(BaseModel):
     expected_capabilities: Optional[List[str]] = None
     expected_knowledge_base: Optional[List[str]] = None
     expected_delegations: Optional[List[str]] = None
+    # Sovereignty & Portability: the model this case should run on. Set when the
+    # dataset selects comparison models; your callable can read it to pick the
+    # model. The SDK also tags the submitted result with it.
+    model: Optional[str] = None
 
     class Config:
         extra = "ignore"
@@ -299,6 +339,43 @@ class ReportRecommendation(BaseModel):
         extra = "ignore"
 
 
+class SovereigntyModelMetrics(BaseModel):
+    """Per-model row of the Sovereignty & Portability matrix."""
+
+    model: str
+    provider: Optional[str] = None
+    is_baseline: bool = Field(default=False, alias="isBaseline")
+    run_count: int = Field(default=0, alias="runCount")
+    average_rating: Optional[float] = Field(default=None, alias="averageRating")
+    min_rating: Optional[float] = Field(default=None, alias="minRating")
+    max_rating: Optional[float] = Field(default=None, alias="maxRating")
+    rating_variance: Optional[float] = Field(default=None, alias="ratingVariance")
+    average_vector_similarity: Optional[float] = Field(
+        default=None, alias="averageVectorSimilarity"
+    )
+    average_jaccard_similarity: Optional[float] = Field(
+        default=None, alias="averageJaccardSimilarity"
+    )
+    average_latency_ms: Optional[float] = Field(default=None, alias="averageLatencyMs")
+    total_input_tokens: Optional[int] = Field(default=None, alias="totalInputTokens")
+    total_output_tokens: Optional[int] = Field(default=None, alias="totalOutputTokens")
+
+    class Config:
+        populate_by_name = True
+        extra = "ignore"
+
+
+class SovereigntyIndex(BaseModel):
+    """Sovereignty & Portability matrix — side-by-side per-model performance,
+    grouped from the model-tagged results of a run."""
+
+    enabled: bool = False
+    models: List[SovereigntyModelMetrics] = Field(default_factory=list)
+
+    class Config:
+        extra = "ignore"
+
+
 class Report(BaseModel):
     run_id: str = Field(alias="runId")
     dataset_id: str = Field(alias="datasetId")
@@ -324,6 +401,9 @@ class Report(BaseModel):
     recommendations: List[ReportRecommendation] = Field(default_factory=list)
     low_scoring_cases: List[Dict[str, Any]] = Field(
         default_factory=list, alias="lowScoringCases"
+    )
+    sovereignty_index: Optional[SovereigntyIndex] = Field(
+        default=None, alias="sovereigntyIndex"
     )
     dashboard_url: Optional[str] = Field(default=None, alias="dashboardUrl")
 
