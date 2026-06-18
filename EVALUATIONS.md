@@ -228,6 +228,43 @@ Full example: [`examples/evaluations/anthropic_eval.py`](examples/evaluations/an
 
 ---
 
+#### Google Gemini SDK
+
+```python
+# Use google-genai, NOT the deprecated google-generativeai
+from google import genai
+from google.genai import types
+
+gclient = genai.Client()  # reads GOOGLE_API_KEY
+
+def gemini_agent(case):
+    resp = gclient.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=case.query,
+        config=types.GenerateContentConfig(
+            system_instruction="You are a helpful support agent.",
+        ),
+    )
+    return {
+        "output": resp.text,
+        "input_tokens": resp.usage_metadata.prompt_token_count,
+        "output_tokens": resp.usage_metadata.candidates_token_count,
+        "metadata": {"framework": "google", "model": "gemini-2.5-flash"},
+    }
+
+report = (
+    client.evaluations
+    .run(dataset_id="...", subject={"kind": "custom_agent", "displayName": "Gemini Flash", "framework": "google"})
+    .execute(gemini_agent)
+    .finalize()
+    .analyze()
+)
+```
+
+Full example: [`examples/evaluations/google_eval.py`](examples/evaluations/google_eval.py)
+
+---
+
 #### LangChain
 
 ```python
@@ -403,7 +440,7 @@ Full example: [`examples/evaluations/csv_import_eval.py`](examples/evaluations/c
 |---|---|---|
 | `kind` | `custom_agent` | Always `custom_agent` for external agents |
 | `displayName` | any string | Human-readable name shown in the dashboard |
-| `framework` | `raw_python`, `openai`, `anthropic`, `langchain`, `llamaindex`, `crewai`, `autogen`, `n8n`, `flowise`, `other` | Framework used |
+| `framework` | `raw_python`, `openai`, `anthropic`, `google`, `langchain`, `llamaindex`, `crewai`, `autogen`, `n8n`, `flowise`, `other` | Framework used |
 | `runtime` | `local`, `ci`, `customer_hosted`, `low_code` | Where the agent runs |
 | `version` | any string | Optional version tag for the agent |
 | `endpoint` | URL | Optional, for HTTP-based agents |

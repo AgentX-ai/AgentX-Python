@@ -8,7 +8,7 @@ openai==2.34.0
 # Anthropic — anthropic_eval.py, multi_model_eval.py
 anthropic==0.99.0
 
-# Google Gemini — multi_model_eval.py
+# Google Gemini — google_eval.py, multi_model_eval.py
 # NOTE: use google-genai, NOT the deprecated google-generativeai
 google-genai==1.75.0
 
