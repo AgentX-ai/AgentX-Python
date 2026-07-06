@@ -22,6 +22,8 @@ class AgentX:
 
         from agentx.evaluations.client import EvaluationsClient
         from agentx.evaluations.runner import EvaluationsRunner
+        from agentx.tracing.ingest_client import IngestClient
+        from agentx.tracing.tracer import Tracer
         from agentx.version import VERSION
 
         _eval_client = EvaluationsClient(
@@ -30,6 +32,13 @@ class AgentX:
             base_url=self.base_url,
         )
         self.evaluations = EvaluationsRunner(_eval_client)
+
+        _ingest_client = IngestClient(
+            api_key=self.api_key,
+            sdk_version=VERSION,
+            base_url=self.base_url,
+        )
+        self.tracer = Tracer(_ingest_client)
 
     @classmethod
     def from_env(cls) -> "AgentX":

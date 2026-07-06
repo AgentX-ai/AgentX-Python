@@ -6,8 +6,8 @@ from agentx.util import get_headers, api_base
 
 
 class ChatResponse(BaseModel):
-    text: str | None
-    cot: str | None
+    text: Optional[str]
+    cot: Optional[str]
     botId: str
     reference: Optional[Any]
     tasks: Optional[Any]
@@ -19,8 +19,8 @@ class Message(BaseModel):
     role: str  # user or bot
     botId: Optional[str] = Field(alias="bot", default=None)
     userId: Optional[str] = Field(alias="user", default=None)
-    text: str | None
-    cot: str | None
+    text: Optional[str]
+    cot: Optional[str]
     createdAt: str
     updatedAt: str
 
