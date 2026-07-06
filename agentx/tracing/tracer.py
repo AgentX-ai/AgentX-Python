@@ -67,7 +67,8 @@ class _TraceSpan:
     ) -> None:
         self._tracer = tracer
         self.name = name
-        self._explicit_input = input
+        # Public: callers may reassign span.input inside the context manager
+        self.input: Any = input
         self._metadata = metadata
         self._framework = framework
         self._model = model
@@ -90,11 +91,11 @@ class _TraceSpan:
 
     def __exit__(self, exc_type, exc_val, tb):
         latency_ms = int((time.time() - self._start) * 1000) if self._start else None
-        if exc_val is not None:
+        if exc_val is not None and self._error is None:
             self._error = str(exc_val)
         self._tracer._send(
             name=self.name,
-            input=self._explicit_input,
+            input=_safe_serialize(self.input) if self.input is not None else None,
             output=_safe_serialize(self.output) if self.output is not None else None,
             latency_ms=latency_ms,
             error=self._error,
@@ -105,6 +106,30 @@ class _TraceSpan:
             session_id=self._session_id,
         )
         return False  # never suppress exceptions
+
+    # ------------------------------------------------------------------
+    # Context manager helpers
+    # ------------------------------------------------------------------
+
+    def add_tool_call(
+        self,
+        name: str,
+        *,
+        input: Any = None,
+        output: Any = None,
+        latency_ms: Optional[int] = None,
+    ) -> None:
+        """Record a tool call made during this span."""
+        self.tool_calls.append({
+            "name": name,
+            "input": _safe_serialize(input) if input is not None else None,
+            "output": _safe_serialize(output) if output is not None else None,
+            "latency_ms": latency_ms,
+        })
+
+    def set_error(self, message: str) -> None:
+        """Mark this span as failed with the given error message."""
+        self._error = message
 
     # ------------------------------------------------------------------
     # Decorator factory: span(fn) wraps fn synchronously or async
@@ -215,7 +240,7 @@ class Tracer:
         return _TraceSpan(
             tracer=self,
             name=name,
-            input=_safe_serialize(input) if input is not None else None,
+            input=input,
             metadata=metadata,
             framework=framework,
             model=model,
