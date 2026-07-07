@@ -28,6 +28,18 @@ setup(
         "pydantic",
         "pydantic_core",
     ],
+    extras_require={
+        "langchain": ["langchain-core>=0.1.0"],
+        "crewai": ["crewai>=0.80.0"],
+        "openai-agents": ["openai-agents>=0.0.3"],
+        "anthropic": ["anthropic>=0.25.0"],
+        "all": [
+            "langchain-core>=0.1.0",
+            "crewai>=0.80.0",
+            "openai-agents>=0.0.3",
+            "anthropic>=0.25.0",
+        ],
+    },
     author="Robin Wang and AgentX Team",
     author_email="contact@agentx.so",
     description="Official Python SDK for AgentX (https://www.agentx.so/)",
