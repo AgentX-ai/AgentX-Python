@@ -10,7 +10,7 @@ from agentx.resources.workforce import Workforce
 
 class AgentX:
 
-    def __init__(self, api_key: str = None, base_url: str = None):
+    def __init__(self, api_key: str = None, base_url: str = None, workspace_id: str = None):
         self.api_key = api_key or os.getenv("AGENTX_API_KEY")
         if self.api_key and not os.getenv("AGENTX_API_KEY"):
             os.environ["AGENTX_API_KEY"] = self.api_key
@@ -19,6 +19,8 @@ class AgentX:
         self.base_url = base_url or os.getenv("AGENTX_API_BASE_URL")
         if self.base_url:
             os.environ["AGENTX_API_BASE_URL"] = self.base_url
+
+        self.workspace_id = workspace_id or os.getenv("AGENTX_WORKSPACE_ID")
 
         from agentx.evaluations.client import EvaluationsClient
         from agentx.evaluations.runner import EvaluationsRunner
@@ -37,6 +39,7 @@ class AgentX:
             api_key=self.api_key,
             sdk_version=VERSION,
             base_url=self.base_url,
+            workspace_id=self.workspace_id,
         )
         self.tracer = Tracer(_ingest_client)
 

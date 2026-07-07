@@ -25,8 +25,7 @@ setup(
         "urllib3>=1.26.11",
         "certifi",
         "requests",
-        "pydantic",
-        "pydantic_core",
+        "pydantic>=2.0.0",
     ],
     extras_require={
         "langchain": ["langchain-core>=0.1.0"],

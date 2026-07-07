@@ -41,9 +41,12 @@ class IngestClient:
         api_key: str,
         sdk_version: str = "unknown",
         base_url: Optional[str] = None,
+        workspace_id: Optional[str] = None,
     ) -> None:
         if not api_key:
             raise ValueError("AGENTX_API_KEY is required")
+
+        self._workspace_id = workspace_id or os.getenv("AGENTX_WORKSPACE_ID")
 
         self._api_key = api_key
         self._sdk_version = sdk_version
@@ -76,6 +79,8 @@ class IngestClient:
 
     def enqueue(self, payload: Dict[str, Any]) -> None:
         """Add a trace payload to the send queue. Never blocks; drops silently on overflow."""
+        if self._workspace_id:
+            payload = {**payload, "workspaceId": self._workspace_id}
         try:
             self._queue.put_nowait(payload)
         except queue.Full:
@@ -105,6 +110,8 @@ class IngestClient:
         payload: Dict[str, Any] = {"datasetId": dataset_id}
         if question_index is not None:
             payload["question_index"] = question_index
+        if self._workspace_id:
+            payload["workspaceId"] = self._workspace_id
 
         resp = self._session.post(url, json=payload, timeout=60)
         resp.raise_for_status()
@@ -131,8 +138,9 @@ class IngestClient:
             payload["pass_rate_threshold"] = pass_rate_threshold
         if git_context:
             payload["git_context"] = git_context
-        if workspace_id:
-            payload["workspaceId"] = workspace_id
+        resolved_workspace = workspace_id or self._workspace_id
+        if resolved_workspace:
+            payload["workspaceId"] = resolved_workspace
 
         url = f"{self._base_url}/ingest/ci-runs"
         resp = self._session.post(url, json=payload, timeout=30)
@@ -212,8 +220,9 @@ class IngestClient:
     ) -> Dict[str, Any]:
         """Fetch test case queries for a dataset without creating a CI run."""
         params: Dict[str, str] = {}
-        if workspace_id:
-            params["workspaceId"] = workspace_id
+        resolved_workspace = workspace_id or self._workspace_id
+        if resolved_workspace:
+            params["workspaceId"] = resolved_workspace
         url = f"{self._base_url}/ingest/datasets/{dataset_id}/test-cases"
         resp = self._session.get(url, params=params, timeout=15)
         self._raise_for_ci_status(resp)
