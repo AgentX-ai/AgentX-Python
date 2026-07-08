@@ -5,3 +5,5 @@
 #   from agentx.integrations.crewai import AgentXCrewObserver
 #   from agentx.integrations.openai_agents import AgentXTracingProcessor
 #   from agentx.integrations.anthropic import patch_anthropic_client
+#   from agentx.integrations.google_adk import AgentXADKPlugin
+#   from agentx.integrations.google_genai import patch_genai_client
