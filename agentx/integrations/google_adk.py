@@ -75,6 +75,9 @@ class AgentXADKPlugin(BasePlugin):
         self._session_id = session_id
         # invocation_id → accumulated run state
         self._runs: Dict[str, Dict[str, Any]] = {}
+        # invocation_id → pre-buffered user input text
+        # (on_user_message_callback fires *before* before_run_callback)
+        self._pending_inputs: Dict[str, str] = {}
         # id(tool_context) → start time float
         self._tool_starts: Dict[int, float] = {}
 
@@ -82,29 +85,28 @@ class AgentXADKPlugin(BasePlugin):
     # Run lifecycle
     # ------------------------------------------------------------------
 
+    async def on_user_message_callback(
+        self, *, invocation_context: Any, user_message: Any
+    ) -> None:
+        # Called *before* before_run_callback, so self._runs doesn't exist yet.
+        # Buffer the input and consume it in before_run_callback.
+        inv_id = invocation_context.invocation_id
+        text = _content_to_text(user_message)
+        if text:
+            self._pending_inputs[inv_id] = text
+
     async def before_run_callback(self, *, invocation_context: Any) -> None:
         inv_id = invocation_context.invocation_id
         agent_name = getattr(invocation_context.agent, "name", None) or self._agent_name
         self._runs[inv_id] = {
             "start": time.time(),
             "name": agent_name,
-            "input": None,
+            "input": self._pending_inputs.pop(inv_id, None),
             "output": None,
             "model": None,
             "tool_calls": [],
             "error": None,
         }
-
-    async def on_user_message_callback(
-        self, *, invocation_context: Any, user_message: Any
-    ) -> None:
-        inv_id = invocation_context.invocation_id
-        state = self._runs.get(inv_id)
-        if state is None:
-            return
-        text = _content_to_text(user_message)
-        if text and state["input"] is None:
-            state["input"] = text
 
     async def after_run_callback(self, *, invocation_context: Any) -> None:
         inv_id = invocation_context.invocation_id
