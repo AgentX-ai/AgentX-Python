@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
+from agentx.integrations._perf import build_performance_summary
 
 
 def _iso_to_ts(iso: Optional[str]) -> Optional[float]:
@@ -143,6 +144,10 @@ class AgentXTracingProcessor:
             "output": None,
             "tool_calls": [],
             "model": None,
+            "execution_steps": [],
+            "perf_tool_calls": [],
+            "input_tokens": 0,
+            "output_tokens": 0,
         }
 
     def on_trace_end(self, trace: Any) -> None:
@@ -151,6 +156,11 @@ class AgentXTracingProcessor:
         if state is None:
             return
         latency_ms = int((time.time() - state["start"]) * 1000)
+        perf = build_performance_summary(
+            total_duration_ms=latency_ms,
+            execution_steps=state["execution_steps"],
+            tool_call_steps=state["perf_tool_calls"],
+        )
         self._tracer._send(
             name=state["name"],
             input=state.get("input"),
@@ -161,6 +171,9 @@ class AgentXTracingProcessor:
             tool_calls=state["tool_calls"] or None,
             metadata=self._metadata,
             session_id=self._session_id,
+            performance_summary=perf,
+            input_tokens=state["input_tokens"] or None,
+            output_tokens=state["output_tokens"] or None,
         )
 
     def on_span_start(self, span: Any) -> None:
@@ -178,6 +191,9 @@ class AgentXTracingProcessor:
         state = self._spans[trace_id]
         span_type = getattr(span_data, "type", None)
 
+        t0 = _iso_to_ts(getattr(span, "started_at", None))
+        t1 = _iso_to_ts(getattr(span, "ended_at", None))
+
         if span_type == "generation":
             # Capture input from the first generation span
             if state["input"] is None and span_data.input:
@@ -188,6 +204,20 @@ class AgentXTracingProcessor:
             # Capture model name
             if not state["model"] and span_data.model:
                 state["model"] = str(span_data.model)
+            # Execution step
+            if t0 is not None and t1 is not None:
+                steps = state["execution_steps"]
+                steps.append({
+                    "name": f"LLM Call {len(steps) + 1}",
+                    "duration_ms": (t1 - t0) * 1000,
+                    "start_time": t0,
+                    "end_time": t1,
+                })
+            # Token counts — usage is a dict with "input_tokens" / "output_tokens"
+            usage = getattr(span_data, "usage", None)
+            if isinstance(usage, dict):
+                state["input_tokens"] += int(usage.get("input_tokens") or 0)
+                state["output_tokens"] += int(usage.get("output_tokens") or 0)
 
         elif span_type == "response":
             # Responses API path — extract from the response object
@@ -204,18 +234,43 @@ class AgentXTracingProcessor:
                     model = getattr(response, "model", None)
                     if model:
                         state["model"] = str(model)
+                # Token counts from response.usage or span_data.usage
+                usage = getattr(response, "usage", None) or getattr(span_data, "usage", None)
+                if isinstance(usage, dict):
+                    state["input_tokens"] += int(usage.get("input_tokens") or 0)
+                    state["output_tokens"] += int(usage.get("output_tokens") or 0)
+                elif usage is not None:
+                    state["input_tokens"] += int(getattr(usage, "input_tokens", None) or 0)
+                    state["output_tokens"] += int(getattr(usage, "output_tokens", None) or 0)
+            # Execution step
+            if t0 is not None and t1 is not None:
+                steps = state["execution_steps"]
+                steps.append({
+                    "name": f"LLM Call {len(steps) + 1}",
+                    "duration_ms": (t1 - t0) * 1000,
+                    "start_time": t0,
+                    "end_time": t1,
+                })
 
         elif span_type == "function":
             # Tool / function call
+            latency = _span_latency_ms(span)
             tool_entry: Dict[str, Any] = {
                 "name": span_data.name,
                 "input": span_data.input,
                 "output": str(span_data.output)[:500] if span_data.output is not None else None,
             }
-            latency = _span_latency_ms(span)
             if latency is not None:
                 tool_entry["latency_ms"] = latency
             state["tool_calls"].append(tool_entry)
+            # Perf tool call with timestamps
+            if t0 is not None and t1 is not None:
+                state["perf_tool_calls"].append({
+                    "name": span_data.name,
+                    "duration_ms": (t1 - t0) * 1000,
+                    "start_time": t0,
+                    "end_time": t1,
+                })
 
     def force_flush(self) -> None:
         self._tracer.flush()

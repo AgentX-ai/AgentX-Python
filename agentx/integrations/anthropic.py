@@ -19,6 +19,7 @@ import time
 from typing import Any, Dict, Optional
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
+from agentx.integrations._perf import build_performance_summary
 
 
 def patch_anthropic_client(
@@ -58,7 +59,7 @@ def _patch_create(
         return  # already patched
 
     def patched_create(*args, **kwargs):
-        start = time.time()
+        start_t = time.time()
         error: Optional[str] = None
         response = None
         try:
@@ -68,15 +69,35 @@ def _patch_create(
             error = str(exc)
             raise
         finally:
-            latency_ms = int((time.time() - start) * 1000)
+            end_t = time.time()
+            latency_ms = int((end_t - start_t) * 1000)
             input_messages = kwargs.get("messages") or (args[0] if args else None)
             model = kwargs.get("model")
             output = None
+            input_tokens = None
+            output_tokens = None
             if response is not None:
                 try:
                     output = response.content[0].text if response.content else None
                 except Exception:
                     output = str(response)[:500]
+                try:
+                    usage = getattr(response, "usage", None)
+                    if usage is not None:
+                        input_tokens = getattr(usage, "input_tokens", None)
+                        output_tokens = getattr(usage, "output_tokens", None)
+                except Exception:
+                    pass
+            perf = build_performance_summary(
+                total_duration_ms=latency_ms,
+                execution_steps=[{
+                    "name": "LLM Call 1",
+                    "duration_ms": latency_ms,
+                    "start_time": start_t,
+                    "end_time": end_t,
+                }],
+                has_errors=error is not None,
+            )
             tracer._send(
                 name=name,
                 input=_safe_serialize(input_messages),
@@ -87,6 +108,9 @@ def _patch_create(
                 model=model,
                 metadata=metadata,
                 session_id=session_id,
+                performance_summary=perf,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
             )
 
     patched_create._agentx_patched = True
@@ -105,7 +129,7 @@ def _patch_stream(
         return
 
     def patched_stream(*args, **kwargs):
-        start = time.time()
+        start_t = time.time()
         ctx = original_stream(*args, **kwargs)
 
         class _TracedStream:
@@ -116,14 +140,31 @@ def _patch_stream(
 
             def __exit__(self_inner, exc_type, exc_val, tb):
                 result = ctx.__exit__(exc_type, exc_val, tb)
-                latency_ms = int((time.time() - start) * 1000)
+                end_t = time.time()
+                latency_ms = int((end_t - start_t) * 1000)
                 error = str(exc_val) if exc_val else None
                 output = None
+                input_tokens = None
+                output_tokens = None
                 try:
                     final = ctx.get_final_message()
                     output = final.content[0].text if final.content else None
+                    usage = getattr(final, "usage", None)
+                    if usage is not None:
+                        input_tokens = getattr(usage, "input_tokens", None)
+                        output_tokens = getattr(usage, "output_tokens", None)
                 except Exception:
                     pass
+                perf = build_performance_summary(
+                    total_duration_ms=latency_ms,
+                    execution_steps=[{
+                        "name": "LLM Call 1",
+                        "duration_ms": latency_ms,
+                        "start_time": start_t,
+                        "end_time": end_t,
+                    }],
+                    has_errors=error is not None,
+                )
                 tracer._send(
                     name=name,
                     input=_safe_serialize(kwargs.get("messages")),
@@ -134,6 +175,9 @@ def _patch_stream(
                     model=kwargs.get("model"),
                     metadata=metadata,
                     session_id=session_id,
+                    performance_summary=perf,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
                 )
                 return result
 

@@ -143,8 +143,9 @@ class _TraceSpan:
     def _wrap_sync(self, fn: F) -> F:
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
+            from agentx.integrations._perf import build_performance_summary
             captured_input = _capture_fn_input(fn, args, kwargs)
-            start = time.time()
+            start_t = time.time()
             error: Optional[str] = None
             output = None
             try:
@@ -154,16 +155,28 @@ class _TraceSpan:
                 error = str(exc)
                 raise
             finally:
+                end_t = time.time()
+                latency_ms = int((end_t - start_t) * 1000)
                 self._tracer._send(
                     name=self.name,
                     input=captured_input,
                     output=_safe_serialize(output) if output is not None else None,
-                    latency_ms=int((time.time() - start) * 1000),
+                    latency_ms=latency_ms,
                     error=error,
                     metadata=self._metadata,
                     framework=self._framework,
                     model=self._model,
                     session_id=self._session_id,
+                    performance_summary=build_performance_summary(
+                        total_duration_ms=latency_ms,
+                        execution_steps=[{
+                            "name": "LLM Call 1",
+                            "duration_ms": latency_ms,
+                            "start_time": start_t,
+                            "end_time": end_t,
+                        }],
+                        has_errors=error is not None,
+                    ),
                 )
 
         return wrapper  # type: ignore[return-value]
@@ -171,8 +184,9 @@ class _TraceSpan:
     def _wrap_async(self, fn: F) -> F:
         @functools.wraps(fn)
         async def wrapper(*args, **kwargs):
+            from agentx.integrations._perf import build_performance_summary
             captured_input = _capture_fn_input(fn, args, kwargs)
-            start = time.time()
+            start_t = time.time()
             error: Optional[str] = None
             output = None
             try:
@@ -182,16 +196,28 @@ class _TraceSpan:
                 error = str(exc)
                 raise
             finally:
+                end_t = time.time()
+                latency_ms = int((end_t - start_t) * 1000)
                 self._tracer._send(
                     name=self.name,
                     input=captured_input,
                     output=_safe_serialize(output) if output is not None else None,
-                    latency_ms=int((time.time() - start) * 1000),
+                    latency_ms=latency_ms,
                     error=error,
                     metadata=self._metadata,
                     framework=self._framework,
                     model=self._model,
                     session_id=self._session_id,
+                    performance_summary=build_performance_summary(
+                        total_duration_ms=latency_ms,
+                        execution_steps=[{
+                            "name": "LLM Call 1",
+                            "duration_ms": latency_ms,
+                            "start_time": start_t,
+                            "end_time": end_t,
+                        }],
+                        has_errors=error is not None,
+                    ),
                 )
 
         return wrapper  # type: ignore[return-value]
@@ -462,4 +488,10 @@ class Tracer:
             wire["metadata"] = payload["metadata"]
         if "session_id" in payload:
             wire["session_id"] = payload["session_id"]
+        if "performance_summary" in payload:
+            wire["performance_summary"] = payload["performance_summary"]
+        if "input_tokens" in payload:
+            wire["input_tokens"] = payload["input_tokens"]
+        if "output_tokens" in payload:
+            wire["output_tokens"] = payload["output_tokens"]
         self._client.enqueue(wire)
