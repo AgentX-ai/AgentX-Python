@@ -4,12 +4,19 @@ import asyncio
 import concurrent.futures
 import functools
 import inspect
+import threading
 import time
-from typing import Any, Callable, Dict, Optional, TypeVar
+from contextlib import contextmanager
+from typing import Any, Callable, Dict, Iterator, List, Optional, TypeVar
 
 from agentx.exceptions import CIGateFailure
 from agentx.tracing.ingest_client import IngestClient
 from agentx.tracing.ci_types import CIRun, CIRunResult, CIRunStatus, CIQuestionScore
+from agentx.integrations._perf import (
+    build_performance_summary,
+    merge_retrieval_steps,
+    merge_tool_call_steps,
+)
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -81,18 +88,53 @@ class _TraceSpan:
         self._start: Optional[float] = None
         self._error: Optional[str] = None
 
+        # Populated by auto-instrumented calls (e.g. patched Anthropic
+        # client, AgentXCallbackHandler) made while this span is the
+        # tracer's active span, so a whole multi-call / multi-chain run
+        # collapses into one trace instead of one trace per call. See
+        # Tracer.current_span / _record_llm_call / _merge_child_run.
+        self._execution_steps: list = []
+        self._retrieval_steps: list = []
+        self._captured_model: Optional[str] = None
+        self._input_tokens: int = 0
+        self._output_tokens: int = 0
+        # Guards _merge_child_run — with Tracer.use_span(), multiple threads
+        # (e.g. a ThreadPoolExecutor) can merge into this span concurrently.
+        self._merge_lock = threading.Lock()
+
     # ------------------------------------------------------------------
     # Context manager
     # ------------------------------------------------------------------
 
     def __enter__(self) -> "_TraceSpan":
         self._start = time.time()
+        self._tracer._push_active_span(self)
         return self
 
     def __exit__(self, exc_type, exc_val, tb):
+        self._tracer._pop_active_span(self)
         latency_ms = int((time.time() - self._start) * 1000) if self._start else None
         if exc_val is not None and self._error is None:
             self._error = str(exc_val)
+
+        perf = build_performance_summary(
+            total_duration_ms=latency_ms or 0,
+            execution_steps=self._execution_steps,
+            tool_call_steps=[
+                {
+                    "name": tc.get("name"),
+                    "duration_ms": tc.get("latency_ms") or 0,
+                    "start_time": tc.get("start_time"),
+                    "end_time": tc.get("end_time"),
+                    "input": tc.get("input"),
+                    "output": tc.get("output"),
+                }
+                for tc in self.tool_calls
+            ],
+            retrieval_steps=self._retrieval_steps,
+            has_errors=self._error is not None,
+        )
+
         self._tracer._send(
             name=self.name,
             input=_safe_serialize(self.input) if self.input is not None else None,
@@ -101,11 +143,84 @@ class _TraceSpan:
             error=self._error,
             metadata=self._metadata,
             framework=self._framework,
-            model=self._model,
+            model=self._model or self._captured_model,
             tool_calls=self.tool_calls or None,
             session_id=self._session_id,
+            performance_summary=perf,
+            input_tokens=self._input_tokens or None,
+            output_tokens=self._output_tokens or None,
         )
         return False  # never suppress exceptions
+
+    # ------------------------------------------------------------------
+    # Called by auto-instrumented integrations (e.g. patch_anthropic_client)
+    # when this span is the tracer's active span, instead of them sending
+    # their own independent trace per call.
+    # ------------------------------------------------------------------
+
+    def _record_llm_call(
+        self,
+        *,
+        duration_ms: float,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
+        input: Any = None,
+        output: Any = None,
+        model: Optional[str] = None,
+        input_tokens: Optional[int] = None,
+        output_tokens: Optional[int] = None,
+    ) -> None:
+        """Append a single LLM-call execution step (e.g. one patched Anthropic call)."""
+        self._merge_child_run(
+            execution_steps=[{
+                "name": f"LLM Call {len(self._execution_steps) + 1}",
+                "duration_ms": duration_ms,
+                "start_time": start_time,
+                "end_time": end_time,
+                "model": model,
+                "input": input,
+                "output": output,
+                "inputTokenSize": input_tokens,
+                "outputTokenSize": output_tokens,
+            }],
+            input=input,
+            output=output,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+
+    def _merge_child_run(
+        self,
+        *,
+        execution_steps: Optional[List[Dict[str, Any]]] = None,
+        tool_calls: Optional[List[Dict[str, Any]]] = None,
+        retrieval_steps: Optional[List[Dict[str, Any]]] = None,
+        input: Any = None,
+        output: Any = None,
+        model: Optional[str] = None,
+        input_tokens: Optional[int] = None,
+        output_tokens: Optional[int] = None,
+    ) -> None:
+        """
+        Fold a whole auto-instrumented sub-run (e.g. one top-level LangChain
+        chain/agent/retriever invocation) into this span, instead of it
+        becoming its own independent trace.
+        """
+        with self._merge_lock:
+            self._execution_steps.extend(execution_steps or [])
+            self.tool_calls.extend(tool_calls or [])
+            self._retrieval_steps.extend(retrieval_steps or [])
+            if self.input is None and input is not None:
+                self.input = input
+            if output is not None:
+                self.output = output
+            if model and not self._captured_model:
+                self._captured_model = model
+            if input_tokens:
+                self._input_tokens += input_tokens
+            if output_tokens:
+                self._output_tokens += output_tokens
 
     # ------------------------------------------------------------------
     # Context manager helpers
@@ -143,7 +258,6 @@ class _TraceSpan:
     def _wrap_sync(self, fn: F) -> F:
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
-            from agentx.integrations._perf import build_performance_summary
             captured_input = _capture_fn_input(fn, args, kwargs)
             start_t = time.time()
             error: Optional[str] = None
@@ -174,6 +288,9 @@ class _TraceSpan:
                             "duration_ms": latency_ms,
                             "start_time": start_t,
                             "end_time": end_t,
+                            "model": self._model,
+                            "input": captured_input,
+                            "output": _safe_serialize(output) if output is not None else None,
                         }],
                         has_errors=error is not None,
                     ),
@@ -184,7 +301,6 @@ class _TraceSpan:
     def _wrap_async(self, fn: F) -> F:
         @functools.wraps(fn)
         async def wrapper(*args, **kwargs):
-            from agentx.integrations._perf import build_performance_summary
             captured_input = _capture_fn_input(fn, args, kwargs)
             start_t = time.time()
             error: Optional[str] = None
@@ -215,12 +331,30 @@ class _TraceSpan:
                             "duration_ms": latency_ms,
                             "start_time": start_t,
                             "end_time": end_t,
+                            "model": self._model,
+                            "input": captured_input,
+                            "output": _safe_serialize(output) if output is not None else None,
                         }],
                         has_errors=error is not None,
                     ),
                 )
 
         return wrapper  # type: ignore[return-value]
+
+
+class _RetrievalRecorder:
+    """Handle yielded by ``Tracer.trace_retrieval()`` — set ``doc_count``/``output`` inside the block."""
+
+    def __init__(self) -> None:
+        self.doc_count: Optional[int] = None
+        self.output: Any = None
+
+
+class _ToolCallRecorder:
+    """Handle yielded by ``Tracer.trace_tool_call()`` — set ``output`` inside the block."""
+
+    def __init__(self) -> None:
+        self.output: Any = None
 
 
 class Tracer:
@@ -248,6 +382,173 @@ class Tracer:
 
     def __init__(self, ingest_client: IngestClient) -> None:
         self._client = ingest_client
+        self._pending_retrievals: List[Dict[str, Any]] = []
+        self._pending_tool_calls: List[Dict[str, Any]] = []
+        self._local = threading.local()
+
+    # ------------------------------------------------------------------
+    # Active-span stack (per thread) — lets auto-instrumented integrations
+    # (e.g. patch_anthropic_client) detect they're running inside a
+    # `with tracer.trace(...)` block and attach to it as an LLM-call step
+    # instead of sending their own independent trace.
+    # ------------------------------------------------------------------
+
+    def _get_span_stack(self) -> List["_TraceSpan"]:
+        stack = getattr(self._local, "span_stack", None)
+        if stack is None:
+            stack = []
+            self._local.span_stack = stack
+        return stack
+
+    def _push_active_span(self, span: "_TraceSpan") -> None:
+        self._get_span_stack().append(span)
+
+    def _pop_active_span(self, span: "_TraceSpan") -> None:
+        stack = self._get_span_stack()
+        if stack and stack[-1] is span:
+            stack.pop()
+        elif span in stack:
+            stack.remove(span)
+
+    @property
+    def current_span(self) -> Optional["_TraceSpan"]:
+        """The innermost ``with tracer.trace(...)`` span active on this thread, if any."""
+        stack = self._get_span_stack()
+        return stack[-1] if stack else None
+
+    @contextmanager
+    def use_span(self, span: "_TraceSpan") -> Iterator["_TraceSpan"]:
+        """
+        Make ``span`` (created on another thread) the active span for the
+        duration of this block, on *this* thread. The active-span stack is
+        thread-local, so work submitted to a ``ThreadPoolExecutor`` or run on
+        any other thread doesn't automatically see a span opened on the
+        calling thread — wrap the worker function body in this to attach it::
+
+            with tracer.trace("orchestrator") as span:
+                def worker():
+                    with tracer.use_span(span):
+                        chain.invoke(..., config={"callbacks": [handler]})
+
+                with ThreadPoolExecutor(max_workers=2) as ex:
+                    ex.submit(worker).result()
+
+        Safe to call from multiple threads concurrently for the same span —
+        each thread pushes/pops on its own stack.
+        """
+        self._push_active_span(span)
+        try:
+            yield span
+        finally:
+            self._pop_active_span(span)
+
+    def record_tool_call(
+        self,
+        name: str,
+        *,
+        input: Any = None,
+        output: Any = None,
+        latency_ms: Optional[int] = None,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
+    ) -> None:
+        """
+        Manually record a tool call that an auto-instrumented framework
+        integration can't see — e.g. a hand-rolled Anthropic/OpenAI tool-use
+        loop where the tool executes in plain Python between two
+        ``messages.create()`` calls. Queued and attached to both the
+        ``tool_calls`` list and the ``performance_summary`` of the next
+        trace this tracer sends.
+        """
+        self._pending_tool_calls.append({
+            "name": name,
+            "input": _safe_serialize(input) if input is not None else None,
+            "output": _safe_serialize(output) if output is not None else None,
+            "latency_ms": latency_ms,
+            "duration_ms": latency_ms if latency_ms is not None else 0,
+            "start_time": start_time,
+            "end_time": end_time,
+        })
+
+    @contextmanager
+    def trace_tool_call(self, name: str, *, input: Any = None) -> Iterator["_ToolCallRecorder"]:
+        """
+        Context manager that times a tool call and records it via
+        :meth:`record_tool_call` on exit::
+
+            with tracer.trace_tool_call("policy_lookup", input=topic) as t:
+                result = policy_lookup(topic)
+                t.output = result
+        """
+        start_t = time.time()
+        recorder = _ToolCallRecorder()
+        try:
+            yield recorder
+        finally:
+            end_t = time.time()
+            self.record_tool_call(
+                name,
+                input=input,
+                output=recorder.output,
+                latency_ms=int((end_t - start_t) * 1000),
+                start_time=start_t,
+                end_time=end_t,
+            )
+
+    def record_retrieval(
+        self,
+        name: str = "Retrieval",
+        *,
+        query: Optional[str] = None,
+        doc_count: Optional[int] = None,
+        output: Any = None,
+        duration_ms: Optional[float] = None,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
+    ) -> None:
+        """
+        Manually record a knowledge-base / vector-store retrieval that an
+        auto-instrumented framework integration can't see on its own — e.g. a
+        hand-rolled RAG lookup wrapped around a raw Anthropic/OpenAI call or a
+        CrewAI kickoff. Queued and attached to the ``performance_summary`` of
+        the next trace this tracer sends.
+        """
+        self._pending_retrievals.append({
+            "name": name,
+            "duration_ms": duration_ms or 0,
+            "start_time": start_time,
+            "end_time": end_time,
+            "query": query,
+            "doc_count": doc_count,
+            "output": _safe_serialize(output) if output is not None else None,
+        })
+
+    @contextmanager
+    def trace_retrieval(self, name: str = "Retrieval", *, query: Optional[str] = None) -> Iterator["_RetrievalRecorder"]:
+        """
+        Context manager that times a retrieval and records it via
+        :meth:`record_retrieval` on exit::
+
+            with tracer.trace_retrieval("kb_search", query=question) as r:
+                docs = retrieve(question)
+                r.doc_count = len(docs)
+                r.output = docs
+        """
+        start_t = time.time()
+        recorder = _RetrievalRecorder()
+        try:
+            yield recorder
+        finally:
+            end_t = time.time()
+            self.record_retrieval(
+                name,
+                query=query,
+                doc_count=recorder.doc_count,
+                output=recorder.output,
+                duration_ms=(end_t - start_t) * 1000,
+                start_time=start_t,
+                end_time=end_t,
+            )
 
     def trace(
         self,
@@ -494,4 +795,34 @@ class Tracer:
             wire["input_tokens"] = payload["input_tokens"]
         if "output_tokens" in payload:
             wire["output_tokens"] = payload["output_tokens"]
+
+        pending_retrievals, self._pending_retrievals = self._pending_retrievals, []
+        pending_tool_calls, self._pending_tool_calls = self._pending_tool_calls, []
+
+        if pending_tool_calls:
+            wire["tool_calls"] = list(wire.get("tool_calls") or []) + [
+                {
+                    "name": t["name"],
+                    "input": t["input"],
+                    "output": t["output"],
+                    "latency_ms": t["latency_ms"],
+                }
+                for t in pending_tool_calls
+            ]
+
+        if pending_retrievals or pending_tool_calls:
+            if "performance_summary" not in wire:
+                wire["performance_summary"] = build_performance_summary(
+                    total_duration_ms=wire.get("latency_ms") or 0,
+                    has_errors="error" in wire,
+                )
+            if pending_retrievals:
+                wire["performance_summary"] = merge_retrieval_steps(
+                    wire["performance_summary"], pending_retrievals
+                )
+            if pending_tool_calls:
+                wire["performance_summary"] = merge_tool_call_steps(
+                    wire["performance_summary"], pending_tool_calls
+                )
+
         self._client.enqueue(wire)

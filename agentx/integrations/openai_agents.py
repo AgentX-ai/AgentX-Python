@@ -195,15 +195,29 @@ class AgentXTracingProcessor:
         t1 = _iso_to_ts(getattr(span, "ended_at", None))
 
         if span_type == "generation":
+            call_input = _extract_input_text(span_data.input) if span_data.input else None
+            call_output = _extract_text(span_data.output) if span_data.output else None
+            call_model = str(span_data.model) if span_data.model else None
+
             # Capture input from the first generation span
-            if state["input"] is None and span_data.input:
-                state["input"] = _extract_input_text(span_data.input)
+            if state["input"] is None and call_input:
+                state["input"] = call_input
             # Always update output to the latest generation (last one wins = final reply)
-            if span_data.output:
-                state["output"] = _extract_text(span_data.output)
+            if call_output:
+                state["output"] = call_output
             # Capture model name
-            if not state["model"] and span_data.model:
-                state["model"] = str(span_data.model)
+            if not state["model"] and call_model:
+                state["model"] = call_model
+
+            # Token counts — usage is a dict with "input_tokens" / "output_tokens"
+            usage = getattr(span_data, "usage", None)
+            call_input_tokens = usage.get("input_tokens") if isinstance(usage, dict) else None
+            call_output_tokens = usage.get("output_tokens") if isinstance(usage, dict) else None
+            if call_input_tokens is not None:
+                state["input_tokens"] += int(call_input_tokens)
+            if call_output_tokens is not None:
+                state["output_tokens"] += int(call_output_tokens)
+
             # Execution step
             if t0 is not None and t1 is not None:
                 steps = state["execution_steps"]
@@ -212,36 +226,48 @@ class AgentXTracingProcessor:
                     "duration_ms": (t1 - t0) * 1000,
                     "start_time": t0,
                     "end_time": t1,
+                    "model": call_model,
+                    "input": call_input,
+                    "output": call_output,
+                    "inputTokenSize": call_input_tokens,
+                    "outputTokenSize": call_output_tokens,
                 })
-            # Token counts — usage is a dict with "input_tokens" / "output_tokens"
-            usage = getattr(span_data, "usage", None)
-            if isinstance(usage, dict):
-                state["input_tokens"] += int(usage.get("input_tokens") or 0)
-                state["output_tokens"] += int(usage.get("output_tokens") or 0)
 
         elif span_type == "response":
             # Responses API path — extract from the response object
             response = getattr(span_data, "response", None)
+            call_input = None
+            call_output = None
+            call_model = None
+            call_input_tokens = None
+            call_output_tokens = None
             if response is not None:
-                if state["input"] is None:
-                    raw_input = getattr(span_data, "input", None)
-                    if raw_input:
-                        state["input"] = _extract_input_text(raw_input) if isinstance(raw_input, list) else str(raw_input)
+                raw_input = getattr(span_data, "input", None)
+                if raw_input:
+                    call_input = _extract_input_text(raw_input) if isinstance(raw_input, list) else str(raw_input)
+                if state["input"] is None and call_input:
+                    state["input"] = call_input
                 output_items = getattr(response, "output", None)
                 if output_items:
-                    state["output"] = _extract_text(output_items)
-                if not state["model"]:
-                    model = getattr(response, "model", None)
-                    if model:
-                        state["model"] = str(model)
+                    call_output = _extract_text(output_items)
+                    state["output"] = call_output
+                model = getattr(response, "model", None)
+                if model:
+                    call_model = str(model)
+                if not state["model"] and call_model:
+                    state["model"] = call_model
                 # Token counts from response.usage or span_data.usage
                 usage = getattr(response, "usage", None) or getattr(span_data, "usage", None)
                 if isinstance(usage, dict):
-                    state["input_tokens"] += int(usage.get("input_tokens") or 0)
-                    state["output_tokens"] += int(usage.get("output_tokens") or 0)
+                    call_input_tokens = usage.get("input_tokens")
+                    call_output_tokens = usage.get("output_tokens")
                 elif usage is not None:
-                    state["input_tokens"] += int(getattr(usage, "input_tokens", None) or 0)
-                    state["output_tokens"] += int(getattr(usage, "output_tokens", None) or 0)
+                    call_input_tokens = getattr(usage, "input_tokens", None)
+                    call_output_tokens = getattr(usage, "output_tokens", None)
+                if call_input_tokens is not None:
+                    state["input_tokens"] += int(call_input_tokens)
+                if call_output_tokens is not None:
+                    state["output_tokens"] += int(call_output_tokens)
             # Execution step
             if t0 is not None and t1 is not None:
                 steps = state["execution_steps"]
@@ -250,15 +276,21 @@ class AgentXTracingProcessor:
                     "duration_ms": (t1 - t0) * 1000,
                     "start_time": t0,
                     "end_time": t1,
+                    "model": call_model,
+                    "input": call_input,
+                    "output": call_output,
+                    "inputTokenSize": call_input_tokens,
+                    "outputTokenSize": call_output_tokens,
                 })
 
         elif span_type == "function":
             # Tool / function call
             latency = _span_latency_ms(span)
+            tool_output = str(span_data.output) if span_data.output is not None else None
             tool_entry: Dict[str, Any] = {
                 "name": span_data.name,
                 "input": span_data.input,
-                "output": str(span_data.output)[:500] if span_data.output is not None else None,
+                "output": tool_output,
             }
             if latency is not None:
                 tool_entry["latency_ms"] = latency
@@ -270,6 +302,8 @@ class AgentXTracingProcessor:
                     "duration_ms": (t1 - t0) * 1000,
                     "start_time": t0,
                     "end_time": t1,
+                    "input": span_data.input,
+                    "output": tool_output,
                 })
 
     def force_flush(self) -> None:

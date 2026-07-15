@@ -29,11 +29,17 @@ def build_performance_summary(
         total_duration_ms:  Wall-clock duration of the entire run.
         execution_steps:    LLM call entries — each must have ``name``,
                             ``duration_ms``, and optionally ``start_time`` /
-                            ``end_time`` as Unix floats.
-        tool_call_steps:    Tool / function call entries — same shape.
+                            ``end_time`` as Unix floats, plus ``model``,
+                            ``input``, ``output``, ``inputTokenSize``,
+                            ``outputTokenSize`` for per-call drill-down.
+        tool_call_steps:    Tool / function call entries — same shape, plus
+                            optional ``input`` / ``output``.
         retrieval_steps:    RAG / vector-store retrieval entries — same shape,
-                            plus optional ``query`` (str) and ``doc_count`` (int).
+                            plus optional ``query`` (str), ``doc_count`` (int)
+                            and ``output`` (the retrieved content).
         has_errors:         Set to True when the run ended with an exception.
+
+    None of these fields are truncated here — callers decide what to capture.
     """
     execution_steps = execution_steps or []
     tool_call_steps = tool_call_steps or []
@@ -63,6 +69,24 @@ def build_performance_summary(
             entry["start_time"] = item["start_time"]
         if item.get("end_time") is not None:
             entry["end_time"] = item["end_time"]
+        # Per-step drill-down detail — untruncated, present when the caller
+        # captured it (e.g. an LLM call's model/prompt/completion, a tool
+        # call's args/result, or a retrieval's returned documents).
+        if item.get("model"):
+            entry["model"] = item["model"]
+        if item.get("input") is not None:
+            entry["input"] = item["input"]
+        if item.get("output") is not None:
+            entry["output"] = item["output"]
+        # Per-call token usage — populated for LLM call execution_steps by
+        # integrations that read it off the provider response (e.g. Anthropic's
+        # response.usage), so performance_summary carries a token breakdown
+        # per call, not just the trace-level input_tokens/output_tokens total.
+        # Named to match PromptTrace.inputTokenSize/outputTokenSize on the backend.
+        if item.get("inputTokenSize") is not None:
+            entry["inputTokenSize"] = item["inputTokenSize"]
+        if item.get("outputTokenSize") is not None:
+            entry["outputTokenSize"] = item["outputTokenSize"]
         # Retrieval-specific fields
         if phase_type == "retrieval":
             if item.get("query"):
@@ -114,3 +138,89 @@ def build_performance_summary(
             "todo_operations_total_ms": 0,
         },
     }
+
+
+def _merge_steps(
+    summary: Dict[str, Any],
+    steps: List[Dict[str, Any]],
+    *,
+    phase_type: str,
+    target_key: str,
+    stats_count_key: str,
+    stats_total_ms_key: str,
+    extra_fields: tuple = (),
+    default_name_prefix: str = "Step",
+) -> Dict[str, Any]:
+    """Fold externally-recorded steps into an already-built ``performance_summary``."""
+    if not steps:
+        return summary
+
+    next_order = len(summary.get("unified_timeline", [])) + 1
+    for i, item in enumerate(steps):
+        entry: Dict[str, Any] = {
+            "name": item.get("name") or f"{default_name_prefix} {i + 1}",
+            "duration_ms": round(float(item.get("duration_ms") or 0), 3),
+            "start_order": next_order + i,
+            "phase_type": phase_type,
+        }
+        if item.get("start_time") is not None:
+            entry["start_time"] = item["start_time"]
+        if item.get("end_time") is not None:
+            entry["end_time"] = item["end_time"]
+        for field in extra_fields:
+            value = item.get(field)
+            if value not in (None, ""):
+                entry[field] = value
+
+        summary["unified_timeline"].append(entry)
+        summary[target_key].append({k: v for k, v in entry.items() if k != "phase_type"})
+
+    summary["unified_timeline"].sort(key=lambda x: x.get("start_time") or 0)
+    summary["statistics"][stats_count_key] = len(summary[target_key])
+    summary["statistics"][stats_total_ms_key] = round(
+        sum(r["duration_ms"] for r in summary[target_key]), 3
+    )
+    return summary
+
+
+def merge_retrieval_steps(
+    summary: Dict[str, Any],
+    retrieval_steps: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Fold externally-recorded retrieval steps (e.g. from ``Tracer.record_retrieval``,
+    used for hand-rolled RAG lookups the framework integration can't see) into an
+    already-built ``performance_summary``.
+    """
+    return _merge_steps(
+        summary,
+        retrieval_steps,
+        phase_type="retrieval",
+        target_key="knowledge_retrievals",
+        stats_count_key="total_knowledge_retrievals",
+        stats_total_ms_key="knowledge_retrievals_total_ms",
+        extra_fields=("query", "doc_count", "output"),
+        default_name_prefix="Retrieval",
+    )
+
+
+def merge_tool_call_steps(
+    summary: Dict[str, Any],
+    tool_call_steps: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Fold externally-recorded tool calls (e.g. from ``Tracer.record_tool_call``,
+    used when a tool executes outside a framework integration's visibility —
+    such as a manual Anthropic tool-use loop) into an already-built
+    ``performance_summary``.
+    """
+    return _merge_steps(
+        summary,
+        tool_call_steps,
+        phase_type="tool_call",
+        target_key="tool_calls",
+        stats_count_key="total_tool_calls",
+        stats_total_ms_key="tool_calls_total_ms",
+        extra_fields=("input", "output"),
+        default_name_prefix="Tool Call",
+    )

@@ -22,6 +22,7 @@ import time
 from typing import Any, Dict, Optional
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
+from agentx.integrations._perf import build_performance_summary
 
 
 class AgentXCrewObserver:
@@ -64,15 +65,38 @@ class AgentXCrewObserver:
 
             # Collect task outputs as tool_calls for observability
             tool_calls = []
+            execution_steps = []
             if result is not None:
                 task_outputs = getattr(result, "tasks_output", []) or []
                 for task_out in task_outputs:
+                    description = getattr(task_out, "description", "task")
+                    name = description[:100]  # display label only — full text goes in "input"
+                    task_output = str(getattr(task_out, "raw", ""))
                     tool_calls.append(
                         {
-                            "name": getattr(task_out, "description", "task")[:100],
-                            "output": str(getattr(task_out, "raw", ""))[:500],
+                            "name": name,
+                            "input": description,
+                            "output": task_output,
                         }
                     )
+                    execution_steps.append({
+                        "name": name,
+                        "duration_ms": 0,
+                        "input": description,
+                        "output": task_output,
+                    })
+
+            if not execution_steps:
+                # No per-task breakdown available — record the whole kickoff
+                # as a single step so the trace still gets timing detail.
+                execution_steps.append({"name": self._name, "duration_ms": latency_ms})
+            else:
+                # Task-level timing isn't exposed by CrewOutput; attribute the
+                # total latency evenly across tasks so the timeline still sums
+                # to the measured wall-clock duration.
+                per_step_ms = latency_ms / len(execution_steps)
+                for step in execution_steps:
+                    step["duration_ms"] = per_step_ms
 
             self._tracer._send(
                 name=self._name,
@@ -84,6 +108,11 @@ class AgentXCrewObserver:
                 tool_calls=tool_calls or None,
                 metadata=self._metadata,
                 session_id=self._session_id,
+                performance_summary=build_performance_summary(
+                    total_duration_ms=latency_ms,
+                    execution_steps=execution_steps,
+                    has_errors=error is not None,
+                ),
             )
 
     def observe(
