@@ -80,7 +80,7 @@ def _patch_create(
                 try:
                     output = response.content[0].text if response.content else None
                 except Exception:
-                    output = str(response)[:500]
+                    output = str(response)
                 try:
                     usage = getattr(response, "usage", None)
                     if usage is not None:
@@ -88,30 +88,54 @@ def _patch_create(
                         output_tokens = getattr(usage, "output_tokens", None)
                 except Exception:
                     pass
-            perf = build_performance_summary(
-                total_duration_ms=latency_ms,
-                execution_steps=[{
-                    "name": "LLM Call 1",
-                    "duration_ms": latency_ms,
-                    "start_time": start_t,
-                    "end_time": end_t,
-                }],
-                has_errors=error is not None,
-            )
-            tracer._send(
-                name=name,
-                input=_safe_serialize(input_messages),
-                output=output,
-                latency_ms=latency_ms,
-                error=error,
-                framework="anthropic",
-                model=model,
-                metadata=metadata,
-                session_id=session_id,
-                performance_summary=perf,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-            )
+
+            active_span = tracer.current_span
+            if active_span is not None:
+                # Part of a `with tracer.trace(...)` block (e.g. a multi-call
+                # agentic loop) — attach as one LLM-call step on that span's
+                # trace instead of sending an independent trace per call.
+                if error is not None:
+                    active_span.set_error(error)
+                active_span._record_llm_call(
+                    duration_ms=latency_ms,
+                    start_time=start_t,
+                    end_time=end_t,
+                    input=_safe_serialize(input_messages),
+                    output=output,
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
+            else:
+                perf = build_performance_summary(
+                    total_duration_ms=latency_ms,
+                    execution_steps=[{
+                        "name": "LLM Call 1",
+                        "duration_ms": latency_ms,
+                        "start_time": start_t,
+                        "end_time": end_t,
+                        "model": model,
+                        "input": _safe_serialize(input_messages),
+                        "output": output,
+                        "inputTokenSize": input_tokens,
+                        "outputTokenSize": output_tokens,
+                    }],
+                    has_errors=error is not None,
+                )
+                tracer._send(
+                    name=name,
+                    input=_safe_serialize(input_messages),
+                    output=output,
+                    latency_ms=latency_ms,
+                    error=error,
+                    framework="anthropic",
+                    model=model,
+                    metadata=metadata,
+                    session_id=session_id,
+                    performance_summary=perf,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
 
     patched_create._agentx_patched = True
     messages_resource.create = patched_create
@@ -162,6 +186,11 @@ def _patch_stream(
                         "duration_ms": latency_ms,
                         "start_time": start_t,
                         "end_time": end_t,
+                        "model": kwargs.get("model"),
+                        "input": _safe_serialize(kwargs.get("messages")),
+                        "output": output,
+                        "inputTokenSize": input_tokens,
+                        "outputTokenSize": output_tokens,
                     }],
                     has_errors=error is not None,
                 )

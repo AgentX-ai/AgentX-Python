@@ -100,6 +100,7 @@ def _patch_generate_content(
                 if usage is not None:
                     input_tokens = getattr(usage, "prompt_token_count", None)
                     output_tokens = getattr(usage, "candidates_token_count", None)
+            input_repr = contents if isinstance(contents, str) else _safe_serialize(contents)
             perf = build_performance_summary(
                 total_duration_ms=latency_ms,
                 execution_steps=[{
@@ -107,12 +108,17 @@ def _patch_generate_content(
                     "duration_ms": latency_ms,
                     "start_time": start_t,
                     "end_time": end_t,
+                    "model": str(model) if model else None,
+                    "input": input_repr,
+                    "output": output,
+                    "inputTokenSize": input_tokens,
+                    "outputTokenSize": output_tokens,
                 }],
                 has_errors=error is not None,
             )
             tracer._send(
                 name=name,
-                input=contents if isinstance(contents, str) else _safe_serialize(contents),
+                input=input_repr,
                 output=output,
                 latency_ms=latency_ms,
                 error=error,
@@ -169,6 +175,8 @@ def _patch_generate_content_stream(
             if last_usage_metadata is not None:
                 input_tokens = getattr(last_usage_metadata, "prompt_token_count", None)
                 output_tokens = getattr(last_usage_metadata, "candidates_token_count", None)
+            input_repr = contents if isinstance(contents, str) else _safe_serialize(contents)
+            output_repr = "".join(accumulated_text) or None
             perf = build_performance_summary(
                 total_duration_ms=latency_ms,
                 execution_steps=[{
@@ -176,13 +184,18 @@ def _patch_generate_content_stream(
                     "duration_ms": latency_ms,
                     "start_time": start_t,
                     "end_time": end_t,
+                    "model": str(model) if model else None,
+                    "input": input_repr,
+                    "output": output_repr,
+                    "inputTokenSize": input_tokens,
+                    "outputTokenSize": output_tokens,
                 }],
                 has_errors=error is not None,
             )
             tracer._send(
                 name=name,
-                input=contents if isinstance(contents, str) else _safe_serialize(contents),
-                output="".join(accumulated_text) or None,
+                input=input_repr,
+                output=output_repr,
                 latency_ms=latency_ms,
                 error=error,
                 framework="google-genai",

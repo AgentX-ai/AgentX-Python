@@ -151,6 +151,54 @@ def _extract_tool_calls_from_messages(outputs: Any) -> List[Dict[str, Any]]:
     return tool_calls
 
 
+def _extract_llm_input(
+    prompts: Optional[List[str]] = None,
+    messages: Optional[List[List[Any]]] = None,
+) -> Optional[str]:
+    """Flatten on_llm_start's ``prompts`` or on_chat_model_start's ``messages`` into one string."""
+    if prompts:
+        return "\n\n".join(prompts) if len(prompts) > 1 else prompts[0]
+
+    if messages:
+        lines: List[str] = []
+        for message_list in messages:
+            for msg in message_list:
+                role = getattr(msg, "type", None) or getattr(msg, "role", None) or "user"
+                content = getattr(msg, "content", None)
+                if isinstance(content, str) and content:
+                    lines.append(f"{role}: {content}")
+                elif isinstance(content, list):
+                    parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
+                    joined = " ".join(t for t in parts if t)
+                    if joined:
+                        lines.append(f"{role}: {joined}")
+        return "\n".join(lines) if lines else None
+
+    return None
+
+
+def _extract_llm_output(response: "LLMResult") -> Optional[str]:
+    """Flatten on_llm_end's ``LLMResult`` (chat or completion generations) into one string."""
+    texts: List[str] = []
+    for gen_list in getattr(response, "generations", None) or []:
+        for gen in gen_list or []:
+            message = getattr(gen, "message", None)
+            content = getattr(message, "content", None) if message is not None else None
+            if isinstance(content, str) and content:
+                texts.append(content)
+                continue
+            if isinstance(content, list):
+                parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
+                joined = " ".join(t for t in parts if t)
+                if joined:
+                    texts.append(joined)
+                    continue
+            text = getattr(gen, "text", None)
+            if text:
+                texts.append(text)
+    return "\n".join(texts) if texts else None
+
+
 class AgentXCallbackHandler(BaseCallbackHandler):
     """
     LangChain callback handler that captures the top-level chain run and all
@@ -232,26 +280,50 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         latency_ms = int((time.time() - state["start"]) * 1000)
         output = _extract_output(outputs)
         tool_calls = state["tool_calls"] or _extract_tool_calls_from_messages(outputs)
-        perf = build_performance_summary(
-            total_duration_ms=latency_ms,
-            execution_steps=state["execution_steps"],
-            tool_call_steps=state["perf_tool_calls"],
-            retrieval_steps=state["retrieval_steps"],
-        )
-        self._tracer._send(
-            name=self._name,
-            input=state["input"],
-            output=output,
-            latency_ms=latency_ms,
-            framework="langchain",
-            model=state.get("model"),
-            tool_calls=tool_calls or None,
-            metadata=self._metadata,
-            session_id=self._session_id,
-            performance_summary=perf,
-            input_tokens=state["input_tokens"] or None,
-            output_tokens=state["output_tokens"] or None,
-        )
+        if state["tool_calls"] and len(state["tool_calls"]) == len(state["perf_tool_calls"]):
+            # Enrich with the timestamps perf_tool_calls tracked in lockstep,
+            # so tool calls interleave correctly in a merged span's timeline.
+            tool_calls = [
+                {**tc, "start_time": perf.get("start_time"), "end_time": perf.get("end_time")}
+                for tc, perf in zip(state["tool_calls"], state["perf_tool_calls"])
+            ]
+
+        active_span = self._tracer.current_span
+        if active_span is not None:
+            # Part of a `with tracer.trace(...)` block (e.g. an orchestrator
+            # spanning several chain/agent/retriever calls) — fold this
+            # top-level run into it instead of sending an independent trace.
+            active_span._merge_child_run(
+                execution_steps=state["execution_steps"],
+                tool_calls=tool_calls,
+                retrieval_steps=state["retrieval_steps"],
+                input=state["input"],
+                output=output,
+                model=state.get("model"),
+                input_tokens=state["input_tokens"] or None,
+                output_tokens=state["output_tokens"] or None,
+            )
+        else:
+            perf = build_performance_summary(
+                total_duration_ms=latency_ms,
+                execution_steps=state["execution_steps"],
+                tool_call_steps=state["perf_tool_calls"],
+                retrieval_steps=state["retrieval_steps"],
+            )
+            self._tracer._send(
+                name=self._name,
+                input=state["input"],
+                output=output,
+                latency_ms=latency_ms,
+                framework="langchain",
+                model=state.get("model"),
+                tool_calls=tool_calls or None,
+                metadata=self._metadata,
+                session_id=self._session_id,
+                performance_summary=perf,
+                input_tokens=state["input_tokens"] or None,
+                output_tokens=state["output_tokens"] or None,
+            )
         self._top_level.pop(run_id, None)
         self._parents.pop(run_id, None)
 
@@ -269,27 +341,41 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         if state is None:
             return
         latency_ms = int((time.time() - state["start"]) * 1000)
-        perf = build_performance_summary(
-            total_duration_ms=latency_ms,
-            execution_steps=state["execution_steps"],
-            tool_call_steps=state["perf_tool_calls"],
-            retrieval_steps=state["retrieval_steps"],
-            has_errors=True,
-        )
-        self._tracer._send(
-            name=self._name,
-            input=state["input"],
-            error=str(error),
-            latency_ms=latency_ms,
-            framework="langchain",
-            model=state.get("model"),
-            tool_calls=state["tool_calls"] or None,
-            metadata=self._metadata,
-            session_id=self._session_id,
-            performance_summary=perf,
-            input_tokens=state["input_tokens"] or None,
-            output_tokens=state["output_tokens"] or None,
-        )
+
+        active_span = self._tracer.current_span
+        if active_span is not None:
+            active_span.set_error(str(error))
+            active_span._merge_child_run(
+                execution_steps=state["execution_steps"],
+                tool_calls=state["tool_calls"],
+                retrieval_steps=state["retrieval_steps"],
+                input=state["input"],
+                model=state.get("model"),
+                input_tokens=state["input_tokens"] or None,
+                output_tokens=state["output_tokens"] or None,
+            )
+        else:
+            perf = build_performance_summary(
+                total_duration_ms=latency_ms,
+                execution_steps=state["execution_steps"],
+                tool_call_steps=state["perf_tool_calls"],
+                retrieval_steps=state["retrieval_steps"],
+                has_errors=True,
+            )
+            self._tracer._send(
+                name=self._name,
+                input=state["input"],
+                error=str(error),
+                latency_ms=latency_ms,
+                framework="langchain",
+                model=state.get("model"),
+                tool_calls=state["tool_calls"] or None,
+                metadata=self._metadata,
+                session_id=self._session_id,
+                performance_summary=perf,
+                input_tokens=state["input_tokens"] or None,
+                output_tokens=state["output_tokens"] or None,
+            )
         self._top_level.pop(run_id, None)
         self._parents.pop(run_id, None)
 
@@ -303,6 +389,9 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         run_id: UUID,
         parent_run_id: Optional[UUID],
         kwargs: Dict[str, Any],
+        *,
+        prompts: Optional[List[str]] = None,
+        messages: Optional[List[Any]] = None,
     ) -> None:
         """Shared logic for on_llm_start and on_chat_model_start."""
         self._parents[run_id] = parent_run_id
@@ -315,7 +404,11 @@ class AgentXCallbackHandler(BaseCallbackHandler):
             or serialized.get("name")
         )
         model = str(model) if model and model not in ("None", "none") else None
-        self._runs[run_id] = {"llm_start": time.time(), "model": model}
+        self._runs[run_id] = {
+            "llm_start": time.time(),
+            "model": model,
+            "input": _extract_llm_input(prompts=prompts, messages=messages),
+        }
         top = self._find_top_ancestor(parent_run_id)
         if top and not self._runs[top].get("model") and model:
             self._runs[top]["model"] = model
@@ -329,7 +422,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         parent_run_id: Optional[UUID] = None,
         **kwargs,
     ) -> None:
-        self._record_llm_start(serialized, run_id, parent_run_id, kwargs)
+        self._record_llm_start(serialized, run_id, parent_run_id, kwargs, prompts=prompts)
 
     def on_chat_model_start(
         self,
@@ -340,7 +433,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         parent_run_id: Optional[UUID] = None,
         **kwargs,
     ) -> None:
-        self._record_llm_start(serialized, run_id, parent_run_id, kwargs)
+        self._record_llm_start(serialized, run_id, parent_run_id, kwargs, messages=messages)
 
     def on_llm_end(
         self,
@@ -356,15 +449,10 @@ class AgentXCallbackHandler(BaseCallbackHandler):
             start_t = llm_state.get("llm_start")
             end_t = time.time()
             top = self._find_top_ancestor(parent_run_id)
-            if start_t is not None and top and top in self._runs:
-                steps = self._runs[top]["execution_steps"]
-                steps.append({
-                    "name": f"LLM Call {len(steps) + 1}",
-                    "duration_ms": (end_t - start_t) * 1000,
-                    "start_time": start_t,
-                    "end_time": end_t,
-                })
-            # Extract token usage from LLMResult
+
+            # Extract token usage from LLMResult for this call
+            call_input_tokens: Optional[int] = None
+            call_output_tokens: Optional[int] = None
             if top and top in self._runs:
                 usage = {}
                 if hasattr(response, "llm_output") and isinstance(response.llm_output, dict):
@@ -378,12 +466,28 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                                 usage = gen_info
                                 break
                 if usage:
-                    self._runs[top]["input_tokens"] += int(
+                    call_input_tokens = int(
                         usage.get("prompt_tokens") or usage.get("input_tokens") or usage.get("prompt_token_count") or 0
                     )
-                    self._runs[top]["output_tokens"] += int(
+                    call_output_tokens = int(
                         usage.get("completion_tokens") or usage.get("output_tokens") or usage.get("candidates_token_count") or 0
                     )
+                    self._runs[top]["input_tokens"] += call_input_tokens
+                    self._runs[top]["output_tokens"] += call_output_tokens
+
+            if start_t is not None and top and top in self._runs:
+                steps = self._runs[top]["execution_steps"]
+                steps.append({
+                    "name": f"LLM Call {len(steps) + 1}",
+                    "duration_ms": (end_t - start_t) * 1000,
+                    "start_time": start_t,
+                    "end_time": end_t,
+                    "model": llm_state.get("model"),
+                    "input": llm_state.get("input"),
+                    "output": _extract_llm_output(response),
+                    "inputTokenSize": call_input_tokens,
+                    "outputTokenSize": call_output_tokens,
+                })
 
     # ------------------------------------------------------------------
     # Tool lifecycle
@@ -423,7 +527,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         tool_call = {
             "name": state["tool_name"],
             "input": state["tool_input"],
-            "output": str(output)[:500],
+            "output": str(output),
             "latency_ms": latency_ms,
         }
         top = self._find_top_ancestor(parent_run_id)
@@ -434,6 +538,8 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                 "duration_ms": (end_t - start_t) * 1000,
                 "start_time": start_t,
                 "end_time": end_t,
+                "input": state["tool_input"],
+                "output": tool_call["output"],
             })
 
     def on_tool_error(
@@ -464,6 +570,8 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                 "duration_ms": (end_t - start_t) * 1000,
                 "start_time": start_t,
                 "end_time": end_t,
+                "input": tool_call["input"],
+                "output": tool_call["output"],
             })
 
     # ------------------------------------------------------------------
@@ -508,6 +616,10 @@ class AgentXCallbackHandler(BaseCallbackHandler):
             step["query"] = query
         if doc_count is not None:
             step["doc_count"] = doc_count
+        if hasattr(documents, "__iter__"):
+            contents = [getattr(d, "page_content", None) or str(d) for d in documents]
+            if contents:
+                step["output"] = "\n\n---\n\n".join(contents)
 
         top = self._find_top_ancestor(parent_run_id)
         if top and top in self._runs:

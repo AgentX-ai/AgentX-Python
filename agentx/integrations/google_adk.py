@@ -52,6 +52,16 @@ def _content_to_text(content: Any) -> Optional[str]:
     return " ".join(texts) if texts else None
 
 
+def _contents_to_text(contents: Any) -> Optional[str]:
+    """Extract plain text from an LlmRequest's ``contents`` (a list of Content)."""
+    if contents is None:
+        return None
+    if not isinstance(contents, (list, tuple)):
+        contents = [contents]
+    texts = [t for t in (_content_to_text(c) for c in contents) if t]
+    return "\n".join(texts) if texts else None
+
+
 class AgentXADKPlugin(BasePlugin):
     """
     Google ADK plugin that sends one AgentX trace per runner invocation.
@@ -152,25 +162,31 @@ class AgentXADKPlugin(BasePlugin):
     ) -> None:
         inv_id = callback_context.get_invocation_context().invocation_id
         state = self._runs.get(inv_id)
-        if state and not state["model"]:
-            model = getattr(llm_request, "model", None)
-            if model:
-                state["model"] = str(model)
-        # Push start time onto the per-invocation stack.
+        model = getattr(llm_request, "model", None)
+        model_str = str(model) if model else None
+        if state and not state["model"] and model_str:
+            state["model"] = model_str
+        # Push start time + this call's model/input onto the per-invocation
+        # stack, so after_model_callback can pair them back up.
         # ADK creates different CallbackContext objects for before vs after, so
         # id(callback_context) cannot be used as a key across the two calls.
         if inv_id not in self._model_starts:
             self._model_starts[inv_id] = []
-        self._model_starts[inv_id].append(time.time())
+        self._model_starts[inv_id].append({
+            "start": time.time(),
+            "model": model_str,
+            "input": _contents_to_text(getattr(llm_request, "contents", None)),
+        })
 
     async def after_model_callback(
         self, *, callback_context: Any, llm_response: Any
     ) -> None:
         inv_id = callback_context.get_invocation_context().invocation_id
         state = self._runs.get(inv_id)
-        # Pop the earliest queued start time (FIFO — model calls are sequential)
+        # Pop the earliest queued call (FIFO — model calls are sequential)
         starts = self._model_starts.get(inv_id, [])
-        start_t = starts.pop(0) if starts else None
+        call_start = starts.pop(0) if starts else None
+        start_t = call_start.get("start") if call_start else None
         end_t = time.time()
 
         if state is None:
@@ -182,6 +198,15 @@ class AgentXADKPlugin(BasePlugin):
         if text:
             state["output"] = text
 
+        # Token counts for this call
+        usage = getattr(llm_response, "usage_metadata", None)
+        call_input_tokens = getattr(usage, "prompt_token_count", None) if usage is not None else None
+        call_output_tokens = getattr(usage, "candidates_token_count", None) if usage is not None else None
+        if call_input_tokens is not None:
+            state["input_tokens"] += int(call_input_tokens)
+        if call_output_tokens is not None:
+            state["output_tokens"] += int(call_output_tokens)
+
         # Execution step
         if start_t is not None:
             steps = state["execution_steps"]
@@ -190,13 +215,12 @@ class AgentXADKPlugin(BasePlugin):
                 "duration_ms": (end_t - start_t) * 1000,
                 "start_time": start_t,
                 "end_time": end_t,
+                "model": call_start.get("model") if call_start else None,
+                "input": call_start.get("input") if call_start else None,
+                "output": text,
+                "inputTokenSize": call_input_tokens,
+                "outputTokenSize": call_output_tokens,
             })
-
-        # Token counts
-        usage = getattr(llm_response, "usage_metadata", None)
-        if usage is not None:
-            state["input_tokens"] += int(getattr(usage, "prompt_token_count", None) or 0)
-            state["output_tokens"] += int(getattr(usage, "candidates_token_count", None) or 0)
 
     # ------------------------------------------------------------------
     # Tool callbacks
@@ -222,10 +246,12 @@ class AgentXADKPlugin(BasePlugin):
         start_t = self._tool_starts.pop(id(tool_context), None)
         end_t = time.time()
         tool_name = getattr(tool, "name", "unknown")
+        tool_input = _safe_serialize(tool_args)
+        tool_output = str(result) if result is not None else None
         tool_call: Dict[str, Any] = {
             "name": tool_name,
-            "input": _safe_serialize(tool_args),
-            "output": str(result)[:500] if result is not None else None,
+            "input": tool_input,
+            "output": tool_output,
         }
         if start_t is not None:
             tool_call["latency_ms"] = max(0, int((end_t - start_t) * 1000))
@@ -236,6 +262,8 @@ class AgentXADKPlugin(BasePlugin):
                 "duration_ms": (end_t - start_t) * 1000,
                 "start_time": start_t,
                 "end_time": end_t,
+                "input": tool_input,
+                "output": tool_output,
             })
 
     async def on_tool_error_callback(
@@ -253,10 +281,12 @@ class AgentXADKPlugin(BasePlugin):
         start_t = self._tool_starts.pop(id(tool_context), None)
         end_t = time.time()
         tool_name = getattr(tool, "name", "unknown")
+        tool_input = _safe_serialize(tool_args)
+        tool_output = f"ERROR: {error}"
         tool_call: Dict[str, Any] = {
             "name": tool_name,
-            "input": _safe_serialize(tool_args),
-            "output": f"ERROR: {error}",
+            "input": tool_input,
+            "output": tool_output,
         }
         if start_t is not None:
             tool_call["latency_ms"] = max(0, int((end_t - start_t) * 1000))
@@ -267,4 +297,6 @@ class AgentXADKPlugin(BasePlugin):
                 "duration_ms": (end_t - start_t) * 1000,
                 "start_time": start_t,
                 "end_time": end_t,
+                "input": tool_input,
+                "output": tool_output,
             })
