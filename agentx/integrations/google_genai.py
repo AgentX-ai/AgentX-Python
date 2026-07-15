@@ -16,7 +16,7 @@ Requires: ``pip install "agentx-python[google-genai]"``
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
 from agentx.integrations._perf import build_performance_summary
@@ -49,13 +49,18 @@ def patch_genai_client(
 
 
 def _extract_response_text(response: Any) -> Optional[str]:
-    """Pull the generated text out of a GenerateContentResponse."""
+    """
+    Pull the generated text out of a GenerateContentResponse, falling back to
+    a description of any function_call parts when the response is a pure
+    tool call with no text (Gemini function calling).
+    """
     # Convenience .text property (available on non-streaming responses)
     text = getattr(response, "text", None)
     if text and isinstance(text, str):
         return text
     # Fallback: walk candidates → content → parts
     candidates = getattr(response, "candidates", None) or []
+    function_calls: List[str] = []
     for candidate in candidates:
         content = getattr(candidate, "content", None)
         parts = getattr(content, "parts", None) or []
@@ -63,6 +68,13 @@ def _extract_response_text(response: Any) -> Optional[str]:
             t = getattr(part, "text", None)
             if t and isinstance(t, str):
                 return t
+            fc = getattr(part, "function_call", None)
+            if fc is not None:
+                name = getattr(fc, "name", "unknown")
+                args = getattr(fc, "args", None)
+                function_calls.append(f"{name}({args})")
+    if function_calls:
+        return "[tool call] " + ", ".join(function_calls)
     return None
 
 

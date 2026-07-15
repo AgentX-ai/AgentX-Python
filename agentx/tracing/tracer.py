@@ -4,6 +4,7 @@ import asyncio
 import concurrent.futures
 import functools
 import inspect
+import re
 import threading
 import time
 from contextlib import contextmanager
@@ -19,6 +20,11 @@ from agentx.integrations._perf import (
 )
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+# Matches the generic "LLM Call N" step names integrations generate (e.g.
+# langchain.py numbers steps within one top-level chain run). Used by
+# _TraceSpan._merge_child_run to renumber them on merge — see there.
+_LLM_CALL_NAME_RE = re.compile(r"^LLM Call \d+$")
 
 
 def _safe_serialize(value: Any, depth: int = 0) -> Any:
@@ -208,6 +214,19 @@ class _TraceSpan:
         becoming its own independent trace.
         """
         with self._merge_lock:
+            if execution_steps:
+                # Step names like "LLM Call N" are numbered locally within
+                # whatever sub-run produced them (e.g. one LangChain chain
+                # invocation numbers its own calls 1, 2, 3...). When several
+                # sub-runs merge into this span — e.g. a sequence of
+                # single-call specialist chains all folded into one
+                # orchestrator span via use_span() — renumber so the merged
+                # trace doesn't end up with several "LLM Call 1" entries.
+                next_n = len(self._execution_steps) + 1
+                for offset, step in enumerate(execution_steps):
+                    name = step.get("name")
+                    if isinstance(name, str) and _LLM_CALL_NAME_RE.match(name):
+                        step["name"] = f"LLM Call {next_n + offset}"
             self._execution_steps.extend(execution_steps or [])
             self.tool_calls.extend(tool_calls or [])
             self._retrieval_steps.extend(retrieval_steps or [])

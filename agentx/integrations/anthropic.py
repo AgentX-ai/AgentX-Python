@@ -22,6 +22,34 @@ from agentx.tracing.tracer import Tracer, _safe_serialize
 from agentx.integrations._perf import build_performance_summary
 
 
+def _extract_output_text(response: Any) -> Optional[str]:
+    """
+    Extract the assistant's text reply from a Messages API response, falling
+    back to a description of any tool_use blocks when the response is a pure
+    tool call with no accompanying text.
+    """
+    content = getattr(response, "content", None) if response is not None else None
+    if not content:
+        return None
+    texts = []
+    tool_calls = []
+    for block in content:
+        block_type = getattr(block, "type", None)
+        if block_type == "text":
+            text = getattr(block, "text", None)
+            if text:
+                texts.append(text)
+        elif block_type == "tool_use":
+            name = getattr(block, "name", "unknown")
+            tool_input = getattr(block, "input", None)
+            tool_calls.append(f"{name}({tool_input})")
+    if texts:
+        return "\n".join(texts)
+    if tool_calls:
+        return "[tool call] " + ", ".join(tool_calls)
+    return None
+
+
 def patch_anthropic_client(
     client: Any,
     tracer: Tracer,
@@ -77,10 +105,7 @@ def _patch_create(
             input_tokens = None
             output_tokens = None
             if response is not None:
-                try:
-                    output = response.content[0].text if response.content else None
-                except Exception:
-                    output = str(response)
+                output = _extract_output_text(response)
                 try:
                     usage = getattr(response, "usage", None)
                     if usage is not None:
@@ -172,7 +197,7 @@ def _patch_stream(
                 output_tokens = None
                 try:
                     final = ctx.get_final_message()
-                    output = final.content[0].text if final.content else None
+                    output = _extract_output_text(final)
                     usage = getattr(final, "usage", None)
                     if usage is not None:
                         input_tokens = getattr(usage, "input_tokens", None)
