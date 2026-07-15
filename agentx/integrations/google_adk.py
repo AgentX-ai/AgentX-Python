@@ -36,7 +36,11 @@ except ImportError as exc:  # pragma: no cover
 
 
 def _content_to_text(content: Any) -> Optional[str]:
-    """Extract plain text from a google.genai types.Content object."""
+    """
+    Extract plain text from a google.genai types.Content object, falling back
+    to a description of any function_call parts when there's no text (Gemini
+    function calling — the model responded with a pure tool call).
+    """
     if content is None:
         return None
     if isinstance(content, str):
@@ -45,11 +49,22 @@ def _content_to_text(content: Any) -> Optional[str]:
     if not parts:
         return None
     texts = []
+    function_calls = []
     for part in parts:
         text = getattr(part, "text", None)
         if text and isinstance(text, str):
             texts.append(text)
-    return " ".join(texts) if texts else None
+            continue
+        fc = getattr(part, "function_call", None)
+        if fc is not None:
+            name = getattr(fc, "name", "unknown")
+            args = getattr(fc, "args", None)
+            function_calls.append(f"{name}({args})")
+    if texts:
+        return " ".join(texts)
+    if function_calls:
+        return "[tool call] " + ", ".join(function_calls)
+    return None
 
 
 def _contents_to_text(contents: Any) -> Optional[str]:

@@ -177,9 +177,30 @@ def _extract_llm_input(
     return None
 
 
+def _describe_tool_calls(message: Any) -> Optional[str]:
+    """
+    Format an AIMessage's ``tool_calls`` as a readable fallback for ``output``
+    when the model responded with a pure tool call and no text content.
+    """
+    tool_calls = getattr(message, "tool_calls", None) if message is not None else None
+    if not tool_calls:
+        return None
+    parts = []
+    for tc in tool_calls:
+        if isinstance(tc, dict):
+            name = tc.get("name") or "unknown"
+            args = tc.get("args")
+        else:
+            name = getattr(tc, "name", None) or "unknown"
+            args = getattr(tc, "args", None)
+        parts.append(f"{name}({args})" if args is not None else f"{name}()")
+    return "[tool call] " + ", ".join(parts)
+
+
 def _extract_llm_output(response: "LLMResult") -> Optional[str]:
     """Flatten on_llm_end's ``LLMResult`` (chat or completion generations) into one string."""
     texts: List[str] = []
+    tool_call_fallbacks: List[str] = []
     for gen_list in getattr(response, "generations", None) or []:
         for gen in gen_list or []:
             message = getattr(gen, "message", None)
@@ -196,7 +217,18 @@ def _extract_llm_output(response: "LLMResult") -> Optional[str]:
             text = getattr(gen, "text", None)
             if text:
                 texts.append(text)
-    return "\n".join(texts) if texts else None
+                continue
+            # No text content — the model likely responded with a pure tool
+            # call instead of commentary. Fall back to describing it so the
+            # step's output isn't silently omitted.
+            described = _describe_tool_calls(message)
+            if described:
+                tool_call_fallbacks.append(described)
+    if texts:
+        return "\n".join(texts)
+    if tool_call_fallbacks:
+        return "\n".join(tool_call_fallbacks)
+    return None
 
 
 class AgentXCallbackHandler(BaseCallbackHandler):
