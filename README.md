@@ -1,8 +1,12 @@
 ![Logo](https://agentx-resources.s3.us-west-1.amazonaws.com/AgentX-logo-387x60.png)
 
 [![PyPI version](https://img.shields.io/pypi/v/agentx-python)](https://pypi.org/project/agentx-python/)
+[![Python versions](https://img.shields.io/pypi/pyversions/agentx-python)](https://pypi.org/project/agentx-python/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-The official Python SDK for **[AgentX](https://www.agentx.so/)** — build, chat with, and orchestrate AI agents in a few lines of code.
+The official Python SDK for **[AgentX](https://app.agentx.so/)** — build, chat with, orchestrate, and trace AI agents in a few lines of code.
+
+Also see [SDK Developer Docs](https://developers.agentx.so), [API Reference Docs](https://docs.agentx.so/reference)
 
 ---
 
@@ -16,8 +20,9 @@ The official Python SDK for **[AgentX](https://www.agentx.so/)** — build, chat
   - [List agents](#list-agents)
   - [Start a conversation](#start-a-conversation)
   - [Chat (streaming and non-streaming)](#chat-streaming-and-non-streaming)
-- [Workforce (multi-agent orchestration)](#workforce-multi-agent-orchestration)
-- [Agent Evaluations](#custom-agent-evaluations) — LLM-as-a-judge, cosine / Jaccard similarity
+- [Workforce (multi-agent orchestration)](#workforce-multi-agent-orchestration) — teams of agents with a designated manager
+- [Production tracing](#production-tracing) — record live agent runs from any framework
+- [Custom agent evaluations](#custom-agent-evaluations) — LLM-as-a-judge, cosine / Jaccard similarity
 - [Links](#links)
 
 ---
@@ -30,6 +35,7 @@ The official Python SDK for **[AgentX](https://www.agentx.so/)** — build, chat
 - **Batteries included** — voice (ASR/TTS), image generation, document/CSV/Excel/OCR, RAG with built-in re-ranking.
 - **MCP support** — connect any Model Context Protocol server.
 - **Multi-agent orchestration** — workforces of agents with a designated manager, across LLM vendors.
+- **Production tracing** — one decorator or context manager records every agent run (input, output, latency, tool calls, token usage) into your workspace, for any framework.
 - **Agent Evaluations** — score any agent (LangChain, CrewAI, OpenAI, Anthropic, HTTP, …) with LLM-as-a-judge ratings plus optional cosine and Jaccard similarity metrics.
 - **A2A** — Each agent can be published with agent-to-agent protocol compatible.
 
@@ -139,6 +145,58 @@ for chunk in workforce.chat_stream(conversation.id, "How can you help me with th
 
 ---
 
+## Production tracing
+
+Record live agent runs into your workspace with a single decorator or context manager — no changes to your agent's logic. Traces appear in the **Live Traces** tab and can be evaluated against your test datasets with [`tracer.evaluate_trace()`](TRACING.md#tracerevaluate_trace).
+
+```python
+from agentx import AgentX
+
+client = AgentX.from_env()
+tracer = client.tracer
+
+@tracer.trace("customer-support-agent", framework="langchain", model="gpt-4o")
+def handle_query(query: str) -> str:
+    return chain.invoke(query)
+
+# Every call is automatically traced: input, output, latency, tool calls, token usage
+handle_query("How do I reset my password?")
+tracer.flush(timeout=10)  # ensure delivery before the process exits
+```
+
+Prefer full control over what gets captured? Use the context manager instead:
+
+```python
+with tracer.trace("rag-agent", framework="langchain") as span:
+    span.input = {"query": query, "user_id": user_id}
+
+    kb_result = search_knowledge_base(query)
+    span.add_tool_call("search_knowledge_base", input=query, output=kb_result, latency_ms=190)
+
+    span.output = llm.invoke(f"Context: {kb_result}\n\nQuery: {query}")
+```
+
+### Framework integrations
+
+Each integration auto-captures LLM calls, tool calls, and token usage — install the matching extra:
+
+| Framework             | Install                                      | Integration              |
+| --------------------- | -------------------------------------------- | ------------------------ |
+| LangChain             | `pip install "agentx-python[langchain]"`     | `AgentXCallbackHandler`  |
+| CrewAI                | `pip install "agentx-python[crewai]"`        | `AgentXCrewObserver`     |
+| OpenAI Agents SDK     | `pip install "agentx-python[openai-agents]"` | `AgentXTracingProcessor` |
+| Anthropic             | `pip install "agentx-python[anthropic]"`     | `patch_anthropic_client` |
+| Google ADK            | `pip install "agentx-python[google-adk]"`    | `AgentXADKPlugin`        |
+| Google GenAI (Gemini) | `pip install "agentx-python[google-genai]"`  | `patch_genai_client`     |
+
+Or plain Python — wrap any function with `@tracer.trace(...)` and it just works, no framework required.
+
+Running specialist agents in parallel with a `ThreadPoolExecutor`? Wrap each worker body in `tracer.use_span(span)` so their steps land on the parent trace instead of becoming independent traces — see [TRACING.md](TRACING.md) for the full pattern.
+
+See **[TRACING.md](TRACING.md)** for the complete guide — session grouping, error handling, async support, and the full API reference.
+
+---
+
 ## Custom agent evaluations
 
 Evaluate **any** AI agent — LangChain, CrewAI, AutoGen, LlamaIndex, OpenAI, Anthropic, HTTP endpoints, or plain Python — using AgentX as the scoring and reporting backend. Includes optional **cosine** and **Jaccard** similarity metrics alongside LLM-graded ratings.
@@ -166,4 +224,5 @@ See **[EVALUATIONS.md](EVALUATIONS.md)** for the full guide — dataset builder,
 - **Dashboard** — [app.agentx.so](https://app.agentx.so)
 - **Website** — [agentx.so](https://www.agentx.so/)
 - **PyPI** — [agentx-python](https://pypi.org/project/agentx-python/)
+- **Tracing docs** — [TRACING.md](TRACING.md)
 - **Evaluations docs** — [EVALUATIONS.md](EVALUATIONS.md)
