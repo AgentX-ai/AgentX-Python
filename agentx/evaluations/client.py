@@ -13,6 +13,7 @@ from agentx.evaluations.models import (
     Dataset,
     EvaluationResult,
     EvaluationRun,
+    EvaluationSettings,
     EvaluationSubject,
     ModelInfo,
     Report,
@@ -44,12 +45,20 @@ class AgentXValidationError(AgentXEvaluationsError):
 
 class EvaluationsClient:
     def __init__(
-        self, api_key: str, sdk_version: str = "unknown", base_url: str = None
+        self,
+        api_key: str,
+        sdk_version: str = "unknown",
+        base_url: Optional[str] = None,
+        workspace_id: Optional[str] = None,
     ):
         if not api_key:
             raise AgentXAuthError("AGENTX_API_KEY is required")
         self._api_key = api_key
         self._sdk_version = sdk_version
+        # Falls back to the caller's default workspace server-side when unset — see
+        # _with_workspace(). Without this, dataset/settings/run creation silently land in
+        # whatever workspace the API key's user defaults to, not the one the caller intended.
+        self._workspace_id = workspace_id
         # Priority: constructor arg > env var > SDK default
         # Always append /custom-agent-evaluations so users only need to provide /api/v1
         _api_base = (
@@ -67,14 +76,28 @@ class EvaluationsClient:
                 "accept": "*/*",
             }
         )
-        # Expose dataset builder factory
+        # Expose dataset / evaluation-settings builder factories
         from agentx.evaluations.datasets import DatasetClient
+        from agentx.evaluations.evaluation_settings import EvaluationSettingsClient
 
         self.datasets = DatasetClient(self)
+        self.settings = EvaluationSettingsClient(self)
 
     # ------------------------------------------------------------------
     # Low-level HTTP
     # ------------------------------------------------------------------
+
+    def _with_workspace(self, payload: dict) -> dict:
+        """Injects the client's workspace_id into a request payload, unless the caller already
+        set one explicitly. Without this, requests silently fall back to the API key user's
+        default workspace server-side, which may not be the workspace the caller intended."""
+        if self._workspace_id and not payload.get("workspaceId"):
+            return {**payload, "workspaceId": self._workspace_id}
+        return payload
+
+    def _workspace_params(self) -> Optional[dict]:
+        """Same as _with_workspace(), for GET requests that take workspaceId as a query param."""
+        return {"workspaceId": self._workspace_id} if self._workspace_id else None
 
     def _request(self, method: str, path: str, timeout: int = 30, **kwargs) -> Any:
         url = f"{self._base_url}{path}"
@@ -125,19 +148,51 @@ class EvaluationsClient:
     # ------------------------------------------------------------------
 
     def create_dataset(self, payload: dict) -> Dataset:
-        data = self._request("POST", "/datasets", json=payload)
+        data = self._request("POST", "/datasets", json=self._with_workspace(payload))
         return Dataset(**data)
 
     def list_datasets(self) -> List[Dataset]:
-        data = self._request("GET", "/datasets")
+        data = self._request("GET", "/datasets", params=self._workspace_params())
         return [
             Dataset(**d)
             for d in (data if isinstance(data, list) else data.get("datasets", []))
         ]
 
     def get_dataset(self, dataset_id: str) -> Dataset:
-        data = self._request("GET", f"/datasets/{dataset_id}")
+        data = self._request(
+            "GET", f"/datasets/{dataset_id}", params=self._workspace_params()
+        )
         return Dataset(**data)
+
+    # ------------------------------------------------------------------
+    # Evaluation Settings endpoints — standalone grading config, reusable
+    # across datasets.
+    # ------------------------------------------------------------------
+
+    def create_evaluation_settings(self, payload: dict) -> EvaluationSettings:
+        data = self._request(
+            "POST", "/evaluation-settings", json=self._with_workspace(payload)
+        )
+        return EvaluationSettings(**data)
+
+    def list_evaluation_settings(self) -> List[EvaluationSettings]:
+        data = self._request(
+            "GET", "/evaluation-settings", params=self._workspace_params()
+        )
+        return [
+            EvaluationSettings(**e)
+            for e in (
+                data if isinstance(data, list) else data.get("evaluationSettings", [])
+            )
+        ]
+
+    def get_evaluation_settings(self, evaluation_settings_id: str) -> EvaluationSettings:
+        data = self._request(
+            "GET",
+            f"/evaluation-settings/{evaluation_settings_id}",
+            params=self._workspace_params(),
+        )
+        return EvaluationSettings(**data)
 
     # ------------------------------------------------------------------
     # Run endpoints
@@ -148,6 +203,7 @@ class EvaluationsClient:
         dataset_id: str,
         subject: EvaluationSubject,
         python_version: Optional[str] = None,
+        evaluation_settings_id: Optional[str] = None,
     ) -> EvaluationRun:
         from agentx.version import VERSION
 
@@ -162,7 +218,9 @@ class EvaluationsClient:
                 "pythonVersion": python_version or _python_version(),
             },
         }
-        data = self._request("POST", "/runs", json=payload)
+        if evaluation_settings_id:
+            payload["evaluationSettingsId"] = evaluation_settings_id
+        data = self._request("POST", "/runs", json=self._with_workspace(payload))
         return EvaluationRun(**data)
 
     def append_results(
@@ -207,6 +265,7 @@ def _result_to_payload(r: EvaluationResult) -> dict:
     d["questionIndex"] = d.pop("question_index", d.get("questionIndex"))
     d["runNumber"] = d.pop("run_number", d.get("runNumber"))
     d["idempotencyKey"] = d.pop("idempotency_key", d.get("idempotencyKey"))
+    d["traceId"] = d.pop("trace_id", d.get("traceId"))
     return {k: v for k, v in d.items() if v is not None}
 
 

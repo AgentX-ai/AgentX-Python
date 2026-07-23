@@ -29,6 +29,8 @@ class DatasetBuilder:
         evaluation_criteria: Optional[str] = None,
         vector_similarity: bool = False,
         jaccard_similarity: bool = False,
+        bleu_score: bool = False,
+        rouge_score: bool = False,
         similarity_model: Optional[str] = None,
         sovereignty_models: Optional[List[str]] = None,
     ):
@@ -43,7 +45,8 @@ class DatasetBuilder:
             "questions": [],
         }
         # Opt-in similarity metrics, surfaced on the report as cosine_similarity /
-        # jaccard_similarity (computed against each case's expected_results).
+        # jaccard_similarity / bleu_score / rouge_score (computed against each
+        # case's expected_results).
         if vector_similarity:
             vs: Dict[str, Any] = {"enabled": True}
             if similarity_model:
@@ -51,6 +54,10 @@ class DatasetBuilder:
             self._payload["vectorSimilarity"] = vs
         if jaccard_similarity:
             self._payload["jaccardSimilarity"] = {"enabled": True}
+        if bleu_score:
+            self._payload["bleuScore"] = {"enabled": True}
+        if rouge_score:
+            self._payload["rougeScore"] = {"enabled": True}
         # Sovereignty & Portability — the models to compare on this dataset (use
         # client.evaluations.list_models() to discover valid ids).
         if sovereignty_models:
@@ -212,6 +219,8 @@ class DatasetClient:
         evaluation_criteria: Optional[str] = None,
         vector_similarity: bool = False,
         jaccard_similarity: bool = False,
+        bleu_score: bool = False,
+        rouge_score: bool = False,
         similarity_model: Optional[str] = None,
         sovereignty_models: Optional[List[str]] = None,
     ) -> DatasetBuilder:
@@ -225,6 +234,8 @@ class DatasetClient:
             evaluation_criteria=evaluation_criteria,
             vector_similarity=vector_similarity,
             jaccard_similarity=jaccard_similarity,
+            bleu_score=bleu_score,
+            rouge_score=rouge_score,
             similarity_model=similarity_model,
             sovereignty_models=sovereignty_models,
         )

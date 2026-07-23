@@ -76,6 +76,38 @@ class Dataset(BaseModel):
         extra = "ignore"
 
 
+class EvaluationSettings(BaseModel):
+    """A standalone, reusable grading config — no dataset/questions attached.
+    Created via ``client.evaluations.settings.builder(...).publish()`` and run
+    against any dataset by passing its id as ``evaluation_settings_id`` to
+    ``client.evaluations.run(...)``."""
+
+    id: str = Field(alias="_id")
+    name: str
+    description: Optional[str] = None
+    number_of_requests: int = Field(default=1, alias="numberOfRequests")
+    acceptance_criteria: Optional[str] = Field(default=None, alias="acceptanceCriteria")
+    rejection_criteria: Optional[str] = Field(default=None, alias="rejectionCriteria")
+    evaluation_criteria: Optional[str] = Field(default=None, alias="evaluationCriteria")
+    status: str = "published"
+    # Sovereignty & Portability — models selected to compare when this config runs.
+    # Hoisted from the nested ``sovereigntyIndex`` object when enabled.
+    sovereignty_models: List[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _extract_sovereignty_models(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            sov = data.get("sovereigntyIndex") or data.get("sovereignty_index") or {}
+            if isinstance(sov, dict) and sov.get("enabled") and sov.get("models"):
+                data = {**data, "sovereignty_models": list(sov.get("models") or [])}
+        return data
+
+    class Config:
+        populate_by_name = True
+        extra = "ignore"
+
+
 # ---------------------------------------------------------------------------
 # Evaluation subject
 # ---------------------------------------------------------------------------
@@ -154,6 +186,22 @@ class ServerLimits(BaseModel):
         extra = "ignore"
 
 
+class LiveStatistics(BaseModel):
+    """Rating aggregate computed server-side from submitted results — available
+    as soon as results are scored, independent of the `.analyze()` step (which
+    only adds the LLM-driven qualitative report). Returned on the run resource
+    (``GET /runs/:runId``) as ``liveStatistics``."""
+
+    average_rating: Optional[float] = Field(default=None, alias="averageRating")
+    min_rating: Optional[float] = Field(default=None, alias="minRating")
+    max_rating: Optional[float] = Field(default=None, alias="maxRating")
+    rated_count: int = Field(default=0, alias="ratedCount")
+
+    class Config:
+        populate_by_name = True
+        extra = "ignore"
+
+
 class EvaluationRun(BaseModel):
     run_id: str = Field(alias="runId")
     dataset_id: str = Field(alias="datasetId")
@@ -226,6 +274,10 @@ class EvaluationResult(BaseModel):
     timings: Optional[ResultTimings] = None
     metadata: Optional[Dict[str, Any]] = None
     idempotency_key: Optional[str] = Field(default=None, alias="idempotencyKey")
+    # Links this result to a PromptTrace ingested via client.tracer.trace(..., sync=True) — lets
+    # the dashboard's "Message Trace Details -> Execution Timeline" render the full execution
+    # trace for this case, not just the lightweight observable_trace events above.
+    trace_id: Optional[str] = Field(default=None, alias="traceId")
 
     class Config:
         populate_by_name = True
@@ -262,6 +314,8 @@ class BatchAppendResponse(BaseModel):
     scored_results: List[ScoredResult] = Field(
         default_factory=list, alias="scoredResults"
     )
+    # Server-computed rating aggregate, refreshed after this batch — see LiveStatistics.
+    live_statistics: Optional[LiveStatistics] = Field(default=None, alias="liveStatistics")
 
     class Config:
         populate_by_name = True
@@ -280,6 +334,8 @@ class ReportStatistics(BaseModel):
     max_rating: float = Field(default=0.0, alias="maxRating")
     cosine_similarity: Optional[float] = Field(default=None, alias="cosineSimilarity")
     jaccard_similarity: Optional[float] = Field(default=None, alias="jaccardSimilarity")
+    bleu_score: Optional[float] = Field(default=None, alias="bleuScore")
+    rouge_score: Optional[float] = Field(default=None, alias="rougeScore")
 
     class Config:
         populate_by_name = True
@@ -356,6 +412,12 @@ class SovereigntyModelMetrics(BaseModel):
     average_jaccard_similarity: Optional[float] = Field(
         default=None, alias="averageJaccardSimilarity"
     )
+    average_bleu_score: Optional[float] = Field(
+        default=None, alias="averageBleuScore"
+    )
+    average_rouge_score: Optional[float] = Field(
+        default=None, alias="averageRougeScore"
+    )
     average_latency_ms: Optional[float] = Field(default=None, alias="averageLatencyMs")
     total_input_tokens: Optional[int] = Field(default=None, alias="totalInputTokens")
     total_output_tokens: Optional[int] = Field(default=None, alias="totalOutputTokens")
@@ -421,11 +483,15 @@ class Report(BaseModel):
             return data
         stats = data.get("statistics")
         stats = dict(stats) if isinstance(stats, dict) else {}
-        for top_key, nested_key in (
-            ("cosineSimilarity", "cosineSimilarity"),
-            ("cosine_similarity", "cosine_similarity"),
-            ("jaccardSimilarity", "jaccardSimilarity"),
-            ("jaccard_similarity", "jaccard_similarity"),
+        for top_key, nested_key, marker in (
+            ("cosineSimilarity", "cosineSimilarity", "cosine"),
+            ("cosine_similarity", "cosine_similarity", "cosine"),
+            ("jaccardSimilarity", "jaccardSimilarity", "jaccard"),
+            ("jaccard_similarity", "jaccard_similarity", "jaccard"),
+            ("bleuScore", "bleuScore", "bleu"),
+            ("bleu_score", "bleu_score", "bleu"),
+            ("rougeScore", "rougeScore", "rouge"),
+            ("rouge_score", "rouge_score", "rouge"),
         ):
             top_val = data.get(top_key)
             if top_val is None:
@@ -433,14 +499,18 @@ class Report(BaseModel):
             if (
                 stats.get("cosineSimilarity") is None
                 and stats.get("cosine_similarity") is None
-                and "cosine" in nested_key.lower()
+                and marker == "cosine"
             ):
                 stats[nested_key] = top_val
             if (
                 stats.get("jaccardSimilarity") is None
                 and stats.get("jaccard_similarity") is None
-                and "jaccard" in nested_key.lower()
+                and marker == "jaccard"
             ):
+                stats[nested_key] = top_val
+            if stats.get("bleuScore") is None and stats.get("bleu_score") is None and marker == "bleu":
+                stats[nested_key] = top_val
+            if stats.get("rougeScore") is None and stats.get("rouge_score") is None and marker == "rouge":
                 stats[nested_key] = top_val
         if stats:
             data["statistics"] = stats
@@ -461,6 +531,18 @@ class Report(BaseModel):
         return (
             self.statistics.jaccard_similarity if self.statistics is not None else None
         )
+
+    @property
+    def bleu_score(self) -> Optional[float]:
+        """Average BLEU score across scored results, or ``None`` if the metric
+        was not enabled for the dataset or no result has a value yet."""
+        return self.statistics.bleu_score if self.statistics is not None else None
+
+    @property
+    def rouge_score(self) -> Optional[float]:
+        """Average ROUGE-L (F1) score across scored results, or ``None`` if the
+        metric was not enabled for the dataset or no result has a value yet."""
+        return self.statistics.rouge_score if self.statistics is not None else None
 
     @property
     def average_rating(self) -> Optional[float]:

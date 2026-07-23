@@ -34,6 +34,7 @@ def normalize_result(
 
     output: Optional[dict] = None
     trace = None
+    trace_id: Optional[str] = None
     metadata: Optional[dict] = None
     error: Optional[ResultError] = None
     input_tokens: Optional[int] = None
@@ -50,6 +51,8 @@ def normalize_result(
             output = {"text": str(text)} if text else None
 
         trace = build_trace(raw.get("trace") or raw.get("observable_trace"))
+        trace_id_raw = raw.get("trace_id") or raw.get("traceId")
+        trace_id = str(trace_id_raw) if trace_id_raw else None
         meta_raw = raw.get("metadata")
         if isinstance(meta_raw, dict):
             metadata = redact_dict(meta_raw)
@@ -102,6 +105,7 @@ def normalize_result(
             else None
         ),
         metadata=metadata,
+        traceId=trace_id,
     )
 
 

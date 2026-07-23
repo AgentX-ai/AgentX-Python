@@ -90,6 +90,30 @@ class IngestClient:
         """Block until all queued traces have been sent (or timeout elapses)."""
         self._queue.join()
 
+    def send_trace_sync(self, payload: Dict[str, Any]) -> Optional[str]:
+        """
+        Send a trace payload synchronously and return the ingested trace's id, or ``None`` on
+        failure. Used by ``Tracer.trace(..., sync=True)`` when the caller needs the trace_id back
+        immediately (e.g. to attach it to an evaluation result) — unlike ``enqueue()``, this blocks
+        and does not retry, trading the tracer's usual fire-and-forget guarantee for a same-call
+        result. Never raises; a failed send just means no trace_id (never blocks the caller's eval
+        run over a tracing hiccup).
+        """
+        if self._workspace_id:
+            payload = {**payload, "workspaceId": self._workspace_id}
+        try:
+            resp = self._session.post(self._endpoint, json=payload, timeout=10)
+        except requests.RequestException as exc:
+            logger.debug("agentx ingest sync send error: %s", exc)
+            return None
+        if not resp.ok:
+            logger.debug("agentx ingest sync HTTP %d: %s", resp.status_code, resp.text[:200])
+            return None
+        try:
+            return resp.json().get("trace_id")
+        except Exception:
+            return None
+
     def evaluate_trace(
         self,
         trace_id: str,

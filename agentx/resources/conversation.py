@@ -82,7 +82,7 @@ class Conversation(BaseModel):
                 f"Failed to retrieve agent details: {response.status_code} - {response.reason}"
             )
 
-    def chat(self, message: str, context: int = None):
+    def chat(self, message: str, context: Optional[int] = None):
         url = f"{api_base()}/access/conversations/{self.id}/message"
         response = requests.post(
             url,
@@ -91,7 +91,7 @@ class Conversation(BaseModel):
         )
         return response.json()
 
-    def chat_stream(self, message: str, context: int = None) -> Iterator[ChatResponse]:
+    def chat_stream(self, message: str, context: Optional[int] = None) -> Iterator[ChatResponse]:
         url = f"{api_base()}/access/conversations/{self.id}/jsonmessagesse"
         response = requests.post(
             url, headers=get_headers(), json={"message": message, "context": context}

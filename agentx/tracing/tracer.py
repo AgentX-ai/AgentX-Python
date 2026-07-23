@@ -77,6 +77,7 @@ class _TraceSpan:
         framework: Optional[str] = None,
         model: Optional[str] = None,
         session_id: Optional[str] = None,
+        sync: bool = False,
     ) -> None:
         self._tracer = tracer
         self.name = name
@@ -86,6 +87,10 @@ class _TraceSpan:
         self._framework = framework
         self._model = model
         self._session_id = session_id
+        # When True, __exit__ sends synchronously (blocking) instead of enqueueing, so trace_id
+        # is populated by the time the `with` block exits — see Tracer.trace()'s sync param.
+        self._sync = sync
+        self._trace_id: Optional[str] = None
 
         # Fields the caller can set while inside the context manager
         self.output: Any = None
@@ -123,9 +128,32 @@ class _TraceSpan:
         if exc_val is not None and self._error is None:
             self._error = str(exc_val)
 
+        # Auto-instrumented integrations (patched Anthropic client, AgentXCallbackHandler, ...)
+        # populate _execution_steps via _record_llm_call while this span is active. Wrapping a raw
+        # API call with no such integration (e.g. a bare `openai` call) never populates it — without
+        # this fallback the Execution Timeline would be empty despite the span having real
+        # input/output, since nothing else here describes what the wrapped code actually did.
+        # Mirrors what the @tracer.trace(...) decorator form has always synthesized for exactly
+        # this case (see _wrap_sync/_wrap_async below).
+        execution_steps = self._execution_steps or (
+            [
+                {
+                    "name": "LLM Call 1",
+                    "duration_ms": latency_ms or 0,
+                    "start_time": self._start,
+                    "end_time": time.time(),
+                    "model": self._model or self._captured_model,
+                    "input": _safe_serialize(self.input) if self.input is not None else None,
+                    "output": _safe_serialize(self.output) if self.output is not None else None,
+                }
+            ]
+            if self.input is not None or self.output is not None
+            else []
+        )
+
         perf = build_performance_summary(
             total_duration_ms=latency_ms or 0,
-            execution_steps=self._execution_steps,
+            execution_steps=execution_steps,
             tool_call_steps=[
                 {
                     "name": tc.get("name"),
@@ -141,7 +169,8 @@ class _TraceSpan:
             has_errors=self._error is not None,
         )
 
-        self._tracer._send(
+        self._trace_id = self._tracer._send(
+            sync=self._sync,
             name=self.name,
             input=_safe_serialize(self.input) if self.input is not None else None,
             output=_safe_serialize(self.output) if self.output is not None else None,
@@ -157,6 +186,13 @@ class _TraceSpan:
             output_tokens=self._output_tokens or None,
         )
         return False  # never suppress exceptions
+
+    @property
+    def trace_id(self) -> Optional[str]:
+        """The ingested trace's id — only populated once this span has exited AND it was opened
+        with ``tracer.trace(..., sync=True)``. ``None`` for the default (async/enqueued) mode,
+        since there's nothing to wait on for a same-call id."""
+        return self._trace_id
 
     # ------------------------------------------------------------------
     # Called by auto-instrumented integrations (e.g. patch_anthropic_client)
@@ -578,10 +614,21 @@ class Tracer:
         framework: Optional[str] = None,
         model: Optional[str] = None,
         session_id: Optional[str] = None,
+        sync: bool = False,
     ) -> _TraceSpan:
         """
         Return a :class:`_TraceSpan` that works as both a decorator and a
         context manager.
+
+        By default the trace is queued and sent on a background thread — fire-and-forget, never
+        blocks the caller, but there's no way to learn the resulting trace_id. Pass ``sync=True``
+        to send it synchronously instead (blocks until ingested) so ``span.trace_id`` is populated
+        once the ``with`` block exits — e.g. to attach the trace to an evaluation result::
+
+            with client.tracer.trace("support_agent_call", framework="openai", sync=True) as span:
+                resp = call_llm(...)
+                span.output = resp
+            return {"output": resp, "trace_id": span.trace_id}
         """
         return _TraceSpan(
             tracer=self,
@@ -591,6 +638,7 @@ class Tracer:
             framework=framework,
             model=model,
             session_id=session_id,
+            sync=sync,
         )
 
     def flush(self, timeout: float = 5.0) -> None:
@@ -767,8 +815,8 @@ class Tracer:
         as-is — the agent is NOT re-run.
 
         Args:
-            trace_id:       ID returned by a previous ``trace()`` call
-                            (available as ``span._trace_id`` after flush).
+            trace_id:       ID of a trace ingested via ``trace(..., sync=True)``
+                            (available as ``span.trace_id`` once that `with` block exits).
             dataset_id:     EvaluationSettings ID to score against.
             question_index: Optional index into the dataset's questions array.
                             When supplied, that question's ``expectedResults``
@@ -784,7 +832,7 @@ class Tracer:
     # Internal
     # ------------------------------------------------------------------
 
-    def _send(self, **kwargs) -> None:
+    def _send(self, sync: bool = False, **kwargs) -> Optional[str]:
         payload = {k: v for k, v in kwargs.items() if v is not None}
         # Remap to snake_case wire format expected by the backend
         wire: Dict[str, Any] = {}
@@ -844,4 +892,7 @@ class Tracer:
                     wire["performance_summary"], pending_tool_calls
                 )
 
+        if sync:
+            return self._client.send_trace_sync(wire)
         self._client.enqueue(wire)
+        return None

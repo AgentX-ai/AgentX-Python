@@ -67,6 +67,20 @@ def print_report(report: Report) -> None:
             f"  {dim('Jaccard :')} {jac_color(f'{jac * 100:.1f}%')}  {dim('(token-set overlap)')}"
         )
 
+    bleu = report.bleu_score
+    if bleu is not None:
+        bleu_color = green if bleu >= 0.6 else (yellow if bleu >= 0.3 else red)
+        print(
+            f"  {dim('BLEU    :')} {bleu_color(f'{bleu * 100:.1f}%')}  {dim('(n-gram precision)')}"
+        )
+
+    rouge = report.rouge_score
+    if rouge is not None:
+        rouge_color = green if rouge >= 0.6 else (yellow if rouge >= 0.3 else red)
+        print(
+            f"  {dim('ROUGE-L :')} {rouge_color(f'{rouge * 100:.1f}%')}  {dim('(longest common subsequence)')}"
+        )
+
     if report.consistency_score is not None:
         cs = report.consistency_score
         cs_color = green if cs >= 7 else (yellow if cs >= 4 else red)

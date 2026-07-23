@@ -21,6 +21,11 @@ setup(
     name="agentx-python",
     version=get_version(),
     packages=find_packages(),
+    # PEP 561: ships type hints for consumers' type checkers (mypy/pyright). Without this marker,
+    # every symbol imported from `agentx` is treated as untyped `Any`, silently disabling type
+    # checking for anything that touches the SDK.
+    package_data={"agentx": ["py.typed"]},
+    zip_safe=False,
     install_requires=[
         "urllib3>=1.26.11",
         "certifi",

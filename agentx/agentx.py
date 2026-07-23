@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 import requests
 import os
 import logging
@@ -10,7 +10,12 @@ from agentx.resources.workforce import Workforce
 
 class AgentX:
 
-    def __init__(self, api_key: str = None, base_url: str = None, workspace_id: str = None):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+    ):
         self.api_key = api_key or os.getenv("AGENTX_API_KEY")
         if self.api_key and not os.getenv("AGENTX_API_KEY"):
             os.environ["AGENTX_API_KEY"] = self.api_key
@@ -32,6 +37,7 @@ class AgentX:
             api_key=self.api_key,
             sdk_version=VERSION,
             base_url=self.base_url,
+            workspace_id=self.workspace_id,
         )
         self.evaluations = EvaluationsRunner(_eval_client)
 

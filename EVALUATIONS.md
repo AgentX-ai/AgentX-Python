@@ -76,6 +76,10 @@ if report.cosine_similarity is not None:
     print(f"Cosine similarity: {report.cosine_similarity:.3f}")   # 0–1
 if report.jaccard_similarity is not None:
     print(f"Jaccard similarity:{report.jaccard_similarity:.3f}")  # 0–1
+if report.bleu_score is not None:
+    print(f"BLEU score:        {report.bleu_score:.3f}")          # 0–1
+if report.rouge_score is not None:
+    print(f"ROUGE-L score:     {report.rouge_score:.3f}")         # 0–1
 
 print(f"Dashboard: {report.dashboard_url}")
 ```
@@ -143,6 +147,40 @@ query,expected_results
 ```
 
 Optional `case_id` column for stable idempotency keys across re-runs.
+
+---
+
+### Evaluation Settings builder — reusable grading configs
+
+By default, a dataset runs against the grading config it was created with (`number_of_requests`, `acceptance_criteria`, similarity metrics, etc. — see above). If you want to grade the **same dataset** against **different configs** (e.g. a strict config vs. a lenient one, or reuse one config across many datasets), create a standalone `EvaluationSettings` and pass its id to `.run()`:
+
+```python
+strict_settings = (
+    client.evaluations.settings
+    .builder(
+        name="Strict grading",
+        number_of_requests=5,
+        acceptance_criteria="Must cite the exact policy clause.",
+        rejection_criteria="Any hallucinated or paraphrased policy text.",
+    )
+    .publish()
+)
+
+report = (
+    client.evaluations
+    .run(dataset_id=dataset.id, subject={...}, evaluation_settings_id=strict_settings.id)
+    .execute(my_agent)
+    .finalize()
+    .analyze()
+)
+```
+
+Omit `evaluation_settings_id` to keep using the dataset's own config, exactly as before — this is fully additive, no existing code needs to change. The builder accepts the same config kwargs as `datasets.builder(...)` (`number_of_requests`, the three criteria fields, `vector_similarity`/`jaccard_similarity`/`bleu_score`/`rouge_score`, `sovereignty_models`) but no `questions` — it's config-only and reusable.
+
+```python
+client.evaluations.settings.get(strict_settings.id)   # fetch one
+client.evaluations.settings.list()                     # list all
+```
 
 ---
 
@@ -447,22 +485,37 @@ Full example: [`examples/evaluations/csv_import_eval.py`](examples/evaluations/c
 
 ### Similarity metrics (optional)
 
-Each scored result can be enriched with two reference-based similarity scores comparing your agent's response to the `expected_results` of the case:
+Each scored result can be enriched with reference-based similarity scores comparing your agent's response to the `expected_results` of the case:
 
 | Metric | What it measures | Cost |
 |---|---|---|
 | **Cosine** (vector similarity) | Cosine of OpenAI embeddings of `expected_results` vs the actual response. Captures semantic similarity. | One embedding API call per case. |
 | **Jaccard** | Token-set overlap `|A ∩ B| / |A ∪ B|` over lowercased word tokens. Pure lexical match. | Free — no API calls. |
+| **BLEU** | Sentence-level BLEU-4 (n-gram precision, up to 4-grams, with brevity penalty). Standard machine-translation-style metric — rewards responses that reuse the expected result's exact phrasing. | Free — no API calls. |
+| **ROUGE-L** | F1 over the longest common (in-order) subsequence of tokens. Standard summarization-style metric — more tolerant of reordering/insertions than BLEU. | Free — no API calls. |
 
-Both metrics are returned in the range `[0, 1]` and averaged across all scored results in the report.
+All four metrics are returned in the range `[0, 1]` and averaged across all scored results in the report. BLEU and ROUGE-L are computed server-side in the same way as Jaccard (no external API call, pure token-based math) — they're a good default choice when you want a similarity signal without embedding cost.
 
 **Enable them on the dataset** (via the AgentX dashboard or the dataset API):
 
 ```jsonc
 {
   "vectorSimilarity":  { "enabled": true, "model": "text-embedding-3-small" },
-  "jaccardSimilarity": { "enabled": true }
+  "jaccardSimilarity": { "enabled": true },
+  "bleuScore":         { "enabled": true },
+  "rougeScore":        { "enabled": true }
 }
+```
+
+Or via `DatasetBuilder` / `client.evaluations.datasets.builder(...)`:
+
+```python
+builder = client.evaluations.datasets.builder(
+    name="support-agent-eval",
+    jaccard_similarity=True,
+    bleu_score=True,
+    rouge_score=True,
+)
 ```
 
 **Read them on the report:**
@@ -475,13 +528,19 @@ report = client.evaluations.run(...).execute(my_agent).finalize().analyze()
 report.average_rating       # float | None  — same as report.statistics.average_rating
 report.cosine_similarity    # float | None  — averaged across cases (0–1)
 report.jaccard_similarity   # float | None  — averaged across cases (0–1)
+report.bleu_score           # float | None  — averaged across cases (0–1)
+report.rouge_score          # float | None  — averaged across cases (0–1), ROUGE-L F1
 
 # Same values are also available nested under the statistics block:
 report.statistics.cosine_similarity
 report.statistics.jaccard_similarity
+report.statistics.bleu_score
+report.statistics.rouge_score
 ```
 
-Cases where `expected_results` is empty or the agent returned an error are skipped from the average, so a sparse dataset still produces a meaningful score. If neither toggle was on for the dataset, both properties return `None`.
+Cases where `expected_results` is empty or the agent returned an error are skipped from the average, so a sparse dataset still produces a meaningful score. If a toggle wasn't on for the dataset, that property returns `None`.
+
+These four metrics also appear per-model (as `average_bleu_score`/`average_rouge_score` alongside `average_vector_similarity`/`average_jaccard_similarity`) when a dataset selects multiple comparison models, in each model's row of `report.sovereignty_index.models`.
 
 ### Return value from your agent function
 

@@ -13,7 +13,9 @@ from agentx.evaluations.models import (
     EvaluationCase,
     EvaluationResult,
     EvaluationRun,
+    EvaluationSettings,
     EvaluationSubject,
+    LiveStatistics,
     ModelInfo,
     Report,
 )
@@ -54,14 +56,24 @@ class EvaluationRunContext:
         dataset: Dataset,
         run: EvaluationRun,
         subject: EvaluationSubject,
+        evaluation_settings: Optional[EvaluationSettings] = None,
     ):
         self._client = client
         self._dataset = dataset
         self._run = run
         self._subject = subject
+        # When set, this run was started with an independently chosen grading
+        # config (evaluation_settings_id) — its fields take precedence over the
+        # dataset's own for anything execution-time reads (see _build_cases).
+        self._evaluation_settings = evaluation_settings
         self._results: List[EvaluationResult] = []
         self._submitted_keys: Set[str] = set()
         self._report: Optional[Report] = None
+        # Server-computed rating aggregate (Evaluate.liveStatistics) — refreshed
+        # from the response of each append_results()/finalize_run() call. The
+        # API is the single source of truth for this number (same value the
+        # dashboard UI reads), so the SDK does not average results itself.
+        self._live_stats: Optional[LiveStatistics] = None
 
     # ------------------------------------------------------------------
     # Step 1: execute
@@ -70,7 +82,7 @@ class EvaluationRunContext:
     def execute(self, adapter: AdapterLike) -> "EvaluationRunContext":
         """Run all cases locally and submit batches to AgentX."""
         normalized = _wrap_adapter(adapter)
-        cases = _build_cases(self._dataset)
+        cases = _build_cases(self._dataset, self._evaluation_settings)
         max_batch = self._run.limits.max_batch_size
 
         # Banner
@@ -80,7 +92,11 @@ class EvaluationRunContext:
         runtime = self._subject.runtime or "local"
         display = self._subject.display_name or ""
         n_q = len(self._dataset.questions)
-        n_r = self._dataset.number_of_requests
+        n_r = (
+            self._evaluation_settings.number_of_requests
+            if self._evaluation_settings
+            else self._dataset.number_of_requests
+        )
 
         print(cyan(sep))
         print(f"  {bold('AgentX Evaluation')}  {dim('—')}  {name}")
@@ -137,6 +153,8 @@ class EvaluationRunContext:
         with Spinner(f"Scoring — AI is rating {n} result{'s' if n != 1 else ''}"):
             try:
                 resp = self._client.append_results(self._run.run_id, batch_id, batch)
+                if resp.live_statistics is not None:
+                    self._live_stats = resp.live_statistics
                 print(
                     f"  {green('✓')}  Scored {resp.accepted} result{'s' if resp.accepted != 1 else ''}"
                 )
@@ -168,13 +186,43 @@ class EvaluationRunContext:
         print()
         with Spinner("Finalizing — submitting results"):
             try:
-                self._client.finalize_run(self._run.run_id)
+                data = self._client.finalize_run(self._run.run_id)
+                if isinstance(data, dict) and data.get("liveStatistics") is not None:
+                    self._live_stats = LiveStatistics(**data["liveStatistics"])
                 print(f"  {green('✓')}  Finalized")
                 logger.info("Run %s finalized", self._run.run_id)
             except Exception as exc:
                 print(f"  {red('✗')}  Finalize failed: {dim(str(exc))}")
                 logger.error("Finalize failed: %s", exc)
         return self
+
+    # ------------------------------------------------------------------
+    # Live rating stats — server-computed (Evaluate.liveStatistics), refreshed
+    # from the response of each append_results()/finalize_run() call. Available
+    # as soon as .execute() submits batches, no .analyze() required. The SDK
+    # does not average ratings itself — this mirrors exactly what the dashboard
+    # UI reads, computed once in the API.
+    # ------------------------------------------------------------------
+
+    @property
+    def rated_count(self) -> int:
+        """Number of submitted results that have received a rating so far."""
+        return self._live_stats.rated_count if self._live_stats else 0
+
+    @property
+    def average_rating(self) -> Optional[float]:
+        """Live average rating across all results scored so far. Populated as
+        soon as .execute() submits batches — unlike Report.average_rating,
+        does not require .analyze()."""
+        return self._live_stats.average_rating if self._live_stats else None
+
+    @property
+    def min_rating(self) -> Optional[float]:
+        return self._live_stats.min_rating if self._live_stats else None
+
+    @property
+    def max_rating(self) -> Optional[float]:
+        return self._live_stats.max_rating if self._live_stats else None
 
     # ------------------------------------------------------------------
     # Step 3: analyze + report
@@ -223,6 +271,7 @@ class EvaluationsRunner:
     def __init__(self, client: EvaluationsClient):
         self._client = client
         self.datasets = client.datasets
+        self.settings = client.settings
 
     def list_models(self, provider: Optional[str] = None) -> List[ModelInfo]:
         """List the LLM models AgentX supports — the same set selectable for
@@ -235,20 +284,36 @@ class EvaluationsRunner:
         self,
         dataset_id: str,
         subject: Union[Dict[str, Any], EvaluationSubject],
+        evaluation_settings_id: Optional[str] = None,
     ) -> EvaluationRunContext:
+        """Start a run of ``dataset_id`` against ``subject``. Pass
+        ``evaluation_settings_id`` to grade against a standalone, reusable
+        config (created via ``client.evaluations.settings.builder(...)``)
+        instead of the dataset's own default config."""
         if isinstance(subject, dict):
             subject = EvaluationSubject(**subject)
 
         dataset = self._client.get_dataset(dataset_id)
-        run = self._client.init_run(dataset_id, subject)
+        evaluation_settings = (
+            self._client.get_evaluation_settings(evaluation_settings_id)
+            if evaluation_settings_id
+            else None
+        )
+        run = self._client.init_run(
+            dataset_id, subject, evaluation_settings_id=evaluation_settings_id
+        )
         logger.info(
             "Started evaluation run %s on dataset %s (%d case(s), %d repetition(s))",
             run.run_id,
             dataset_id,
             len(dataset.questions),
-            dataset.number_of_requests,
+            evaluation_settings.number_of_requests
+            if evaluation_settings
+            else dataset.number_of_requests,
         )
-        return EvaluationRunContext(self._client, dataset, run, subject)
+        return EvaluationRunContext(
+            self._client, dataset, run, subject, evaluation_settings=evaluation_settings
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -268,14 +333,26 @@ def _wrap_adapter(adapter: AdapterLike) -> Callable[[EvaluationCase], Evaluation
     )
 
 
-def _build_cases(dataset: Dataset) -> List[EvaluationCase]:
+def _build_cases(
+    dataset: Dataset, evaluation_settings: Optional[EvaluationSettings] = None
+) -> List[EvaluationCase]:
     cases: List[EvaluationCase] = []
-    n_runs = max(dataset.number_of_requests, 1)
-    # Sovereignty & Portability: when the dataset selects comparison models, run
+    # When an independent evaluation_settings was chosen (evaluation_settings_id
+    # passed to .run()), its numberOfRequests/sovereigntyIndex take precedence
+    # over the dataset's own — that's the whole point of decoupling them. With
+    # no evaluation_settings, this reproduces today's exact behavior.
+    n_runs = max(
+        (evaluation_settings.number_of_requests if evaluation_settings else dataset.number_of_requests),
+        1,
+    )
+    # Sovereignty & Portability: when the config selects comparison models, run
     # every question/run once per model in this single run so the report groups
     # results into a per-model portability matrix (mirrors the native route).
     # ``[None]`` keeps legacy single-model behavior (case.model stays unset).
-    models: List[Optional[str]] = list(dataset.sovereignty_models) or [None]
+    sovereignty_models = (
+        evaluation_settings.sovereignty_models if evaluation_settings else dataset.sovereignty_models
+    )
+    models: List[Optional[str]] = list(sovereignty_models) or [None]
     for q_idx, question in enumerate(dataset.questions):
         mq = question.main_question
         for run_num in range(1, n_runs + 1):

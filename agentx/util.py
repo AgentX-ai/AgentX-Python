@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 
 _DEFAULT_API_BASE = "https://api.agentx.so/api/v1"
 
@@ -15,5 +16,5 @@ def api_base() -> str:
     return _DEFAULT_API_BASE
 
 
-def get_headers(api_key: str = None):
+def get_headers(api_key: Optional[str] = None):
     return {"accept": "*/*", "x-api-key": api_key or os.getenv("AGENTX_API_KEY")}
