@@ -22,6 +22,7 @@ Also see [SDK Developer Docs](https://developers.agentx.so), [API Reference Docs
   - [Chat (streaming and non-streaming)](#chat-streaming-and-non-streaming)
 - [Workforce (multi-agent orchestration)](#workforce-multi-agent-orchestration) — teams of agents with a designated manager
 - [Production tracing](#production-tracing) — record live agent runs from any framework
+- [Monitor](#monitor) — automatic production monitoring, patterns and signals
 - [Custom agent evaluations](#custom-agent-evaluations) — LLM-as-a-judge, cosine / Jaccard similarity
 - [Links](#links)
 
@@ -197,6 +198,30 @@ See **[TRACING.md](TRACING.md)** for the complete guide — session grouping, er
 
 ---
 
+## Monitor
+
+Automatic production monitoring: check traces against detection patterns and get back triage-ready signals. A **pattern** is a first-class SDK resource with a real id, just like a `Dataset` or `EvaluationSettings`: create one once, then reference it by id at trace time.
+
+```python
+pattern = client.monitor.patterns.builder(
+    name="Promises a refund",
+    detector_kind="semantic",
+    semantic_prompt="The response promises a refund.",
+    severity="high",
+).publish()
+
+with client.tracer.trace("support-agent", monitor=True, pattern_ids=[pattern.id]) as span:
+    span.output = call_llm(query)
+```
+
+`monitor=True` checks the trace immediately, no dashboard setup required. `pattern_ids` restricts detection to exactly those patterns; omit it to run the full default sweep instead (built-in checks like empty response, trace error, and latency regression, plus every pattern enabled for the workspace).
+
+This works independently of the dashboard's per-agent monitoring toggle (Governance > Observe > Agents), which still auto-checks every trace from an agent once enabled there, with no code changes needed either way.
+
+See **[TRACING.md](TRACING.md)** for the complete Monitor guide.
+
+---
+
 ## Custom agent evaluations
 
 Evaluate **any** AI agent — LangChain, CrewAI, AutoGen, LlamaIndex, OpenAI, Anthropic, HTTP endpoints, or plain Python — using AgentX as the scoring and reporting backend. Includes optional **cosine** and **Jaccard** similarity metrics alongside LLM-graded ratings.
@@ -226,3 +251,4 @@ See **[EVALUATIONS.md](EVALUATIONS.md)** for the full guide — dataset builder,
 - **PyPI** — [agentx-python](https://pypi.org/project/agentx-python/)
 - **Tracing docs** — [TRACING.md](TRACING.md)
 - **Evaluations docs** — [EVALUATIONS.md](EVALUATIONS.md)
+- **Monitor docs** — [docs.agentx.so/sdk/monitor](https://docs.agentx.so/sdk/monitor)

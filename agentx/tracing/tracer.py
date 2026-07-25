@@ -78,6 +78,8 @@ class _TraceSpan:
         model: Optional[str] = None,
         session_id: Optional[str] = None,
         sync: bool = False,
+        monitor: bool = False,
+        pattern_ids: Optional[List[str]] = None,
     ) -> None:
         self._tracer = tracer
         self.name = name
@@ -91,6 +93,11 @@ class _TraceSpan:
         # is populated by the time the `with` block exits — see Tracer.trace()'s sync param.
         self._sync = sync
         self._trace_id: Optional[str] = None
+        # Monitor: check this trace against patterns immediately on ingest, no dashboard profile
+        # required. pattern_ids (if given) fully defines what's checked — only those patterns run,
+        # the built-in checks are skipped. See Tracer.trace()'s monitor/pattern_ids params.
+        self._monitor = monitor
+        self._pattern_ids = pattern_ids
 
         # Fields the caller can set while inside the context manager
         self.output: Any = None
@@ -171,6 +178,8 @@ class _TraceSpan:
 
         self._trace_id = self._tracer._send(
             sync=self._sync,
+            monitor=self._monitor or None,
+            pattern_ids=self._pattern_ids,
             name=self.name,
             input=_safe_serialize(self.input) if self.input is not None else None,
             output=_safe_serialize(self.output) if self.output is not None else None,
@@ -615,6 +624,8 @@ class Tracer:
         model: Optional[str] = None,
         session_id: Optional[str] = None,
         sync: bool = False,
+        monitor: bool = False,
+        pattern_ids: Optional[List[str]] = None,
     ) -> _TraceSpan:
         """
         Return a :class:`_TraceSpan` that works as both a decorator and a
@@ -629,6 +640,19 @@ class Tracer:
                 resp = call_llm(...)
                 span.output = resp
             return {"output": resp, "trace_id": span.trace_id}
+
+        Pass ``monitor=True`` to check this trace against Monitor patterns immediately, with no
+        dashboard profile required. ``pattern_ids`` (ids from ``client.monitor.patterns.builder(
+        ...).publish()``) restricts detection to exactly those patterns; omit it to run the full
+        default sweep (built-in checks plus every enabled workspace pattern)::
+
+            pattern = client.monitor.patterns.builder(
+                name="Promises a refund", detector_kind="semantic",
+                semantic_prompt="The response promises a refund.",
+            ).publish()
+
+            with client.tracer.trace("support_agent_call", monitor=True, pattern_ids=[pattern.id]) as span:
+                span.output = call_llm(...)
         """
         return _TraceSpan(
             tracer=self,
@@ -639,6 +663,8 @@ class Tracer:
             model=model,
             session_id=session_id,
             sync=sync,
+            monitor=monitor,
+            pattern_ids=pattern_ids,
         )
 
     def flush(self, timeout: float = 5.0) -> None:
@@ -862,6 +888,10 @@ class Tracer:
             wire["input_tokens"] = payload["input_tokens"]
         if "output_tokens" in payload:
             wire["output_tokens"] = payload["output_tokens"]
+        if "monitor" in payload:
+            wire["monitor"] = payload["monitor"]
+        if "pattern_ids" in payload:
+            wire["pattern_ids"] = payload["pattern_ids"]
 
         pending_retrievals, self._pending_retrievals = self._pending_retrievals, []
         pending_tool_calls, self._pending_tool_calls = self._pending_tool_calls, []

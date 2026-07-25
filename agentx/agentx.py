@@ -29,6 +29,7 @@ class AgentX:
 
         from agentx.evaluations.client import EvaluationsClient
         from agentx.evaluations.runner import EvaluationsRunner
+        from agentx.monitor.client import MonitorClient
         from agentx.tracing.ingest_client import IngestClient
         from agentx.tracing.tracer import Tracer
         from agentx.version import VERSION
@@ -40,6 +41,15 @@ class AgentX:
             workspace_id=self.workspace_id,
         )
         self.evaluations = EvaluationsRunner(_eval_client)
+
+        # Monitor: create/reuse patterns (client.monitor.patterns) that a trace can be checked
+        # against at send time via tracer.trace(..., monitor=True, pattern_ids=[...]).
+        self.monitor = MonitorClient(
+            api_key=self.api_key,
+            sdk_version=VERSION,
+            base_url=self.base_url,
+            workspace_id=self.workspace_id,
+        )
 
         _ingest_client = IngestClient(
             api_key=self.api_key,
