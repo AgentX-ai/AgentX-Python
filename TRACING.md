@@ -326,6 +326,79 @@ class TraceEvalResult:
 
 ---
 
+## Monitor
+
+Automatic production monitoring: check traces against detection **patterns** and get back triage-ready **signals** in the dashboard (Governance > Observe). This works the same way for an agent built natively in AgentX and for an external agent traced entirely through this SDK.
+
+There are two ways to trigger it, and they can be combined.
+
+### Trace-time (explicit, no dashboard setup required)
+
+Pass `monitor=True` on `tracer.trace(...)` to check that specific trace immediately. `pattern_ids` (ids returned by `client.monitor.patterns.builder(...).publish()`) restricts detection to exactly those patterns; omit it to run the full default sweep (built-in checks plus every pattern enabled for the workspace) instead.
+
+```python
+pattern = client.monitor.patterns.builder(
+    name="Promises a refund",
+    detector_kind="semantic",
+    semantic_prompt="The response promises a refund.",
+    severity="high",
+).publish()
+
+with client.tracer.trace("support-agent", monitor=True, pattern_ids=[pattern.id]) as span:
+    span.output = call_llm(query)
+```
+
+Works with the decorator form too: `@tracer.trace("support-agent", monitor=True, pattern_ids=[pattern.id])`.
+
+### Dashboard toggle (automatic, every trace from an agent)
+
+Enable monitoring once per agent in the dashboard, and every subsequent trace from that agent is checked automatically, with no `monitor=True` needed on any individual call:
+
+1. Send at least one trace. The first `tracer.trace(...)` call for a given agent name auto-creates a reference agent in your workspace.
+2. Open **Governance > Observe > Agents**. Your SDK-traced agent appears in the list with an **External** badge.
+3. Turn on its monitoring profile and pick a coverage mode (sample a percentage of traffic, or check every trace).
+
+### What gets checked
+
+Built-in detectors: empty response, trace/tool errors, latency regressions, and (native chat agents only) negative user feedback. Custom patterns: keyword, regex, or an LLM-judged semantic rubric, created via the dashboard or `client.monitor.patterns`. A match becomes a signal, deduped against repeat occurrences of the same issue. A trace that matches nothing counts toward the agent's health rate instead.
+
+### `client.monitor.patterns`
+
+```python
+pattern = client.monitor.patterns.builder(
+    name="Promises a refund",
+    detector_kind="semantic",
+    semantic_prompt="The response promises a refund.",
+).publish()
+
+print(pattern.id)
+
+client.monitor.patterns.get(pattern.id)   # -> MonitorPattern
+client.monitor.patterns.list()            # -> list[MonitorPattern]
+```
+
+#### `builder()` parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `name` | `str` | required | Pattern display name |
+| `description` | `str` | `None` | Human-readable description |
+| `detector_kind` | `str` | `"contains"` | `"contains"`, `"regex"`, or `"semantic"`; selects which field below is used |
+| `match_target` | `list[str]` | `["response"]` | Where to look: `"response"`, `"userMessage"`, `"trace"` |
+| `match_mode` | `str` | `"any"` | For `detector_kind="contains"`: `"any"` or `"all"` of `include_terms` must match |
+| `include_terms` / `exclude_terms` | `list[str]` | `[]` | Phrases to require / exclude, for `detector_kind="contains"` |
+| `regex` | `str` | `None` | Regular expression body, for `detector_kind="regex"` |
+| `semantic_prompt` | `str` | `None` | Rubric an LLM judges the response against, for `detector_kind="semantic"` |
+| `severity` | `str` | `"medium"` | `"low"`, `"medium"`, `"high"`, or `"critical"` |
+| `polarity` | `str` | `"failure"` | `"failure"` raises a signal to triage; `"proper"` logs a healthy tally instead |
+| `enabled` | `bool` | `True` | Whether the pattern is checked at all |
+| `sample_rate` | `float` | `1.0` | Fraction of matching traces to actually check, `0.0`–`1.0` |
+| `scope_mode` / `agent_ids` | `str` / `list[str]` | `"all"` / `[]` | Restrict this pattern to specific agents instead of the whole workspace |
+
+`publish()` returns a `MonitorPattern` with `.id`, which you pass in `pattern_ids` at trace time.
+
+---
+
 ## Async support
 
 All tracing methods work with both sync and async functions:

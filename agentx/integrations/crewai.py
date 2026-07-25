@@ -121,8 +121,13 @@ class AgentXCrewObserver:
         input: Optional[Any] = None,
         metadata: Optional[Dict[str, Any]] = None,
         session_id: Optional[str] = None,
+        sync: bool = False,
     ):
-        """Return a context-manager span for manual kickoff wrapping."""
+        """Return a context-manager span for manual kickoff wrapping.
+
+        Pass ``sync=True`` to send synchronously so ``span.trace_id`` is populated once the
+        block exits — e.g. to attach the trace to an evaluation result. See ``Tracer.trace()``.
+        """
         from agentx.tracing.tracer import _TraceSpan
 
         return _TraceSpan(
@@ -132,4 +137,5 @@ class AgentXCrewObserver:
             metadata=metadata or self._metadata,
             framework="crewai",
             session_id=session_id or self._session_id,
+            sync=sync,
         )
