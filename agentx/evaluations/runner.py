@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from typing import Any, Callable, Dict, List, Optional, Set, Union
 
@@ -9,6 +10,7 @@ from agentx.evaluations.adapters.precomputed import PrecomputedAdapter
 from agentx.evaluations.adapters.http_endpoint import HttpEndpointAdapter
 from agentx.evaluations.client import EvaluationsClient
 from agentx.evaluations.models import (
+    AnalysisStatus,
     Dataset,
     EvaluationCase,
     EvaluationResult,
@@ -42,6 +44,15 @@ AdapterLike = Union[
     PrecomputedAdapter,
     HttpEndpointAdapter,
 ]
+
+_ANALYSIS_LEVEL_LABELS = {
+    "l1_score": "scoring responses",
+    "l2_question_reduce": "reducing questions",
+    "l3_cluster_reduce": "reducing clusters",
+    "l4_final_reduce": "writing final report",
+}
+
+_DEFAULT_JUDGE_MODEL = "gpt-5.5"
 
 
 class EvaluationRunContext:
@@ -228,12 +239,61 @@ class EvaluationRunContext:
     # Step 3: analyze + report
     # ------------------------------------------------------------------
 
-    def analyze(self) -> Report:
+    def analyze(
+        self,
+        mode: Optional[str] = None,
+        quality_mode: Optional[str] = None,
+        judges: Optional[List[str]] = None,
+        poll_interval: float = 5.0,
+        timeout: float = 1800.0,
+    ) -> Report:
+        """Generate the qualitative AI analysis report.
+
+        Runs the same durable, multi-stage pipeline as the dashboard's "Analyze" button: each
+        response is scored by 1-3 LLM judges (``judges``), then reduced into the final report.
+        This starts the job and polls until it finishes, which can take noticeably longer than a
+        single LLM call for larger runs.
+
+        Args:
+            mode: "auto" (default), "sync", or "batch" - how item scoring executes server-side.
+            quality_mode: "quality_first" or "balanced" - how many items get a second/third judge.
+            judges: 1-3 model ids, e.g. ``["gpt-5.5", "claude-opus-4-8"]``. Defaults to a single
+                judge, ``["gpt-5.5"]``, rather than the dashboard's 3-judge default - SDK runs are
+                typically lighter-weight, quick-start evaluations.
+            poll_interval: seconds between status checks while waiting.
+            timeout: give up waiting after this many seconds (the job keeps running server-side;
+                call ``get_report()`` later to check on it).
+        """
+        if judges is not None and not (1 <= len(judges) <= 3):
+            raise ValueError("judges must contain 1-3 model ids")
+        resolved_judges = judges if judges is not None else [_DEFAULT_JUDGE_MODEL]
+
         print()
-        with Spinner("Analyzing — AI is reviewing your results"):
+        with Spinner("Analyzing — AI is reviewing your results") as spinner:
             try:
-                self._client.analyze_run(self._run.run_id)
-                print(f"  {green('✓')}  Analysis complete")
+                self._client.analyze_run(
+                    self._run.run_id,
+                    mode=mode,
+                    quality_mode=quality_mode,
+                    judges=resolved_judges,
+                )
+                deadline = time.monotonic() + timeout
+                status = self._client.get_analysis_status(self._run.run_id)
+                while not status.is_terminal and time.monotonic() < deadline:
+                    level = _ANALYSIS_LEVEL_LABELS.get(status.progress.current_level, "")
+                    spinner.update(
+                        f"Analyzing, {level + ' ' if level else ''}{status.progress.overall_percentage}%"
+                    )
+                    time.sleep(poll_interval)
+                    status = self._client.get_analysis_status(self._run.run_id)
+
+                if not status.is_terminal:
+                    print(f"  {yellow('!')}  Still running after {int(timeout)}s, check the dashboard for status")
+                elif status.status == "failed":
+                    reason = status.failure_reason.message if status.failure_reason else "unknown error"
+                    print(f"  {red('✗')}  Analyze failed: {dim(reason)}")
+                else:
+                    print(f"  {green('✓')}  Analysis complete")
             except Exception as exc:
                 print(f"  {red('✗')}  Analyze failed: {dim(str(exc))}")
                 logger.warning("Analyze request failed: %s", exc)
@@ -279,6 +339,12 @@ class EvaluationsRunner:
         to filter. Useful for discovering valid model identifiers to compare
         against."""
         return self._client.list_models(provider)
+
+    def get_analysis_status(self, run_id: str) -> AnalysisStatus:
+        """Check on an in-progress ``.analyze()`` job by run id, without needing
+        the ``EvaluationRunContext`` that started it (e.g. from a separate
+        script execution)."""
+        return self._client.get_analysis_status(run_id)
 
     def run(
         self,

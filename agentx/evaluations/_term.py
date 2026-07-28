@@ -71,6 +71,12 @@ class Spinner:
         self._thread.start()
         return self
 
+    def update(self, message: str) -> None:
+        """Change the displayed message while the spinner keeps running."""
+        self._message = message
+        if not _IS_TTY:
+            print(f"  {message}...", flush=True)
+
     def __exit__(self, *_) -> None:
         if not _IS_TTY:
             return
