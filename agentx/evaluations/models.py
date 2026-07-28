@@ -438,11 +438,9 @@ class SovereigntyIndex(BaseModel):
         extra = "ignore"
 
 
-class Report(BaseModel):
-    run_id: str = Field(alias="runId")
-    dataset_id: str = Field(alias="datasetId")
-    status: str = "completed"
-    statistics: Optional[ReportStatistics] = None
+class AnalysisResult(BaseModel):
+    """Shared qualitative-report fields, produced by ``client.evaluations.run(...).analyze()``."""
+
     summary: Optional[str] = None
     consistency_score: Optional[float] = Field(default=None, alias="consistencyScore")
     instruction_adherence: Optional[ReportInstructionAdherence] = Field(
@@ -461,6 +459,17 @@ class Report(BaseModel):
     weaknesses: List[str] = Field(default_factory=list)
     overall_rating: Optional[str] = Field(default=None, alias="overallRating")
     recommendations: List[ReportRecommendation] = Field(default_factory=list)
+
+    class Config:
+        populate_by_name = True
+        extra = "ignore"
+
+
+class Report(AnalysisResult):
+    run_id: str = Field(alias="runId")
+    dataset_id: str = Field(alias="datasetId")
+    status: str = "completed"
+    statistics: Optional[ReportStatistics] = None
     low_scoring_cases: List[Dict[str, Any]] = Field(
         default_factory=list, alias="lowScoringCases"
     )
@@ -548,3 +557,52 @@ class Report(BaseModel):
     def average_rating(self) -> Optional[float]:
         """Convenience accessor matching cosine_similarity / jaccard_similarity."""
         return self.statistics.average_rating if self.statistics is not None else None
+
+
+class AnalysisLevelProgress(BaseModel):
+    total: int = 0
+    completed: int = 0
+    failed: int = 0
+    percentage: int = 0
+
+    class Config:
+        extra = "ignore"
+
+
+class AnalysisProgress(BaseModel):
+    overall_percentage: int = Field(default=0, alias="overallPercentage")
+    current_level: Optional[str] = Field(default=None, alias="currentLevel")
+    levels: Dict[str, AnalysisLevelProgress] = Field(default_factory=dict)
+
+    class Config:
+        populate_by_name = True
+        extra = "ignore"
+
+
+class AnalysisFailureReason(BaseModel):
+    code: str
+    message: str
+    retryable: bool = False
+
+    class Config:
+        extra = "ignore"
+
+
+class AnalysisStatus(BaseModel):
+    """Returned by ``client.evaluations.run(...).analyze()``'s polling loop
+    (``EvaluationsClient.get_analysis_status``). ``status`` is terminal once it's one of
+    "completed", "partially_failed", or "failed"."""
+
+    job_id: Optional[str] = Field(default=None, alias="jobId")
+    status: str = "not_started"
+    progress: AnalysisProgress = Field(default_factory=AnalysisProgress)
+    failure_reason: Optional[AnalysisFailureReason] = Field(default=None, alias="failureReason")
+    warnings: List[Dict[str, Any]] = Field(default_factory=list)
+
+    class Config:
+        populate_by_name = True
+        extra = "ignore"
+
+    @property
+    def is_terminal(self) -> bool:
+        return self.status in ("completed", "partially_failed", "failed")

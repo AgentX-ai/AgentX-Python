@@ -542,6 +542,56 @@ Cases where `expected_results` is empty or the agent returned an error are skipp
 
 These four metrics also appear per-model (as `average_bleu_score`/`average_rouge_score` alongside `average_vector_similarity`/`average_jaccard_similarity`) when a dataset selects multiple comparison models, in each model's row of `report.sovereignty_index.models`.
 
+### AI analysis report
+
+`.analyze()` is the last step in the chain. It runs the same durable, multi-stage pipeline as the dashboard's "Analyze" button: each response is scored by 1-3 LLM judges, then reduced through question- and cluster-level summaries into one final qualitative report, returned as the `Report` object. Because of this, `.analyze()` polls until the job finishes rather than returning instantly, and can take noticeably longer than a single LLM call for larger runs (progress is shown in the terminal while it waits).
+
+```python
+report = client.evaluations.run(...).execute(my_agent).finalize().analyze(
+    mode="auto",                                    # "auto" (default) | "sync" | "batch"
+    quality_mode="quality_first",                   # "quality_first" (default) | "balanced"
+    judges=["gpt-5.5", "claude-opus-4-8"],           # 1-3 model ids; omit for a single gpt-5.5 judge
+)
+
+report.summary                 # str | None, overall narrative summary
+report.consistency_score       # float | None, 0-10, run-to-run consistency
+report.instruction_adherence   # ReportInstructionAdherence | None
+report.response_patterns       # ReportResponsePatterns | None
+report.reasoning_analysis      # ReportReasoningAnalysis | None
+report.tool_usage_analysis     # ReportToolUsageAnalysis | None
+report.strengths               # list[str]
+report.weaknesses              # list[str]
+report.overall_rating          # str | None, "high" | "medium" | "low"
+report.recommendations         # list[ReportRecommendation]
+```
+
+| Field | Shape | Description |
+|---|---|---|
+| `instruction_adherence` | `{ score, analysis, deviations: [str], rating }` | How well responses followed `subject.agentInstructions` (see [EvaluationSubject fields](#evaluationsubject-fields)) |
+| `response_patterns` | `{ similarities: [str], differences: [str], outliers: [str], rating }` | Cross-run consistency patterns |
+| `reasoning_analysis` | `{ cot_quality, reasoning_patterns: [str], reasoning_gaps: [str], rating }` | Quality of the agent's chain-of-thought, when traced |
+| `tool_usage_analysis` | `{ effectiveness, patterns: [str], issues: [str], rating }` | How well the agent used its tools, when tool calls were traced |
+| `recommendations` | `[{ category, priority, recommendation, reasoning }]` | Actionable, prioritized fixes |
+
+This is separate from, and available even without, the numeric `average_rating`/similarity scores, which are ready right after `.finalize()`, before `.analyze()` runs.
+
+#### Controlling the analysis
+
+| Parameter | Values | Description |
+|---|---|---|
+| `mode` | `"auto"` (default), `"sync"`, `"batch"` | How item scoring executes server-side; `"auto"` picks based on run size |
+| `quality_mode` | `"quality_first"`, `"balanced"` | `"quality_first"` runs a second judge on every item; `"balanced"` samples based on risk |
+| `judges` | 1-3 model ids | Which LLM(s) score each response. The first always runs; a second confirms, a third only breaks a tie between the first two. Defaults to a single judge, `["gpt-5.5"]`, if omitted. |
+| `poll_interval` | seconds, default `5.0` | How often to check job status while waiting |
+| `timeout` | seconds, default `1800.0` | Give up waiting after this long (the job keeps running server-side; call `get_report()` later to check on it) |
+
+```python
+# Check on a long-running analysis without calling .analyze() again, even from a
+# separate script execution:
+status = client.evaluations.get_analysis_status(run_id)
+print(status.status, status.progress.overall_percentage)
+```
+
 ### Return value from your agent function
 
 Your callable can return any of:

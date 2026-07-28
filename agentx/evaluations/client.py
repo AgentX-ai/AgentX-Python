@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from agentx.evaluations.models import (
+    AnalysisStatus,
     BatchAppendResponse,
     Dataset,
     EvaluationResult,
@@ -238,8 +239,28 @@ class EvaluationsClient:
             "POST", f"/runs/{run_id}/finalize", json={"status": "completed"}
         )
 
-    def analyze_run(self, run_id: str) -> Dict[str, Any]:
-        return self._request("POST", f"/runs/{run_id}/analyze", json={}, timeout=300)
+    def analyze_run(
+        self,
+        run_id: str,
+        mode: Optional[str] = None,
+        quality_mode: Optional[str] = None,
+        judges: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        # Starts the durable analysis job and returns immediately (e.g. {"jobId": ..., "status":
+        # "pending"}); poll get_analysis_status() until it reaches a terminal status, then call
+        # get_report(). mode/quality_mode/judges mirror the dashboard's AnalyzeEvaluationRequest.
+        payload: Dict[str, Any] = {}
+        if mode is not None:
+            payload["mode"] = mode
+        if quality_mode is not None:
+            payload["qualityMode"] = quality_mode
+        if judges is not None:
+            payload["judges"] = [{"model": m} for m in judges]
+        return self._request("POST", f"/runs/{run_id}/analyze", json=payload, timeout=30)
+
+    def get_analysis_status(self, run_id: str) -> AnalysisStatus:
+        data = self._request("GET", f"/runs/{run_id}/analyze-status")
+        return AnalysisStatus(**data)
 
     def get_run(self, run_id: str) -> Dict[str, Any]:
         return self._request("GET", f"/runs/{run_id}")

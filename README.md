@@ -238,7 +238,12 @@ report = (
 print(report.average_rating)       # LLM-graded score, 0–10
 print(report.cosine_similarity)    # embedding cosine, 0–1 (None if not enabled)
 print(report.jaccard_similarity)   # token-set overlap, 0–1 (None if not enabled)
+
+print(report.summary)              # AI-generated narrative from .analyze()
+print(report.recommendations)      # list of prioritized, actionable fixes
 ```
+
+`.analyze()` also generates a full qualitative report (strengths, weaknesses, instruction adherence, reasoning quality, and recommendations), running the same durable, multi-judge pipeline as the dashboard's "Analyze" button. `analyze(mode=..., quality_mode=..., judges=[...])` controls how items are scored and by which models. See [AI analysis report](EVALUATIONS.md#ai-analysis-report) in the full guide for the complete field and parameter reference.
 
 See **[EVALUATIONS.md](EVALUATIONS.md)** for the full guide — dataset builder, framework adapters, similarity metrics, and the complete API reference.
 
