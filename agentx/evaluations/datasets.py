@@ -27,6 +27,8 @@ class DatasetBuilder:
         acceptance_criteria: Optional[str] = None,
         rejection_criteria: Optional[str] = None,
         evaluation_criteria: Optional[str] = None,
+        judge_prompt: Optional[str] = None,
+        judge_model: Optional[str] = None,
         vector_similarity: bool = False,
         jaccard_similarity: bool = False,
         bleu_score: bool = False,
@@ -44,6 +46,13 @@ class DatasetBuilder:
             "evaluationCriteria": evaluation_criteria,
             "questions": [],
         }
+        # LLM-as-judge overrides for this dataset's own grading config. Omit either to keep the
+        # server default (raw prompt template / OpenAI gpt-5.5, see EVALUATIONS.md). judge_model
+        # must be one of client.evaluations.list_models() (OpenAI or Anthropic).
+        if judge_prompt is not None:
+            self._payload["judgePrompt"] = judge_prompt
+        if judge_model is not None:
+            self._payload["judgeModel"] = judge_model
         # Opt-in similarity metrics, surfaced on the report as cosine_similarity /
         # jaccard_similarity / bleu_score / rouge_score (computed against each
         # case's expected_results).
@@ -74,8 +83,20 @@ class DatasetBuilder:
         expected_knowledge_base: Optional[List[str]] = None,
         expected_delegations: Optional[List[str]] = None,
         follow_up_questions: Optional[List[Dict[str, Any]]] = None,
+        judge_guideline: Optional[str] = None,
+        smoke_test_count: Optional[int] = None,
+        smoke_test_guidance: Optional[str] = None,
     ) -> "DatasetBuilder":
-        main = {"query": query}
+        """Add a case. `judge_guideline` is optional grading guidance specific to this question.
+
+        `smoke_test_count`, when set (1-10), asks this question that many extra ways each
+        evaluation run, LLM-paraphrased server-side, to catch agents that are brittle to phrasing
+        rather than genuinely wrong. `smoke_test_guidance` optionally steers what kind of variants
+        get generated (e.g. tone, adversarial phrasing, different languages); the SDK never
+        generates or counts variants itself, both fields are only ever consumed server-side.
+        Ignored on `follow_up_questions`, only the opening question of a case can be smoke-tested.
+        """
+        main: Dict[str, Any] = {"query": query}
         if expected_results:
             main["expectedResults"] = expected_results
         if expected_capabilities:
@@ -84,6 +105,12 @@ class DatasetBuilder:
             main["expectedKnowledgeBase"] = expected_knowledge_base
         if expected_delegations:
             main["expectedDelegations"] = expected_delegations
+        if judge_guideline:
+            main["judgeGuideline"] = judge_guideline
+        if smoke_test_count:
+            main["smokeTest"] = {"enabled": True, "count": smoke_test_count}
+            if smoke_test_guidance:
+                main["smokeTest"]["guidance"] = smoke_test_guidance
         self._payload["questions"].append(
             {
                 "main_question": main,
@@ -217,6 +244,8 @@ class DatasetClient:
         acceptance_criteria: Optional[str] = None,
         rejection_criteria: Optional[str] = None,
         evaluation_criteria: Optional[str] = None,
+        judge_prompt: Optional[str] = None,
+        judge_model: Optional[str] = None,
         vector_similarity: bool = False,
         jaccard_similarity: bool = False,
         bleu_score: bool = False,
@@ -232,6 +261,8 @@ class DatasetClient:
             acceptance_criteria=acceptance_criteria,
             rejection_criteria=rejection_criteria,
             evaluation_criteria=evaluation_criteria,
+            judge_prompt=judge_prompt,
+            judge_model=judge_model,
             vector_similarity=vector_similarity,
             jaccard_similarity=jaccard_similarity,
             bleu_score=bleu_score,

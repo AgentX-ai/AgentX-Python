@@ -328,7 +328,7 @@ class TraceEvalResult:
 
 ## Monitor
 
-Automatic production monitoring: check traces against detection **patterns** and get back triage-ready **signals** in the dashboard (Governance > Observe). This works the same way for an agent built natively in AgentX and for an external agent traced entirely through this SDK.
+Automatic production monitoring: check traces against detection **patterns** and get back triage-ready **signals**, readable from the dashboard (Governance > Observe) or straight from the SDK via `client.monitor.signals`. This works the same way for an agent built natively in AgentX and for an external agent traced entirely through this SDK.
 
 There are two ways to trigger it, and they can be combined.
 
@@ -396,6 +396,31 @@ client.monitor.patterns.list()            # -> list[MonitorPattern]
 | `scope_mode` / `agent_ids` | `str` / `list[str]` | `"all"` / `[]` | Restrict this pattern to specific agents instead of the whole workspace |
 
 `publish()` returns a `MonitorPattern` with `.id`, which you pass in `pattern_ids` at trace time.
+
+### `client.monitor.signals`
+
+Read back the alerts/findings a pattern match (or a built-in detector) produced, without opening the dashboard. Read-only: a signal is the system's output from checking traces against patterns, not something you create directly.
+
+```python
+signals = client.monitor.signals.list(severity="high", limit=20)
+for s in signals:
+    print(s.id, s.severity, s.summary, s.occurrence_count)
+
+signal = client.monitor.signals.get(signals[0].id)
+print(signal.recommended_actions)
+```
+
+#### `list()` parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `polarity` | `str` | server default (failures only) | `"failure"`, `"proper"` (healthy tally), or `"all"` for both |
+| `status` | `str` | `None` | e.g. `"open"`, filter to one status |
+| `severity` | `str` | `None` | `"low"`, `"medium"`, `"high"`, or `"critical"` |
+| `agent_id` | `str` | `None` | Restrict to one agent (matches either the signal's representative agent or its occurrence trail) |
+| `limit` | `int` | `50` | Capped at 100 server-side |
+
+`list()`/`get()` both return `MonitorSignal` (`.id`, `.type`, `.severity`, `.polarity`, `.status`, `.summary`, `.pattern_key`, `.occurrence_count`, `.occurrences`, `.recommended_actions`, `.root_cause`, and more), matching the fields shown in the dashboard's triage queue.
 
 ---
 

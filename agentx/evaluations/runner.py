@@ -93,7 +93,7 @@ class EvaluationRunContext:
     def execute(self, adapter: AdapterLike) -> "EvaluationRunContext":
         """Run all cases locally and submit batches to AgentX."""
         normalized = _wrap_adapter(adapter)
-        cases = _build_cases(self._dataset, self._evaluation_settings)
+        cases = _build_cases(self._dataset, self._run, self._evaluation_settings)
         max_batch = self._run.limits.max_batch_size
 
         # Banner
@@ -108,6 +108,7 @@ class EvaluationRunContext:
             if self._evaluation_settings
             else self._dataset.number_of_requests
         )
+        n_smoke = sum(1 for c in cases if c.is_smoke_test_variant)
 
         print(cyan(sep))
         print(f"  {bold('AgentX Evaluation')}  {dim('—')}  {name}")
@@ -116,9 +117,11 @@ class EvaluationRunContext:
         if display:
             print(f"  {dim('Agent :')} {display}  {dim(f'({framework} / {runtime})')}")
         print()
-        print(
-            f"{bold('Executing')}  {n_q} question{'s' if n_q != 1 else ''} × {n_r} run{'s' if n_r != 1 else ''}"
-        )
+        exec_line = f"{bold('Executing')}  {n_q} question{'s' if n_q != 1 else ''} × {n_r} run{'s' if n_r != 1 else ''}"
+        if n_smoke:
+            variant_word = "variant" if n_smoke == 1 else "variants"
+            exec_line += f"  {dim(f'(+{n_smoke} smoke-test {variant_word})')}"
+        print(exec_line)
 
         # Resume: skip already-submitted keys
         already_done = self._fetch_submitted_keys()
@@ -400,7 +403,9 @@ def _wrap_adapter(adapter: AdapterLike) -> Callable[[EvaluationCase], Evaluation
 
 
 def _build_cases(
-    dataset: Dataset, evaluation_settings: Optional[EvaluationSettings] = None
+    dataset: Dataset,
+    run: EvaluationRun,
+    evaluation_settings: Optional[EvaluationSettings] = None,
 ) -> List[EvaluationCase]:
     cases: List[EvaluationCase] = []
     # When an independent evaluation_settings was chosen (evaluation_settings_id
@@ -419,6 +424,14 @@ def _build_cases(
         evaluation_settings.sovereignty_models if evaluation_settings else dataset.sovereignty_models
     )
     models: List[Optional[str]] = list(sovereignty_models) or [None]
+    # Smoke test: variant text is generated and counted entirely server-side (POST /runs, reusing
+    # the same generation the dashboard's native runs use) and handed back on `run`. The SDK never
+    # re-derives eligibility, count, or text itself, it only turns what the server already decided
+    # into extra cases. Not multiplied across sovereignty_models, matching the server's counting in
+    # finalize/missing-results (one case per variant per question, regardless of comparison models).
+    smoke_variants_by_question = {
+        group.question_index: group.variants for group in (run.smoke_test_variants or [])
+    }
     for q_idx, question in enumerate(dataset.questions):
         mq = question.main_question
         for run_num in range(1, n_runs + 1):
@@ -437,6 +450,21 @@ def _build_cases(
                         model=model,
                     )
                 )
+        for variant_idx, variant_text in enumerate(smoke_variants_by_question.get(q_idx, [])):
+            cases.append(
+                EvaluationCase(
+                    case_id=f"case-{q_idx}",
+                    question_index=q_idx,
+                    run_number=n_runs + variant_idx + 1,
+                    query=variant_text,
+                    expected_results=mq.expected_results,
+                    expected_capabilities=mq.expected_capabilities,
+                    expected_knowledge_base=mq.expected_knowledge_base,
+                    expected_delegations=mq.expected_delegations,
+                    is_smoke_test_variant=True,
+                    smoke_test_variant_text=variant_text,
+                )
+            )
     return cases
 
 

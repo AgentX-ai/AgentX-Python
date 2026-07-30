@@ -30,6 +30,8 @@ def normalize_result(
         raw.case_id = case.case_id
         raw.question_index = case.question_index
         raw.run_number = case.run_number
+        raw.is_smoke_test_variant = case.is_smoke_test_variant
+        raw.smoke_test_variant_text = case.smoke_test_variant_text
         return raw
 
     output: Optional[dict] = None
@@ -106,6 +108,8 @@ def normalize_result(
         ),
         metadata=metadata,
         traceId=trace_id,
+        isSmokeTestVariant=case.is_smoke_test_variant,
+        smokeTestVariantText=case.smoke_test_variant_text,
     )
 
 
@@ -126,4 +130,6 @@ def normalize_error(
             retryable=False,
         ),
         timings=ResultTimings(latencyMs=latency_ms) if latency_ms is not None else None,
+        isSmokeTestVariant=case.is_smoke_test_variant,
+        smokeTestVariantText=case.smoke_test_variant_text,
     )

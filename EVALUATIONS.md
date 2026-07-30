@@ -150,6 +150,53 @@ Optional `case_id` column for stable idempotency keys across re-runs.
 
 ---
 
+### Smoke testing (phrasing robustness)
+
+Ask a case's question several extra ways each run, LLM-paraphrased server-side, to catch agents that are brittle to *how* something is asked rather than genuinely wrong. Every variant is graded against the same `expected_results` as the original question.
+
+```python
+dataset = (
+    client.evaluations.datasets
+    .builder(name="Support Agent v2", number_of_requests=3)
+    .add_case(
+        query="How do I reset my password?",
+        expected_results="Explain the password reset process step by step.",
+        smoke_test_count=3,                              # ask it 3 extra ways
+        smoke_test_guidance="try terse, frustrated, and non-native-speaker phrasing",
+    )
+    .publish()
+)
+```
+
+`smoke_test_guidance` is optional free text steering *what kind* of variants get generated (tone, adversarial phrasing, different languages, ...); leave it out for natural rewording only. Both the paraphrase text and the count are decided entirely server-side, reusing the same generation the AgentX dashboard's native runs use, `.execute()` just asks the extra variants and submits them for you, nothing to configure on the SDK side beyond these two kwargs. Ignored on `follow_up_questions`, only a case's opening question can be smoke-tested.
+
+Variants show up as extra entries in `EvaluationCase`/`EvaluationResult`:
+
+```python
+def my_agent(case):
+    if case.is_smoke_test_variant:
+        logger.info("smoke-test variant: %s", case.query)
+    return f"Answer to: {case.query}"
+```
+
+Smoke-test results are scored like any other run but reported as a **separate robustness signal**, they're excluded from `report.average_rating`/`live_stats` so a single hard phrasing doesn't skew your headline score.
+
+---
+
+### Per-question judge guideline
+
+Extra grading instructions for one specific case, layered on top of the dataset's `acceptance_criteria`/`rejection_criteria`/`evaluation_criteria`:
+
+```python
+client.evaluations.datasets.builder(name="Support Agent v2").add_case(
+    query="What's your refund policy?",
+    expected_results="Refunds within 30 days, no restocking fee.",
+    judge_guideline="Tone doesn't matter here, only check the 30-day window and no-fee terms are both present.",
+)
+```
+
+---
+
 ### Evaluation Settings builder — reusable grading configs
 
 By default, a dataset runs against the grading config it was created with (`number_of_requests`, `acceptance_criteria`, similarity metrics, etc. — see above). If you want to grade the **same dataset** against **different configs** (e.g. a strict config vs. a lenient one, or reuse one config across many datasets), create a standalone `EvaluationSettings` and pass its id to `.run()`:
@@ -175,12 +222,41 @@ report = (
 )
 ```
 
-Omit `evaluation_settings_id` to keep using the dataset's own config, exactly as before — this is fully additive, no existing code needs to change. The builder accepts the same config kwargs as `datasets.builder(...)` (`number_of_requests`, the three criteria fields, `vector_similarity`/`jaccard_similarity`/`bleu_score`/`rouge_score`, `sovereignty_models`) but no `questions` — it's config-only and reusable.
+Omit `evaluation_settings_id` to keep using the dataset's own config, exactly as before — this is fully additive, no existing code needs to change. The builder accepts the same config kwargs as `datasets.builder(...)` (`number_of_requests`, the three criteria fields, `vector_similarity`/`jaccard_similarity`/`bleu_score`/`rouge_score`, `sovereignty_models`, `judge_prompt`/`judge_model` below) but no `questions` — it's config-only and reusable.
 
 ```python
 client.evaluations.settings.get(strict_settings.id)   # fetch one
 client.evaluations.settings.list()                     # list all
 ```
+
+#### Configuring the judge
+
+Both `datasets.builder(...)` and `settings.builder(...)` accept `judge_prompt`/`judge_model` to override how the LLM-as-judge grades responses, applying to every scoring path (native dashboard runs and SDK/custom-agent runs alike):
+
+```python
+settings = (
+    client.evaluations.settings
+    .builder(
+        name="Strict grading",
+        judge_model="claude-opus-4-8",                    # any id from list_models()
+        judge_prompt="""You are grading a customer support response.
+
+**User Query:** {input}
+
+**Agent Response:**
+{output}
+
+**Expected Results:**
+{expected}
+
+Score strictly: any missing policy detail is a failing response.""",
+    )
+    .publish()
+)
+```
+
+- `judge_prompt` is a raw template. `{input}`, `{output}`, and `{expected}` are substituted in; everything else (chain of thought, capabilities/references, criteria, per-question `judge_guideline`, delegation notes) is appended automatically after it, so a custom prompt can restructure the grading philosophy without ever losing that context. Omit it to keep the default rubric.
+- `judge_model` accepts any OpenAI or Anthropic model id (`client.evaluations.list_models(provider="Anthropic")` to discover valid ones). Omit it to keep the default (`gpt-5.5`).
 
 ---
 

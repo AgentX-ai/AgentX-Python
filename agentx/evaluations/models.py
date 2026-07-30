@@ -31,14 +31,30 @@ class ObservableTrace(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class TestCase(BaseModel):
-    query: str
-    expected_results: Optional[str] = None
-    expected_capabilities: Optional[List[str]] = None
-    expected_knowledge_base: Optional[List[str]] = None
-    expected_delegations: Optional[List[str]] = None
+class SmokeTestSettings(BaseModel):
+    """Only meaningful on a question's main_question. See DatasetBuilder.add_case's
+    smoke_test_count/smoke_test_guidance for how to set this."""
+
+    enabled: bool = False
+    count: int = 1
+    guidance: Optional[str] = None
 
     class Config:
+        populate_by_name = True
+        extra = "ignore"
+
+
+class TestCase(BaseModel):
+    query: str
+    expected_results: Optional[str] = Field(default=None, alias="expectedResults")
+    expected_capabilities: Optional[List[str]] = Field(default=None, alias="expectedCapabilities")
+    expected_knowledge_base: Optional[List[str]] = Field(default=None, alias="expectedKnowledgeBase")
+    expected_delegations: Optional[List[str]] = Field(default=None, alias="expectedDelegations")
+    judge_guideline: Optional[str] = Field(default=None, alias="judgeGuideline")
+    smoke_test: Optional[SmokeTestSettings] = Field(default=None, alias="smokeTest")
+
+    class Config:
+        populate_by_name = True
         extra = "ignore"
 
 
@@ -89,6 +105,10 @@ class EvaluationSettings(BaseModel):
     acceptance_criteria: Optional[str] = Field(default=None, alias="acceptanceCriteria")
     rejection_criteria: Optional[str] = Field(default=None, alias="rejectionCriteria")
     evaluation_criteria: Optional[str] = Field(default=None, alias="evaluationCriteria")
+    # LLM-as-judge overrides. None means "use the server default" (raw prompt template / OpenAI
+    # gpt-5.5). See client.evaluations.settings.builder(judge_prompt=..., judge_model=...).
+    judge_prompt: Optional[str] = Field(default=None, alias="judgePrompt")
+    judge_model: Optional[str] = Field(default=None, alias="judgeModel")
     status: str = "published"
     # Sovereignty & Portability — models selected to compare when this config runs.
     # Hoisted from the nested ``sovereigntyIndex`` object when enabled.
@@ -202,12 +222,30 @@ class LiveStatistics(BaseModel):
         extra = "ignore"
 
 
+class SmokeTestVariantGroup(BaseModel):
+    """Paraphrased variants for one question, generated server-side (reusing the same
+    generation the dashboard's native runs use) and frozen for the lifetime of the run.
+    The SDK never generates or counts these itself, it only consumes what's returned here."""
+
+    question_index: int = Field(alias="questionIndex")
+    variants: List[str] = Field(default_factory=list)
+
+    class Config:
+        populate_by_name = True
+        extra = "ignore"
+
+
 class EvaluationRun(BaseModel):
     run_id: str = Field(alias="runId")
     dataset_id: str = Field(alias="datasetId")
     dataset_version_id: Optional[str] = Field(default=None, alias="datasetVersionId")
     status: str = "in_progress"
     limits: ServerLimits = Field(default_factory=ServerLimits)
+    # Present only when at least one question in the dataset has smokeTest.enabled. See
+    # SmokeTestVariantGroup.
+    smoke_test_variants: Optional[List[SmokeTestVariantGroup]] = Field(
+        default=None, alias="smokeTestVariants"
+    )
 
     class Config:
         populate_by_name = True
@@ -232,6 +270,12 @@ class EvaluationCase(BaseModel):
     # dataset selects comparison models; your callable can read it to pick the
     # model. The SDK also tags the submitted result with it.
     model: Optional[str] = None
+    # Smoke test: True when `query` is a server-generated paraphrase variant rather than the
+    # dataset's original question text (see SmokeTestVariantGroup). Your callable doesn't need
+    # to branch on this, `query` is already the text to ask, but it's available if you want to
+    # log or handle variants differently.
+    is_smoke_test_variant: bool = False
+    smoke_test_variant_text: Optional[str] = None
 
     class Config:
         extra = "ignore"
@@ -278,6 +322,10 @@ class EvaluationResult(BaseModel):
     # the dashboard's "Message Trace Details -> Execution Timeline" render the full execution
     # trace for this case, not just the lightweight observable_trace events above.
     trace_id: Optional[str] = Field(default=None, alias="traceId")
+    # Smoke test: set by execute() from the originating EvaluationCase, not something you need to
+    # set yourself when returning a plain str/dict from your callable.
+    is_smoke_test_variant: Optional[bool] = Field(default=None, alias="isSmokeTestVariant")
+    smoke_test_variant_text: Optional[str] = Field(default=None, alias="smokeTestVariantText")
 
     class Config:
         populate_by_name = True
