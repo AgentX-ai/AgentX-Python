@@ -114,6 +114,9 @@ class _TraceSpan:
         self._execution_steps: list = []
         self._retrieval_steps: list = []
         self._captured_model: Optional[str] = None
+        # Adopted from a merged child run (e.g. AgentXCallbackHandler) when this span itself
+        # wasn't opened with an explicit framework= — see _merge_child_run below.
+        self._captured_framework: Optional[str] = None
         self._input_tokens: int = 0
         self._output_tokens: int = 0
         # Guards _merge_child_run — with Tracer.use_span(), multiple threads
@@ -186,7 +189,7 @@ class _TraceSpan:
             latency_ms=latency_ms,
             error=self._error,
             metadata=self._metadata,
-            framework=self._framework,
+            framework=self._framework or self._captured_framework,
             model=self._model or self._captured_model,
             tool_calls=self.tool_calls or None,
             session_id=self._session_id,
@@ -250,6 +253,7 @@ class _TraceSpan:
         input: Any = None,
         output: Any = None,
         model: Optional[str] = None,
+        framework: Optional[str] = None,
         input_tokens: Optional[int] = None,
         output_tokens: Optional[int] = None,
     ) -> None:
@@ -281,6 +285,8 @@ class _TraceSpan:
                 self.output = output
             if model and not self._captured_model:
                 self._captured_model = model
+            if framework and not self._captured_framework:
+                self._captured_framework = framework
             if input_tokens:
                 self._input_tokens += input_tokens
             if output_tokens:

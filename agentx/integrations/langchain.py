@@ -20,6 +20,7 @@ Requires: ``pip install "agentx-python[langchain]"``
 """
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any, Dict, List, Optional, Union
 from uuid import UUID
@@ -262,6 +263,13 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         self._pending_retrieval_steps: List[Dict[str, Any]] = []
         # run_id → {"start": float, "query": str}
         self._retrieval_starts: Dict[UUID, Dict[str, Any]] = {}
+        # Guards appends to a top-level run's shared aggregate lists (tool_calls,
+        # perf_tool_calls, execution_steps, retrieval_steps). LangGraph's ToolNode
+        # runs multiple tool calls from one AIMessage concurrently via a thread
+        # pool (see langgraph.prebuilt.tool_node.ToolNode._func), so on_tool_end /
+        # on_tool_error can fire from several threads at once for the same
+        # top-level run.
+        self._state_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Chain lifecycle
@@ -311,14 +319,14 @@ class AgentXCallbackHandler(BaseCallbackHandler):
             return
         latency_ms = int((time.time() - state["start"]) * 1000)
         output = _extract_output(outputs)
+        # Each tool_call dict already carries its own start_time/end_time (set in
+        # on_tool_end/on_tool_error), so no re-pairing against perf_tool_calls by
+        # index is needed here. That used to be done via zip(), which silently
+        # mispaired timestamps when LangGraph's ToolNode ran several tool calls
+        # from one AIMessage concurrently (see _state_lock's docstring): two
+        # lists appended to from different threads don't necessarily end up in
+        # the same relative order.
         tool_calls = state["tool_calls"] or _extract_tool_calls_from_messages(outputs)
-        if state["tool_calls"] and len(state["tool_calls"]) == len(state["perf_tool_calls"]):
-            # Enrich with the timestamps perf_tool_calls tracked in lockstep,
-            # so tool calls interleave correctly in a merged span's timeline.
-            tool_calls = [
-                {**tc, "start_time": perf.get("start_time"), "end_time": perf.get("end_time")}
-                for tc, perf in zip(state["tool_calls"], state["perf_tool_calls"])
-            ]
 
         active_span = self._tracer.current_span
         if active_span is not None:
@@ -332,6 +340,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                 input=state["input"],
                 output=output,
                 model=state.get("model"),
+                framework="langchain",
                 input_tokens=state["input_tokens"] or None,
                 output_tokens=state["output_tokens"] or None,
             )
@@ -383,6 +392,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                 retrieval_steps=state["retrieval_steps"],
                 input=state["input"],
                 model=state.get("model"),
+                framework="langchain",
                 input_tokens=state["input_tokens"] or None,
                 output_tokens=state["output_tokens"] or None,
             )
@@ -485,41 +495,42 @@ class AgentXCallbackHandler(BaseCallbackHandler):
             # Extract token usage from LLMResult for this call
             call_input_tokens: Optional[int] = None
             call_output_tokens: Optional[int] = None
-            if top and top in self._runs:
-                usage = {}
-                if hasattr(response, "llm_output") and isinstance(response.llm_output, dict):
-                    usage = response.llm_output.get("token_usage") or response.llm_output.get("usage") or {}
-                # Also check generations for token counts (some providers put it there)
-                if not usage and hasattr(response, "generations"):
-                    for gen_list in (response.generations or []):
-                        for gen in (gen_list or []):
-                            gen_info = getattr(gen, "generation_info", None) or {}
-                            if gen_info.get("prompt_tokens") or gen_info.get("completion_tokens"):
-                                usage = gen_info
-                                break
-                if usage:
-                    call_input_tokens = int(
-                        usage.get("prompt_tokens") or usage.get("input_tokens") or usage.get("prompt_token_count") or 0
-                    )
-                    call_output_tokens = int(
-                        usage.get("completion_tokens") or usage.get("output_tokens") or usage.get("candidates_token_count") or 0
-                    )
-                    self._runs[top]["input_tokens"] += call_input_tokens
-                    self._runs[top]["output_tokens"] += call_output_tokens
+            with self._state_lock:
+                if top and top in self._runs:
+                    usage = {}
+                    if hasattr(response, "llm_output") and isinstance(response.llm_output, dict):
+                        usage = response.llm_output.get("token_usage") or response.llm_output.get("usage") or {}
+                    # Also check generations for token counts (some providers put it there)
+                    if not usage and hasattr(response, "generations"):
+                        for gen_list in (response.generations or []):
+                            for gen in (gen_list or []):
+                                gen_info = getattr(gen, "generation_info", None) or {}
+                                if gen_info.get("prompt_tokens") or gen_info.get("completion_tokens"):
+                                    usage = gen_info
+                                    break
+                    if usage:
+                        call_input_tokens = int(
+                            usage.get("prompt_tokens") or usage.get("input_tokens") or usage.get("prompt_token_count") or 0
+                        )
+                        call_output_tokens = int(
+                            usage.get("completion_tokens") or usage.get("output_tokens") or usage.get("candidates_token_count") or 0
+                        )
+                        self._runs[top]["input_tokens"] += call_input_tokens
+                        self._runs[top]["output_tokens"] += call_output_tokens
 
-            if start_t is not None and top and top in self._runs:
-                steps = self._runs[top]["execution_steps"]
-                steps.append({
-                    "name": f"LLM Call {len(steps) + 1}",
-                    "duration_ms": (end_t - start_t) * 1000,
-                    "start_time": start_t,
-                    "end_time": end_t,
-                    "model": llm_state.get("model"),
-                    "input": llm_state.get("input"),
-                    "output": _extract_llm_output(response),
-                    "inputTokenSize": call_input_tokens,
-                    "outputTokenSize": call_output_tokens,
-                })
+                if start_t is not None and top and top in self._runs:
+                    steps = self._runs[top]["execution_steps"]
+                    steps.append({
+                        "name": f"LLM Call {len(steps) + 1}",
+                        "duration_ms": (end_t - start_t) * 1000,
+                        "start_time": start_t,
+                        "end_time": end_t,
+                        "model": llm_state.get("model"),
+                        "input": llm_state.get("input"),
+                        "output": _extract_llm_output(response),
+                        "inputTokenSize": call_input_tokens,
+                        "outputTokenSize": call_output_tokens,
+                    })
 
     # ------------------------------------------------------------------
     # Tool lifecycle
@@ -561,18 +572,25 @@ class AgentXCallbackHandler(BaseCallbackHandler):
             "input": state["tool_input"],
             "output": str(output),
             "latency_ms": latency_ms,
+            "success": True,
+            # Set directly on the tool_call dict (not just perf_tool_calls below) so
+            # on_chain_end's merged-span path doesn't need to re-pair the two lists by
+            # index later. See _state_lock's docstring for why that used to be unsafe.
+            "start_time": start_t,
+            "end_time": end_t,
         }
         top = self._find_top_ancestor(parent_run_id)
-        if top and top in self._runs:
-            self._runs[top]["tool_calls"].append(tool_call)
-            self._runs[top]["perf_tool_calls"].append({
-                "name": state["tool_name"],
-                "duration_ms": (end_t - start_t) * 1000,
-                "start_time": start_t,
-                "end_time": end_t,
-                "input": state["tool_input"],
-                "output": tool_call["output"],
-            })
+        with self._state_lock:
+            if top and top in self._runs:
+                self._runs[top]["tool_calls"].append(tool_call)
+                self._runs[top]["perf_tool_calls"].append({
+                    "name": state["tool_name"],
+                    "duration_ms": (end_t - start_t) * 1000,
+                    "start_time": start_t,
+                    "end_time": end_t,
+                    "input": state["tool_input"],
+                    "output": tool_call["output"],
+                })
 
     def on_tool_error(
         self,
@@ -593,18 +611,22 @@ class AgentXCallbackHandler(BaseCallbackHandler):
             "input": state.get("tool_input"),
             "output": f"ERROR: {error}",
             "latency_ms": int((end_t - start_t) * 1000),
+            "success": False,
+            "start_time": start_t,
+            "end_time": end_t,
         }
         top = self._find_top_ancestor(parent_run_id)
-        if top and top in self._runs:
-            self._runs[top]["tool_calls"].append(tool_call)
-            self._runs[top]["perf_tool_calls"].append({
-                "name": state.get("tool_name", "unknown"),
-                "duration_ms": (end_t - start_t) * 1000,
-                "start_time": start_t,
-                "end_time": end_t,
-                "input": tool_call["input"],
-                "output": tool_call["output"],
-            })
+        with self._state_lock:
+            if top and top in self._runs:
+                self._runs[top]["tool_calls"].append(tool_call)
+                self._runs[top]["perf_tool_calls"].append({
+                    "name": state.get("tool_name", "unknown"),
+                    "duration_ms": (end_t - start_t) * 1000,
+                    "start_time": start_t,
+                    "end_time": end_t,
+                    "input": tool_call["input"],
+                    "output": tool_call["output"],
+                })
 
     # ------------------------------------------------------------------
     # Retriever lifecycle
