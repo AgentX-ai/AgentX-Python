@@ -37,7 +37,7 @@ Also see [SDK Developer Docs](https://developers.agentx.so), [API Reference Docs
 - **MCP support** — connect any Model Context Protocol server.
 - **Multi-agent orchestration** — workforces of agents with a designated manager, across LLM vendors.
 - **Production tracing** — one decorator or context manager records every agent run (input, output, latency, tool calls, token usage) into your workspace, for any framework.
-- **Agent Evaluations** — score any agent (LangChain, CrewAI, OpenAI, Anthropic, HTTP, …) with LLM-as-a-judge ratings plus optional cosine and Jaccard similarity metrics.
+- **Agent Evaluations** — score any agent (LangChain, CrewAI, OpenAI, Anthropic, HTTP, …) with LLM-as-a-judge ratings plus optional cosine and Jaccard similarity metrics. Configurable judge prompt/model (OpenAI or Anthropic), per-question judge guidelines, and smoke testing for phrasing robustness.
 - **A2A** — Each agent can be published with agent-to-agent protocol compatible.
 
 ---
@@ -218,6 +218,13 @@ with client.tracer.trace("support-agent", monitor=True, pattern_ids=[pattern.id]
 
 This works independently of the dashboard's per-agent monitoring toggle (Governance > Observe > Agents), which still auto-checks every trace from an agent once enabled there, with no code changes needed either way.
 
+Read the resulting alerts back with `client.monitor.signals.list()`/`.get()`, no dashboard required:
+
+```python
+for signal in client.monitor.signals.list(severity="high"):
+    print(signal.summary, signal.occurrence_count)
+```
+
 See **[TRACING.md](TRACING.md)** for the complete Monitor guide.
 
 ---
@@ -245,7 +252,9 @@ print(report.recommendations)      # list of prioritized, actionable fixes
 
 `.analyze()` also generates a full qualitative report (strengths, weaknesses, instruction adherence, reasoning quality, and recommendations), running the same durable, multi-judge pipeline as the dashboard's "Analyze" button. `analyze(mode=..., quality_mode=..., judges=[...])` controls how items are scored and by which models. See [AI analysis report](EVALUATIONS.md#ai-analysis-report) in the full guide for the complete field and parameter reference.
 
-See **[EVALUATIONS.md](EVALUATIONS.md)** for the full guide — dataset builder, framework adapters, similarity metrics, and the complete API reference.
+Ask a case's question several extra ways each run, LLM-paraphrased server-side, to catch agents that break on phrasing rather than substance, and override the judge's prompt/model per config, see [Smoke testing](EVALUATIONS.md#smoke-testing-phrasing-robustness) and [Configuring the judge](EVALUATIONS.md#configuring-the-judge) in the full guide.
+
+See **[EVALUATIONS.md](EVALUATIONS.md)** for the full guide — dataset builder, framework adapters, similarity metrics, smoke testing, judge configuration, and the complete API reference.
 
 ---
 

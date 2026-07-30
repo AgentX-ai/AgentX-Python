@@ -43,7 +43,8 @@ class AgentX:
         self.evaluations = EvaluationsRunner(_eval_client)
 
         # Monitor: create/reuse patterns (client.monitor.patterns) that a trace can be checked
-        # against at send time via tracer.trace(..., monitor=True, pattern_ids=[...]).
+        # against at send time via tracer.trace(..., monitor=True, pattern_ids=[...]), then read
+        # back the resulting alerts/findings with client.monitor.signals.
         self.monitor = MonitorClient(
             api_key=self.api_key,
             sdk_version=VERSION,

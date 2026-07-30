@@ -24,6 +24,8 @@ class EvaluationSettingsBuilder:
         acceptance_criteria: Optional[str] = None,
         rejection_criteria: Optional[str] = None,
         evaluation_criteria: Optional[str] = None,
+        judge_prompt: Optional[str] = None,
+        judge_model: Optional[str] = None,
         vector_similarity: bool = False,
         jaccard_similarity: bool = False,
         bleu_score: bool = False,
@@ -40,6 +42,13 @@ class EvaluationSettingsBuilder:
             "rejectionCriteria": rejection_criteria,
             "evaluationCriteria": evaluation_criteria,
         }
+        # LLM-as-judge overrides. Omit either to keep the server default (raw prompt template /
+        # OpenAI gpt-5.5, see EVALUATIONS.md). judge_model must be one of
+        # client.evaluations.list_models() (OpenAI or Anthropic).
+        if judge_prompt is not None:
+            self._payload["judgePrompt"] = judge_prompt
+        if judge_model is not None:
+            self._payload["judgeModel"] = judge_model
         # Opt-in similarity metrics, mirrors DatasetBuilder's config kwargs.
         if vector_similarity:
             vs: Dict[str, Any] = {"enabled": True}
@@ -79,6 +88,8 @@ class EvaluationSettingsClient:
         acceptance_criteria: Optional[str] = None,
         rejection_criteria: Optional[str] = None,
         evaluation_criteria: Optional[str] = None,
+        judge_prompt: Optional[str] = None,
+        judge_model: Optional[str] = None,
         vector_similarity: bool = False,
         jaccard_similarity: bool = False,
         bleu_score: bool = False,
@@ -94,6 +105,8 @@ class EvaluationSettingsClient:
             acceptance_criteria=acceptance_criteria,
             rejection_criteria=rejection_criteria,
             evaluation_criteria=evaluation_criteria,
+            judge_prompt=judge_prompt,
+            judge_model=judge_model,
             vector_similarity=vector_similarity,
             jaccard_similarity=jaccard_similarity,
             bleu_score=bleu_score,

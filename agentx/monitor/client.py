@@ -7,7 +7,7 @@ from typing import Any, List, Optional
 
 import requests
 
-from agentx.monitor.models import MonitorPattern
+from agentx.monitor.models import MonitorPattern, MonitorSignal
 
 logger = logging.getLogger(__name__)
 
@@ -69,8 +69,10 @@ class MonitorClient:
         )
 
         from agentx.monitor.patterns import MonitorPatternClient
+        from agentx.monitor.signals import MonitorSignalClient
 
         self.patterns = MonitorPatternClient(self)
+        self.signals = MonitorSignalClient(self)
 
     # ------------------------------------------------------------------
     # Low-level HTTP
@@ -132,3 +134,35 @@ class MonitorClient:
             "GET", f"/patterns/{pattern_id}", params=self._workspace_params()
         )
         return MonitorPattern(**data["pattern"])
+
+    # ------------------------------------------------------------------
+    # Signal endpoints
+    # ------------------------------------------------------------------
+
+    def list_signals(
+        self,
+        polarity: Optional[str] = None,
+        status: Optional[str] = None,
+        severity: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[MonitorSignal]:
+        params = {**(self._workspace_params() or {})}
+        if polarity is not None:
+            params["polarity"] = polarity
+        if status is not None:
+            params["status"] = status
+        if severity is not None:
+            params["severity"] = severity
+        if agent_id is not None:
+            params["agentId"] = agent_id
+        if limit is not None:
+            params["limit"] = limit
+        data = self._request("GET", "/signals", params=params)
+        return [MonitorSignal(**s) for s in data.get("signals", [])]
+
+    def get_signal(self, signal_id: str) -> MonitorSignal:
+        data = self._request(
+            "GET", f"/signals/{signal_id}", params=self._workspace_params()
+        )
+        return MonitorSignal(**data["signal"])
