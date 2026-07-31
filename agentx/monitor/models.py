@@ -51,6 +51,36 @@ class SignalOccurrence(BaseModel):
         extra = "ignore"
 
 
+class MonitorProfile(BaseModel):
+    """A single agent's Monitor coverage/detection settings: what gets sampled, how long it's
+    kept, whether info (clean-run) signals are logged, per-check threshold overrides (e.g.
+    ``threshold_overrides["latencyMs"]`` for the built-in "Latency regression" pattern), and the
+    approval policy gating autotune actions. See ``client.monitor.profile.get()/update()``.
+    ``None`` from ``get()`` means this agent has never been configured and is running on
+    platform defaults (e.g. the built-in latency threshold defaults to 20000ms).
+    """
+
+    id: Optional[str] = Field(default=None, alias="_id")
+    workspace_id: Optional[str] = Field(default=None, alias="workspaceId")
+    agent_id: Optional[Any] = Field(default=None, alias="agentId")
+    enabled: bool = True
+    failure_detection_enabled: bool = Field(default=True, alias="failureDetectionEnabled")
+    info_detection_enabled: bool = Field(default=True, alias="infoDetectionEnabled")
+    coverage_mode: str = Field(default="all", alias="coverageMode")
+    sample_rate: float = Field(default=0.1, alias="sampleRate")
+    channels: List[str] = Field(default_factory=list)
+    threshold_overrides: Optional[Dict[str, Any]] = Field(default=None, alias="thresholdOverrides")
+    retention_days: int = Field(default=30, alias="retentionDays")
+    redaction_mode: str = Field(default="standard", alias="redactionMode")
+    approval_policy: Optional[Dict[str, str]] = Field(default=None, alias="approvalPolicy")
+    created_at: Optional[str] = Field(default=None, alias="createdAt")
+    updated_at: Optional[str] = Field(default=None, alias="updatedAt")
+
+    class Config:
+        populate_by_name = True
+        extra = "ignore"
+
+
 class MonitorSignal(BaseModel):
     """An alert/finding produced when a trace matched a pattern (or, for a "proper" pattern,
     a healthy tally). Read-only from the SDK, see ``client.monitor.signals.list()/get()``, a

@@ -7,7 +7,7 @@ from typing import Any, List, Optional
 
 import requests
 
-from agentx.monitor.models import MonitorPattern, MonitorSignal
+from agentx.monitor.models import MonitorPattern, MonitorProfile, MonitorSignal
 
 logger = logging.getLogger(__name__)
 
@@ -70,9 +70,11 @@ class MonitorClient:
 
         from agentx.monitor.patterns import MonitorPatternClient
         from agentx.monitor.signals import MonitorSignalClient
+        from agentx.monitor.profile import MonitorProfileClient
 
         self.patterns = MonitorPatternClient(self)
         self.signals = MonitorSignalClient(self)
+        self.profile = MonitorProfileClient(self)
 
     # ------------------------------------------------------------------
     # Low-level HTTP
@@ -166,3 +168,20 @@ class MonitorClient:
             "GET", f"/signals/{signal_id}", params=self._workspace_params()
         )
         return MonitorSignal(**data["signal"])
+
+    # ------------------------------------------------------------------
+    # Profile endpoints
+    # ------------------------------------------------------------------
+
+    def get_profile(self, agent_id: str) -> Optional[MonitorProfile]:
+        data = self._request(
+            "GET", f"/profiles/{agent_id}", params=self._workspace_params()
+        )
+        profile = data.get("profile")
+        return MonitorProfile(**profile) if profile else None
+
+    def update_profile(self, agent_id: str, payload: dict) -> MonitorProfile:
+        data = self._request(
+            "PUT", f"/profiles/{agent_id}", json=self._with_workspace(payload)
+        )
+        return MonitorProfile(**data["profile"])

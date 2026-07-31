@@ -24,6 +24,7 @@ Also see [SDK Developer Docs](https://developers.agentx.so), [API Reference Docs
 - [Production tracing](#production-tracing) — record live agent runs from any framework
 - [Monitor](#monitor) — automatic production monitoring, patterns and signals
 - [Custom agent evaluations](#custom-agent-evaluations) — LLM-as-a-judge, cosine / Jaccard similarity
+- [Self-host](#self-host) — run Trace/Evaluate/Monitor on your own machine instead of the hosted dashboard
 - [Links](#links)
 
 ---
@@ -225,6 +226,12 @@ for signal in client.monitor.signals.list(severity="high"):
     print(signal.summary, signal.occurrence_count)
 ```
 
+Per-agent coverage/threshold settings (sample rate, retention, and threshold overrides like the built-in "Latency regression" pattern's threshold) are `client.monitor.profile.get()`/`.update()`:
+
+```python
+client.monitor.profile.update("agent_123", threshold_overrides={"latencyMs": 15000})
+```
+
 See **[TRACING.md](TRACING.md)** for the complete Monitor guide.
 
 ---
@@ -258,6 +265,25 @@ See **[EVALUATIONS.md](EVALUATIONS.md)** for the full guide — dataset builder,
 
 ---
 
+## Self-host
+
+Prefer to run Trace/Evaluate/Monitor locally instead of the hosted dashboard — no account, bring your own LLM keys? This SDK ships a launcher for [AgentX-trace-eval](https://github.com/AgentX-ai/AgentX-trace-eval), a separate, portable governance engine:
+
+```bash
+agentx-trace-eval --dev
+```
+
+The first run downloads the engine (and dashboard) into `~/.agentx/bin` and prints a local API key; every run after that just starts it. Point this SDK at it instead of the hosted API:
+
+```bash
+export AGENTX_API_BASE_URL=http://localhost:4700/api/v1
+export AGENTX_API_KEY=<printed by agentx-trace-eval on first run>
+```
+
+`agentx-trace-eval` isn't this SDK's own code — the engine itself is a separate, compiled binary, downloaded on demand rather than bundled into this package, so installing `agentx-python` doesn't get any heavier for the (much more common) case of just talking to the hosted AgentX API. See that repo's README for what's included, and `AGENTX_INSTALL_DIR`/`AGENTX_TRACE_EVAL_VERSION`/`AGENTX_TRACE_EVAL_SKIP_WEB` env vars to control where/what it installs.
+
+---
+
 ## Links
 
 - **Dashboard** — [app.agentx.so](https://app.agentx.so)
@@ -266,3 +292,4 @@ See **[EVALUATIONS.md](EVALUATIONS.md)** for the full guide — dataset builder,
 - **Tracing docs** — [TRACING.md](TRACING.md)
 - **Evaluations docs** — [EVALUATIONS.md](EVALUATIONS.md)
 - **Monitor docs** — [docs.agentx.so/sdk/monitor](https://docs.agentx.so/sdk/monitor)
+- **Self-host** — [AgentX-trace-eval](https://github.com/AgentX-ai/AgentX-trace-eval)

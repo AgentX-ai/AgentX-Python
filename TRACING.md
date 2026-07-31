@@ -422,6 +422,33 @@ print(signal.recommended_actions)
 
 `list()`/`get()` both return `MonitorSignal` (`.id`, `.type`, `.severity`, `.polarity`, `.status`, `.summary`, `.pattern_key`, `.occurrence_count`, `.occurrences`, `.recommended_actions`, `.root_cause`, and more), matching the fields shown in the dashboard's triage queue.
 
+### `client.monitor.profile`
+
+Get/update one agent's Monitor coverage and detection settings, the same settings shown in the dashboard's per-agent monitoring settings dialog (Observe > Patterns > Agents view): coverage mode, sample rate, retention, redaction, approval policy, and `threshold_overrides` for built-in detectors that take a configurable threshold (e.g. the "Latency regression" pattern's threshold, which otherwise defaults to 20000ms).
+
+```python
+profile = client.monitor.profile.get("agent_123")
+print(profile.coverage_mode if profile else "never configured, on defaults")
+
+# Override just the latency-regression threshold, e.g. 15s instead of the 20s default.
+client.monitor.profile.update("agent_123", threshold_overrides={"latencyMs": 15000})
+```
+
+`get()` returns `None` when the agent has never been configured (still on platform defaults). `update()` upserts and only changes the fields you pass, everything else on an existing profile is left as is:
+
+| Parameter | Type | Description |
+|---|---|---|
+| `enabled` | `bool` | Turn Monitor on/off for this agent |
+| `failure_detection_enabled` / `info_detection_enabled` | `bool` | Opt a whole detection category out |
+| `coverage_mode` | `str` | `"all"` (every trace) or `"sampled"` |
+| `sample_rate` | `float` | Fraction of traffic monitored when `coverage_mode="sampled"` |
+| `channels` | `list[str]` | Notification channels |
+| `dataset_id` | `str` | Evaluation dataset this agent's signals feed into |
+| `threshold_overrides` | `dict` | Per-check threshold overrides, e.g. `{"latencyMs": 15000}` |
+| `retention_days` | `int` | How long monitored traces are kept |
+| `redaction_mode` | `str` | `"none"`, `"standard"`, or `"strict"` |
+| `approval_policy` | `dict[str, str]` | Per-action approval mode for autotune actions |
+
 ---
 
 ## Async support

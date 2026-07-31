@@ -26,6 +26,12 @@ setup(
     # checking for anything that touches the SDK.
     package_data={"agentx": ["py.typed"]},
     zip_safe=False,
+    entry_points={
+        # Thin launcher for the self-hostable governance engine (AgentX-ai/AgentX-trace-eval),
+        # not this SDK itself, see agentx/cli.py's module docstring for why it lazily downloads
+        # rather than bundling that engine in this package.
+        "console_scripts": ["agentx-trace-eval=agentx.cli:main"],
+    },
     install_requires=[
         "urllib3>=1.26.11",
         "certifi",
