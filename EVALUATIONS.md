@@ -260,6 +260,60 @@ Score strictly: any missing policy detail is a failing response.""",
 
 ---
 
+### Prompt registry
+
+**Self-host only** (see [Self-host](README.md#self-host)) — no hosted-SaaS equivalent yet.
+
+AgentX doesn't own your agent's code, so it can't do what native Autotune does — branch and merge a config directly. `client.evaluations.prompts` solves the same "how do I close the loop" problem the way LangSmith's Prompt Hub and Langfuse's Prompt Management do instead: become the prompt's *source of truth*. Your agent pulls a version at runtime, you tag your evaluation evidence with which version it used, and "improvement" becomes propose → a human approves → publish a new version — never a direct edit to your deployed code.
+
+```python
+prompt = client.evaluations.prompts.create(
+    name="support-agent-system-prompt",
+    text="You are a helpful, empathetic customer support agent...",
+)
+# or, once it exists:
+prompt = client.evaluations.prompts.get("support-agent-system-prompt")   # latest version
+prompt = client.evaluations.prompts.get("support-agent-system-prompt", version=1)  # a specific one
+client.evaluations.prompts.list()                                        # every registered prompt
+
+# use prompt.text as your own agent's actual system prompt, however you call your LLM
+```
+
+Tag whichever evidence you want the dashboard's judge (or the `improve-prompt` Claude Code skill)
+to learn from by setting `metadata.promptName` — on a deliberate eval run:
+
+```python
+client.evaluations.run(
+    dataset_id="evds_…",
+    subject={"kind": "custom_agent", "metadata": {
+        "promptName": prompt.name,
+        "version": f"{prompt.name}@v{prompt.version}",   # ties into version comparison too, see below
+    }},
+).execute(my_agent_fn)
+```
+
+or on a live trace from real production traffic, scored continuously by a self-host Online Evaluator:
+
+```python
+with client.tracer.trace("support-agent", metadata={"promptName": prompt.name}) as span:
+    ...  # your agent's own call
+```
+
+From the self-host dashboard: Governance → Evaluate → **Prompts** → a prompt's row menu → **Suggest
+improvement**. It merges both kinds of evidence — deliberate eval runs (defaulting to the *current
+published version only*, auto-widening to every version if there isn't enough recent evidence yet)
+and worst-scoring Online Evaluator ratings from a recent time window — feeds the worst-rated
+examples to a judge, and shows a full rewrite plus reasoning. **Nothing is saved until a human
+clicks Publish as new version** — there is no `publish()` on this client; a rewrite only ever
+reaches your agent through that one explicit, dashboard-only write. Your agent's next
+`client.evaluations.prompts.get(name)` call picks up the new version immediately. Tagging
+`metadata.version` as `<promptName>@v<N>` (shown above) means the dataset's **Compare versions**
+dialog also tells you whether the published rewrite actually scored better, no separate comparison
+view needed. Full details, including the judge-key-free `improve-prompt` Claude Code skill: see
+[self-host's Prompt registry docs](https://docs.agentx.so/self-host#prompt-registry).
+
+---
+
 ### Framework examples
 
 All examples follow the same pattern: wrap your framework's output in a function that accepts an `EvaluationCase` and returns a `str`, `dict`, or `EvaluationResult`.

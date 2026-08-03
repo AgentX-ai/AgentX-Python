@@ -11,15 +11,18 @@ Usage::
 
     # All subsequent client.messages.create() calls are now traced automatically.
 
+Works with both ``anthropic.Anthropic`` and ``anthropic.AsyncAnthropic`` clients.
+
 Requires: ``pip install agentx[anthropic]``
 """
 from __future__ import annotations
 
+import inspect
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
-from agentx.integrations._perf import build_performance_summary
+from agentx.integrations._traced_call import call_and_trace, finish_llm_call
 
 
 def _extract_output_text(response: Any) -> Optional[str]:
@@ -50,6 +53,42 @@ def _extract_output_text(response: Any) -> Optional[str]:
     return None
 
 
+def _prepend_system(messages: Any, system: Any) -> Any:
+    """
+    Fold the ``system`` kwarg (a separate top-level parameter in the Anthropic
+    SDK, not part of ``messages``) into the traced input as a leading
+    system-role entry — the same shape trace consumers already expect from
+    other frameworks' captured input.
+    """
+    if not system:
+        return messages
+    system_entry = {"role": "system", "content": system}
+    if isinstance(messages, list):
+        return [system_entry] + list(messages)
+    if messages is None:
+        return [system_entry]
+    return [system_entry, messages]
+
+
+def _extract_usage_tokens(usage: Any) -> Tuple[Optional[int], Optional[int]]:
+    """
+    Pull input/output token counts off a ``response.usage`` object, folding
+    prompt-caching tokens (``cache_creation_input_tokens`` /
+    ``cache_read_input_tokens``) into the input total — they're still real
+    input tokens for cost/context-window purposes, and the backend has no
+    separate column for them today.
+    """
+    if usage is None:
+        return None, None
+    input_tokens = getattr(usage, "input_tokens", None)
+    output_tokens = getattr(usage, "output_tokens", None)
+    cache_creation = getattr(usage, "cache_creation_input_tokens", None)
+    cache_read = getattr(usage, "cache_read_input_tokens", None)
+    if cache_creation or cache_read:
+        input_tokens = (input_tokens or 0) + (cache_creation or 0) + (cache_read or 0)
+    return input_tokens, output_tokens
+
+
 def patch_anthropic_client(
     client: Any,
     tracer: Tracer,
@@ -62,7 +101,8 @@ def patch_anthropic_client(
     (if present) to automatically send a trace for every call.
 
     The original method is still called and its return value is passed through
-    unchanged so nothing in the caller needs to change.
+    unchanged so nothing in the caller needs to change. Works with both sync
+    (``Anthropic``) and async (``AsyncAnthropic``) clients.
     """
     messages = getattr(client, "messages", None)
     if messages is None:
@@ -88,79 +128,43 @@ def _patch_create(
 
     def patched_create(*args, **kwargs):
         start_t = time.time()
-        error: Optional[str] = None
-        response = None
-        try:
-            response = original(*args, **kwargs)
-            return response
-        except Exception as exc:
-            error = str(exc)
-            raise
-        finally:
+        input_messages = _prepend_system(
+            kwargs.get("messages") or (args[0] if args else None),
+            kwargs.get("system"),
+        )
+        model = kwargs.get("model")
+
+        input_repr = _safe_serialize(input_messages)
+
+        def on_finish(response: Optional[Any], error: Optional[str]) -> None:
             end_t = time.time()
-            latency_ms = int((end_t - start_t) * 1000)
-            input_messages = kwargs.get("messages") or (args[0] if args else None)
-            model = kwargs.get("model")
             output = None
             input_tokens = None
             output_tokens = None
             if response is not None:
                 output = _extract_output_text(response)
                 try:
-                    usage = getattr(response, "usage", None)
-                    if usage is not None:
-                        input_tokens = getattr(usage, "input_tokens", None)
-                        output_tokens = getattr(usage, "output_tokens", None)
+                    input_tokens, output_tokens = _extract_usage_tokens(getattr(response, "usage", None))
                 except Exception:
                     pass
 
-            active_span = tracer.current_span
-            if active_span is not None:
-                # Part of a `with tracer.trace(...)` block (e.g. a multi-call
-                # agentic loop) — attach as one LLM-call step on that span's
-                # trace instead of sending an independent trace per call.
-                if error is not None:
-                    active_span.set_error(error)
-                active_span._record_llm_call(
-                    duration_ms=latency_ms,
-                    start_time=start_t,
-                    end_time=end_t,
-                    input=_safe_serialize(input_messages),
-                    output=output,
-                    model=model,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                )
-            else:
-                perf = build_performance_summary(
-                    total_duration_ms=latency_ms,
-                    execution_steps=[{
-                        "name": "LLM Call 1",
-                        "duration_ms": latency_ms,
-                        "start_time": start_t,
-                        "end_time": end_t,
-                        "model": model,
-                        "input": _safe_serialize(input_messages),
-                        "output": output,
-                        "inputTokenSize": input_tokens,
-                        "outputTokenSize": output_tokens,
-                    }],
-                    has_errors=error is not None,
-                )
-                tracer._send(
-                    name=name,
-                    input=_safe_serialize(input_messages),
-                    output=output,
-                    latency_ms=latency_ms,
-                    error=error,
-                    framework="anthropic",
-                    model=model,
-                    metadata=metadata,
-                    session_id=session_id,
-                    performance_summary=perf,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                )
+            finish_llm_call(
+                tracer,
+                name=name,
+                framework="anthropic",
+                metadata=metadata,
+                session_id=session_id,
+                start_t=start_t,
+                end_t=end_t,
+                input_repr=input_repr,
+                output=output,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                error=error,
+            )
+
+        return call_and_trace(original, args, kwargs, on_finish)
 
     patched_create._agentx_patched = True
     messages_resource.create = patched_create
@@ -178,8 +182,40 @@ def _patch_stream(
         return
 
     def patched_stream(*args, **kwargs):
+        # `.stream()` itself returns a context-manager object synchronously
+        # for both `Anthropic` and `AsyncAnthropic` — the async/sync split
+        # only shows up in whether `with`/`async with` and
+        # `get_final_message()` are used, handled inside `_TracedStream`.
         start_t = time.time()
         ctx = original_stream(*args, **kwargs)
+        input_repr = _safe_serialize(_prepend_system(kwargs.get("messages"), kwargs.get("system")))
+        model = kwargs.get("model")
+
+        def build_and_send(end_t: float, error: Optional[str], final_message: Optional[Any]) -> None:
+            output = None
+            input_tokens = None
+            output_tokens = None
+            if final_message is not None:
+                output = _extract_output_text(final_message)
+                try:
+                    input_tokens, output_tokens = _extract_usage_tokens(getattr(final_message, "usage", None))
+                except Exception:
+                    pass
+            finish_llm_call(
+                tracer,
+                name=name,
+                framework="anthropic",
+                metadata=metadata,
+                session_id=session_id,
+                start_t=start_t,
+                end_t=end_t,
+                input_repr=input_repr,
+                output=output,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                error=error,
+            )
 
         class _TracedStream:
             """Thin wrapper that records timing when the stream context exits."""
@@ -190,49 +226,29 @@ def _patch_stream(
             def __exit__(self_inner, exc_type, exc_val, tb):
                 result = ctx.__exit__(exc_type, exc_val, tb)
                 end_t = time.time()
-                latency_ms = int((end_t - start_t) * 1000)
                 error = str(exc_val) if exc_val else None
-                output = None
-                input_tokens = None
-                output_tokens = None
+                final_message = None
                 try:
-                    final = ctx.get_final_message()
-                    output = _extract_output_text(final)
-                    usage = getattr(final, "usage", None)
-                    if usage is not None:
-                        input_tokens = getattr(usage, "input_tokens", None)
-                        output_tokens = getattr(usage, "output_tokens", None)
+                    final_message = ctx.get_final_message()
                 except Exception:
                     pass
-                perf = build_performance_summary(
-                    total_duration_ms=latency_ms,
-                    execution_steps=[{
-                        "name": "LLM Call 1",
-                        "duration_ms": latency_ms,
-                        "start_time": start_t,
-                        "end_time": end_t,
-                        "model": kwargs.get("model"),
-                        "input": _safe_serialize(kwargs.get("messages")),
-                        "output": output,
-                        "inputTokenSize": input_tokens,
-                        "outputTokenSize": output_tokens,
-                    }],
-                    has_errors=error is not None,
-                )
-                tracer._send(
-                    name=name,
-                    input=_safe_serialize(kwargs.get("messages")),
-                    output=output,
-                    latency_ms=latency_ms,
-                    error=error,
-                    framework="anthropic",
-                    model=kwargs.get("model"),
-                    metadata=metadata,
-                    session_id=session_id,
-                    performance_summary=perf,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                )
+                build_and_send(end_t, error, final_message)
+                return result
+
+            async def __aenter__(self_inner):
+                return await ctx.__aenter__()
+
+            async def __aexit__(self_inner, exc_type, exc_val, tb):
+                result = await ctx.__aexit__(exc_type, exc_val, tb)
+                end_t = time.time()
+                error = str(exc_val) if exc_val else None
+                final_message = None
+                try:
+                    raw = ctx.get_final_message()
+                    final_message = await raw if inspect.isawaitable(raw) else raw
+                except Exception:
+                    pass
+                build_and_send(end_t, error, final_message)
                 return result
 
             def __iter__(self_inner):

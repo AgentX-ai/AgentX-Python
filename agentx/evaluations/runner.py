@@ -335,6 +335,7 @@ class EvaluationsRunner:
         self._client = client
         self.datasets = client.datasets
         self.settings = client.settings
+        self.prompts = client.prompts
 
     def list_models(self, provider: Optional[str] = None) -> List[ModelInfo]:
         """List the LLM models AgentX supports — the same set selectable for

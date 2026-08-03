@@ -158,6 +158,7 @@ class AgentXADKPlugin(BasePlugin):
             input=state["input"],
             output=state["output"],
             latency_ms=latency_ms,
+            error=state["error"],
             framework="google-adk",
             model=state["model"],
             tool_calls=state["tool_calls"] or None,
@@ -235,6 +236,36 @@ class AgentXADKPlugin(BasePlugin):
                 "output": text,
                 "inputTokenSize": call_input_tokens,
                 "outputTokenSize": call_output_tokens,
+            })
+
+    async def on_model_error_callback(
+        self, *, callback_context: Any, llm_request: Any, error: Exception
+    ) -> None:
+        inv_id = callback_context.get_invocation_context().invocation_id
+        state = self._runs.get(inv_id)
+        # Pop the earliest queued call (FIFO — model calls are sequential),
+        # same pairing after_model_callback uses, so a failed call's
+        # timing/model/input isn't lost even though there's no llm_response.
+        starts = self._model_starts.get(inv_id, [])
+        call_start = starts.pop(0) if starts else None
+        start_t = call_start.get("start") if call_start else None
+        end_t = time.time()
+
+        if state is None:
+            return
+
+        state["error"] = str(error)
+
+        if start_t is not None:
+            steps = state["execution_steps"]
+            steps.append({
+                "name": f"LLM Call {len(steps) + 1}",
+                "duration_ms": (end_t - start_t) * 1000,
+                "start_time": start_t,
+                "end_time": end_t,
+                "model": call_start.get("model") if call_start else None,
+                "input": call_start.get("input") if call_start else None,
+                "output": f"ERROR: {error}",
             })
 
     # ------------------------------------------------------------------

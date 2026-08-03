@@ -15,11 +15,12 @@ Requires: ``pip install "agentx-python[google-genai]"``
 """
 from __future__ import annotations
 
+import inspect
 import time
 from typing import Any, Dict, List, Optional
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
-from agentx.integrations._perf import build_performance_summary
+from agentx.integrations._traced_call import call_and_trace, finish_llm_call
 
 
 def patch_genai_client(
@@ -35,7 +36,18 @@ def patch_genai_client(
     send a trace for every call.
 
     The original methods are still called and their return values are passed
-    through unchanged — nothing in the caller needs to change.
+    through unchanged — nothing in the caller needs to change. Works with
+    both the sync client (``client.models``) and the async client
+    (``client.aio.models``) — pass whichever ``.models`` resource you use;
+    ``generate_content`` on the async side returns a coroutine, which is
+    detected and awaited before the trace is built.
+
+    Streaming (``client.models.generate_content_stream`` /
+    ``client.aio.models.generate_content_stream``) is patched too, sync or
+    async — detected via ``inspect.iscoroutinefunction``, which (unlike
+    ``generate_content``/``create`` on this and other raw SDK clients) is
+    reliable here since the SDK implements the async variant as a plain
+    top-level ``async def``.
 
     Calling this function on an already-patched client is a no-op.
     """
@@ -91,19 +103,12 @@ def _patch_generate_content(
 
     def patched(*args, **kwargs):
         start_t = time.time()
-        error: Optional[str] = None
-        response = None
-        try:
-            response = original(*args, **kwargs)
-            return response
-        except Exception as exc:
-            error = str(exc)
-            raise
-        finally:
+        model = kwargs.get("model") or (args[0] if args else None)
+        contents = kwargs.get("contents") or (args[1] if len(args) > 1 else None)
+        input_repr = contents if isinstance(contents, str) else _safe_serialize(contents)
+
+        def on_finish(response: Optional[Any], error: Optional[str]) -> None:
             end_t = time.time()
-            latency_ms = int((end_t - start_t) * 1000)
-            model = kwargs.get("model") or (args[0] if args else None)
-            contents = kwargs.get("contents") or (args[1] if len(args) > 1 else None)
             output = _extract_response_text(response) if response is not None else None
             input_tokens = None
             output_tokens = None
@@ -112,36 +117,23 @@ def _patch_generate_content(
                 if usage is not None:
                     input_tokens = getattr(usage, "prompt_token_count", None)
                     output_tokens = getattr(usage, "candidates_token_count", None)
-            input_repr = contents if isinstance(contents, str) else _safe_serialize(contents)
-            perf = build_performance_summary(
-                total_duration_ms=latency_ms,
-                execution_steps=[{
-                    "name": "LLM Call 1",
-                    "duration_ms": latency_ms,
-                    "start_time": start_t,
-                    "end_time": end_t,
-                    "model": str(model) if model else None,
-                    "input": input_repr,
-                    "output": output,
-                    "inputTokenSize": input_tokens,
-                    "outputTokenSize": output_tokens,
-                }],
-                has_errors=error is not None,
-            )
-            tracer._send(
+            finish_llm_call(
+                tracer,
                 name=name,
-                input=input_repr,
-                output=output,
-                latency_ms=latency_ms,
-                error=error,
                 framework="google-genai",
-                model=str(model) if model else None,
                 metadata=metadata,
                 session_id=session_id,
-                performance_summary=perf,
+                start_t=start_t,
+                end_t=end_t,
+                input_repr=input_repr,
+                output=output,
+                model=str(model) if model else None,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                error=error,
             )
+
+        return call_and_trace(original, args, kwargs, on_finish)
 
     patched._agentx_patched = True
     models.generate_content = patched
@@ -158,9 +150,31 @@ def _patch_generate_content_stream(
     if getattr(original_stream, "_agentx_patched", False):
         return
 
+    if inspect.iscoroutinefunction(original_stream):
+        _patch_async_generate_content_stream(models, original_stream, tracer, name, metadata, session_id)
+    else:
+        _patch_sync_generate_content_stream(models, original_stream, tracer, name, metadata, session_id)
+
+
+def _stream_input_and_model(args: tuple, kwargs: dict) -> tuple:
+    model = kwargs.get("model") or (args[0] if args else None)
+    contents = kwargs.get("contents") or (args[1] if len(args) > 1 else None)
+    input_repr = contents if isinstance(contents, str) else _safe_serialize(contents)
+    return str(model) if model else None, input_repr
+
+
+def _patch_sync_generate_content_stream(
+    models: Any,
+    original_stream: Any,
+    tracer: Tracer,
+    name: str,
+    metadata: Optional[Dict[str, Any]],
+    session_id: Optional[str],
+) -> None:
     def patched_stream(*args, **kwargs):
         start_t = time.time()
-        accumulated_text: list[str] = []
+        model, input_repr = _stream_input_and_model(args, kwargs)
+        accumulated_text: List[str] = []
         last_usage_metadata = None
         error: Optional[str] = None
 
@@ -179,45 +193,94 @@ def _patch_generate_content_stream(
             raise
         finally:
             end_t = time.time()
-            latency_ms = int((end_t - start_t) * 1000)
-            model = kwargs.get("model") or (args[0] if args else None)
-            contents = kwargs.get("contents") or (args[1] if len(args) > 1 else None)
             input_tokens = None
             output_tokens = None
             if last_usage_metadata is not None:
                 input_tokens = getattr(last_usage_metadata, "prompt_token_count", None)
                 output_tokens = getattr(last_usage_metadata, "candidates_token_count", None)
-            input_repr = contents if isinstance(contents, str) else _safe_serialize(contents)
             output_repr = "".join(accumulated_text) or None
-            perf = build_performance_summary(
-                total_duration_ms=latency_ms,
-                execution_steps=[{
-                    "name": "LLM Call 1",
-                    "duration_ms": latency_ms,
-                    "start_time": start_t,
-                    "end_time": end_t,
-                    "model": str(model) if model else None,
-                    "input": input_repr,
-                    "output": output_repr,
-                    "inputTokenSize": input_tokens,
-                    "outputTokenSize": output_tokens,
-                }],
-                has_errors=error is not None,
-            )
-            tracer._send(
+            finish_llm_call(
+                tracer,
                 name=name,
-                input=input_repr,
-                output=output_repr,
-                latency_ms=latency_ms,
-                error=error,
                 framework="google-genai",
-                model=str(model) if model else None,
                 metadata=metadata,
                 session_id=session_id,
-                performance_summary=perf,
+                start_t=start_t,
+                end_t=end_t,
+                input_repr=input_repr,
+                output=output_repr,
+                model=model,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                error=error,
             )
+
+    patched_stream._agentx_patched = True
+    models.generate_content_stream = patched_stream
+
+
+def _patch_async_generate_content_stream(
+    models: Any,
+    original_stream: Any,
+    tracer: Tracer,
+    name: str,
+    metadata: Optional[Dict[str, Any]],
+    session_id: Optional[str],
+) -> None:
+    async def patched_stream(*args, **kwargs):
+        # The real SDK method is itself `async def` and returns an async
+        # iterable — callers use `async for chunk in await client.aio.models
+        # .generate_content_stream(...)`. To preserve that exact shape,
+        # `patched_stream` is also `async def`: awaiting it runs this setup
+        # (including the real `await original_stream(...)` call) and
+        # resolves to `traced_agen()`, an async generator object — not yet
+        # iterated, so no chunk is consumed until the caller's `async for`
+        # drives it.
+        start_t = time.time()
+        model, input_repr = _stream_input_and_model(args, kwargs)
+        inner = await original_stream(*args, **kwargs)
+
+        async def traced_agen():
+            accumulated_text: List[str] = []
+            last_usage_metadata = None
+            error: Optional[str] = None
+            try:
+                async for chunk in inner:
+                    text = getattr(chunk, "text", None)
+                    if text:
+                        accumulated_text.append(text)
+                    chunk_usage = getattr(chunk, "usage_metadata", None)
+                    if chunk_usage is not None:
+                        last_usage_metadata = chunk_usage
+                    yield chunk
+            except Exception as exc:
+                error = str(exc)
+                raise
+            finally:
+                end_t = time.time()
+                input_tokens = None
+                output_tokens = None
+                if last_usage_metadata is not None:
+                    input_tokens = getattr(last_usage_metadata, "prompt_token_count", None)
+                    output_tokens = getattr(last_usage_metadata, "candidates_token_count", None)
+                output_repr = "".join(accumulated_text) or None
+                finish_llm_call(
+                    tracer,
+                    name=name,
+                    framework="google-genai",
+                    metadata=metadata,
+                    session_id=session_id,
+                    start_t=start_t,
+                    end_t=end_t,
+                    input_repr=input_repr,
+                    output=output_repr,
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    error=error,
+                )
+
+        return traced_agen()
 
     patched_stream._agentx_patched = True
     models.generate_content_stream = patched_stream

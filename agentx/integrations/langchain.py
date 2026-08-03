@@ -247,6 +247,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         name: str = "langchain-agent",
         metadata: Optional[Dict[str, Any]] = None,
         session_id: Optional[str] = None,
+        max_run_age_seconds: float = 3600.0,
     ) -> None:
         super().__init__()
         self._tracer = tracer
@@ -270,6 +271,35 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         # on_tool_error can fire from several threads at once for the same
         # top-level run.
         self._state_lock = threading.Lock()
+        # Safety net for a run_id whose start callback never gets a matching
+        # end/error callback at all (e.g. a hard crash, or a custom Runnable
+        # that swallows exceptions before they reach LangChain's own callback
+        # dispatch) — normal on_*_end/on_*_error pairing already frees
+        # everything else. This handler is typically a long-lived singleton
+        # across many requests, so entries older than this are swept out the
+        # next time a new top-level chain starts.
+        self._max_run_age_seconds = max_run_age_seconds
+
+    def _prune_stale_entries(self) -> None:
+        """Sweep out run_id entries older than max_run_age_seconds — see __init__'s comment."""
+        cutoff = time.time() - self._max_run_age_seconds
+
+        stale_run_ids = [
+            run_id
+            for run_id, state in self._runs.items()
+            if (state.get("start") or state.get("llm_start") or 0) < cutoff
+        ]
+        for run_id in stale_run_ids:
+            self._runs.pop(run_id, None)
+            self._top_level.pop(run_id, None)
+            self._parents.pop(run_id, None)
+
+        stale_retrieval_ids = [
+            run_id for run_id, state in self._retrieval_starts.items() if state.get("start", 0) < cutoff
+        ]
+        for run_id in stale_retrieval_ids:
+            self._retrieval_starts.pop(run_id, None)
+            self._parents.pop(run_id, None)
 
     # ------------------------------------------------------------------
     # Chain lifecycle
@@ -288,6 +318,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         is_top = parent_run_id is None
         self._top_level[run_id] = is_top
         if is_top:
+            self._prune_stale_entries()
             # Consume any retrieval steps that ran before this chain started
             # (pre-run RAG: retriever.invoke() called before agent.invoke())
             pending = self._pending_retrieval_steps[:]
@@ -312,7 +343,14 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         parent_run_id: Optional[UUID] = None,
         **kwargs,
     ) -> None:
-        if not self._top_level.get(run_id):
+        # Pop _top_level/_parents for every chain run, not just top-level ones.
+        # Nested chain steps (LCEL sub-chains, LangGraph nodes, AgentExecutor
+        # internals) fire on_chain_start/on_chain_end too — leaving their
+        # entries behind here would leak forever in a long-lived singleton
+        # handler, since nothing else ever cleans up a non-top-level run_id.
+        is_top = self._top_level.pop(run_id, None)
+        self._parents.pop(run_id, None)
+        if not is_top:
             return
         state = self._runs.pop(run_id, None)
         if state is None:
@@ -365,8 +403,6 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                 input_tokens=state["input_tokens"] or None,
                 output_tokens=state["output_tokens"] or None,
             )
-        self._top_level.pop(run_id, None)
-        self._parents.pop(run_id, None)
 
     def on_chain_error(
         self,
@@ -376,7 +412,10 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         parent_run_id: Optional[UUID] = None,
         **kwargs,
     ) -> None:
-        if not self._top_level.get(run_id):
+        # See on_chain_end's comment — pop for every chain run, not just top-level.
+        is_top = self._top_level.pop(run_id, None)
+        self._parents.pop(run_id, None)
+        if not is_top:
             return
         state = self._runs.pop(run_id, None)
         if state is None:
@@ -418,8 +457,6 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                 input_tokens=state["input_tokens"] or None,
                 output_tokens=state["output_tokens"] or None,
             )
-        self._top_level.pop(run_id, None)
-        self._parents.pop(run_id, None)
 
     # ------------------------------------------------------------------
     # LLM lifecycle
@@ -694,8 +731,33 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         parent_run_id: Optional[UUID] = None,
         **kwargs,
     ) -> None:
-        self._retrieval_starts.pop(run_id, None)
+        state = self._retrieval_starts.pop(run_id, None)
         self._parents.pop(run_id, None)
+        if state is None:
+            return
+        end_t = time.time()
+        start_t = state["start"]
+        query: Optional[str] = state["query"] or None
+        step: Dict[str, Any] = {
+            "name": "Retrieval 1",  # renumbered below
+            "duration_ms": (end_t - start_t) * 1000,
+            "start_time": start_t,
+            "end_time": end_t,
+            "output": f"ERROR: {error}",
+        }
+        if query:
+            step["query"] = query
+
+        top = self._find_top_ancestor(parent_run_id)
+        if top and top in self._runs:
+            # Retriever ran inside an active chain — attach directly
+            retrievals = self._runs[top]["retrieval_steps"]
+            step["name"] = f"Retrieval {len(retrievals) + 1}"
+            retrievals.append(step)
+        else:
+            # Retriever ran before the chain started (pre-run RAG pattern)
+            step["name"] = f"Retrieval {len(self._pending_retrieval_steps) + 1}"
+            self._pending_retrieval_steps.append(step)
 
     # ------------------------------------------------------------------
     # Helpers

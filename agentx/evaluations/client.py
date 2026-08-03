@@ -17,6 +17,7 @@ from agentx.evaluations.models import (
     EvaluationSettings,
     EvaluationSubject,
     ModelInfo,
+    Prompt,
     Report,
 )
 
@@ -77,12 +78,14 @@ class EvaluationsClient:
                 "accept": "*/*",
             }
         )
-        # Expose dataset / evaluation-settings builder factories
+        # Expose dataset / evaluation-settings / prompt builder factories
         from agentx.evaluations.datasets import DatasetClient
         from agentx.evaluations.evaluation_settings import EvaluationSettingsClient
+        from agentx.evaluations.prompts import PromptClient
 
         self.datasets = DatasetClient(self)
         self.settings = EvaluationSettingsClient(self)
+        self.prompts = PromptClient(self)
 
     # ------------------------------------------------------------------
     # Low-level HTTP
@@ -194,6 +197,27 @@ class EvaluationsClient:
             params=self._workspace_params(),
         )
         return EvaluationSettings(**data)
+
+    # ------------------------------------------------------------------
+    # Prompt registry endpoints — see agentx.evaluations.prompts.PromptClient for the concept
+    # (the external-agent analog to native autotune). Deliberately read-mostly: no publish here,
+    # a new version only ever comes from the dashboard's human-approved propose/publish flow.
+    # ------------------------------------------------------------------
+
+    def create_prompt(self, payload: dict) -> Prompt:
+        data = self._request("POST", "/prompts", json=self._with_workspace(payload))
+        return Prompt(**data)
+
+    def list_prompts(self) -> List[Prompt]:
+        data = self._request("GET", "/prompts", params=self._workspace_params())
+        return [Prompt(**p) for p in (data if isinstance(data, list) else data.get("prompts", []))]
+
+    def get_prompt(self, name: str, version: Optional[int] = None) -> Prompt:
+        params = self._workspace_params() or {}
+        if version is not None:
+            params = {**params, "version": version}
+        data = self._request("GET", f"/prompts/{name}", params=params or None)
+        return Prompt(**data)
 
     # ------------------------------------------------------------------
     # Run endpoints

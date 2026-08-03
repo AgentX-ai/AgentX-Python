@@ -148,6 +148,7 @@ class AgentXTracingProcessor:
             "perf_tool_calls": [],
             "input_tokens": 0,
             "output_tokens": 0,
+            "error": None,
         }
 
     def on_trace_end(self, trace: Any) -> None:
@@ -166,6 +167,7 @@ class AgentXTracingProcessor:
             input=state.get("input"),
             output=state.get("output"),
             latency_ms=latency_ms,
+            error=state.get("error"),
             framework="openai-agents",
             model=state.get("model"),
             tool_calls=state["tool_calls"] or None,
@@ -190,6 +192,15 @@ class AgentXTracingProcessor:
 
         state = self._spans[trace_id]
         span_type = getattr(span_data, "type", None)
+
+        # `TracingProcessor` has no dedicated error callback — a span's
+        # failure lives on `span.error` (a `SpanError | None`) instead.
+        # First error wins: one failed span is enough to flag the trace.
+        span_error = getattr(span, "error", None)
+        if span_error is not None and state.get("error") is None:
+            error_message = getattr(span_error, "message", None) or str(span_error)
+            error_data = getattr(span_error, "data", None)
+            state["error"] = f"{error_message} ({error_data})" if error_data else error_message
 
         t0 = _iso_to_ts(getattr(span, "started_at", None))
         t1 = _iso_to_ts(getattr(span, "ended_at", None))

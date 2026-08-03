@@ -187,9 +187,13 @@ Each integration auto-captures LLM calls, tool calls, and token usage — instal
 | LangChain             | `pip install "agentx-python[langchain]"`     | `AgentXCallbackHandler`  |
 | CrewAI                | `pip install "agentx-python[crewai]"`        | `AgentXCrewObserver`     |
 | OpenAI Agents SDK     | `pip install "agentx-python[openai-agents]"` | `AgentXTracingProcessor` |
+| OpenAI (raw client)   | `pip install "agentx-python[openai]"`        | `patch_openai_client`    |
 | Anthropic             | `pip install "agentx-python[anthropic]"`     | `patch_anthropic_client` |
 | Google ADK            | `pip install "agentx-python[google-adk]"`    | `AgentXADKPlugin`        |
 | Google GenAI (Gemini) | `pip install "agentx-python[google-genai]"`  | `patch_genai_client`     |
+| LiteLLM               | `pip install "agentx-python[litellm]"`       | `AgentXLiteLLMLogger`    |
+| LlamaIndex             | `pip install "agentx-python[llamaindex]"`    | `AgentXLlamaIndexHandler`|
+| AutoGen                | `pip install "agentx-python[autogen]"`       | `AgentXAutoGenObserver`  |
 
 Or plain Python — wrap any function with `@tracer.trace(...)` and it just works, no framework required.
 
@@ -261,7 +265,21 @@ print(report.recommendations)      # list of prioritized, actionable fixes
 
 Ask a case's question several extra ways each run, LLM-paraphrased server-side, to catch agents that break on phrasing rather than substance, and override the judge's prompt/model per config, see [Smoke testing](EVALUATIONS.md#smoke-testing-phrasing-robustness) and [Configuring the judge](EVALUATIONS.md#configuring-the-judge) in the full guide.
 
-See **[EVALUATIONS.md](EVALUATIONS.md)** for the full guide — dataset builder, framework adapters, similarity metrics, smoke testing, judge configuration, and the complete API reference.
+Since AgentX doesn't own your agent's code, `client.evaluations.prompts` lets AgentX become your prompt's *source of truth* instead — the same problem LangSmith's Prompt Hub and Langfuse's Prompt Management solve. Pull a version at runtime, tag your eval runs (or live traces) with it, and let a judge propose a rewrite from your real worst-rated results — a human always has to approve before it publishes:
+
+```python
+prompt = client.evaluations.prompts.get("support-agent-system-prompt")
+# use prompt.text as your own agent's system prompt
+
+client.evaluations.run(
+    dataset_id="evds_…",
+    subject={"kind": "custom_agent", "metadata": {"promptName": prompt.name}},
+).execute(my_agent_fn)
+```
+
+See [Prompt registry](EVALUATIONS.md#prompt-registry) in the full guide, or [self-host's docs](https://docs.agentx.so/self-host#prompt-registry) for the "Suggest improvement" dashboard flow (self-host only — no hosted-SaaS equivalent yet).
+
+See **[EVALUATIONS.md](EVALUATIONS.md)** for the full guide — dataset builder, framework adapters, similarity metrics, smoke testing, judge configuration, prompt registry, and the complete API reference.
 
 ---
 
