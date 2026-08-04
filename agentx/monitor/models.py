@@ -37,6 +37,65 @@ class MonitorPattern(BaseModel):
         extra = "ignore"
 
 
+class MonitorOnlineEvaluator(BaseModel):
+    """Continuous LLM-judge scoring of a sample of live production traffic, distinct from a
+    MonitorPattern (which matches rules, not judgment). Built via
+    ``client.monitor.online_evaluators.builder(...).publish()``. References an
+    ``evaluation_settings_id`` (an Evaluator config: criteria, judge prompt, judge model) rather
+    than storing its own copy, the same config datasets/Evaluate runs use.
+
+    A score below ``alert_threshold`` raises/updates a Signal (``client.monitor.signals``), the
+    same triage surface a failing MonitorPattern already lands on, tagged with ``severity``. Set
+    ``alert_threshold=None`` to score without ever raising a Signal.
+    """
+
+    id: str = Field(alias="_id")
+    name: str
+    evaluation_settings_id: str = Field(alias="evaluationSettingsId")
+    sample_rate: float = Field(default=0.1, alias="sampleRate")
+    scope_mode: str = Field(default="all", alias="scopeMode")
+    agent_ids: List[str] = Field(default_factory=list, alias="agentIds")
+    enabled: bool = True
+    alert_threshold: Optional[float] = Field(default=5, alias="alertThreshold")
+    severity: str = "medium"
+    created_at: Optional[str] = Field(default=None, alias="createdAt")
+
+    class Config:
+        populate_by_name = True
+        extra = "ignore"
+
+
+class OnlineEvaluatorRatingPoint(BaseModel):
+    """One bucket of a ratings-over-time series, see
+    ``client.monitor.online_evaluators.ratings(evaluator_id)``."""
+
+    label: str
+    ts: int
+    average_rating: Optional[float] = Field(default=None, alias="averageRating")
+    count: int = 0
+
+    class Config:
+        populate_by_name = True
+        extra = "ignore"
+
+
+class OnlineEvaluatorEvent(BaseModel):
+    """One individually scored trace behind a point on the ratings series, worst-rated first,
+    see ``client.monitor.online_evaluators.events(evaluator_id)``."""
+
+    id: str
+    trace_id: str = Field(alias="traceId")
+    rating: float
+    justification: Optional[str] = None
+    created_at: str = Field(alias="createdAt")
+    input: str
+    output: str
+
+    class Config:
+        populate_by_name = True
+        extra = "ignore"
+
+
 class SignalOccurrence(BaseModel):
     """One hit behind a signal, capped at the server's most recent N per signal."""
 

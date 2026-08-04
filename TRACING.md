@@ -449,6 +449,44 @@ client.monitor.profile.update("agent_123", threshold_overrides={"latencyMs": 150
 | `redaction_mode` | `str` | `"none"`, `"standard"`, or `"strict"` |
 | `approval_policy` | `dict[str, str]` | Per-action approval mode for autotune actions |
 
+### `client.monitor.online_evaluators` (self-host only)
+
+A real LLM judge scoring a sample of live production traffic continuously, distinct from a pattern's rule-matching: the same judge-scoring logic Evaluate's offline runs use, just pointed at production instead of a golden dataset. References an `evaluation_settings_id` (an Evaluator config: criteria, judge prompt, judge model) rather than storing its own copy, the same config datasets/Evaluate runs use.
+
+```python
+evaluator = client.monitor.online_evaluators.builder(
+    name="Helpfulness",
+    evaluation_settings_id=settings.id,
+    sample_rate=0.1,
+    alert_threshold=5,
+    severity="medium",
+).publish()
+
+client.monitor.online_evaluators.get(evaluator.id)      # -> MonitorOnlineEvaluator
+client.monitor.online_evaluators.list()                 # -> list[MonitorOnlineEvaluator]
+client.monitor.online_evaluators.update(evaluator.id, alert_threshold=None)  # score only, never raise a signal
+client.monitor.online_evaluators.delete(evaluator.id)
+
+client.monitor.online_evaluators.ratings(evaluator.id, window="7d")  # -> list[OnlineEvaluatorRatingPoint]
+client.monitor.online_evaluators.events(evaluator.id, window="7d")   # -> list[OnlineEvaluatorEvent], worst-rated first
+```
+
+A score below `alert_threshold` raises/updates a signal the same way a failing pattern does, readable from `client.monitor.signals` alongside pattern-raised ones, deduped by evaluator and agent so a recurring low score accumulates one `occurrence_count` instead of a new signal per trace.
+
+#### `builder()` parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `name` | `str` | required | Evaluator display name |
+| `evaluation_settings_id` | `str` | required | Id of an existing Evaluator config (criteria, judge prompt, judge model) |
+| `sample_rate` | `float` | `0.1` | Fraction of traffic actually scored. Every check is a real LLM call against your own API key, keep this low unless you want to score everything |
+| `scope_mode` / `agent_ids` | `str` / `list[str]` | `"all"` / `[]` | Restrict this evaluator to specific agents instead of the whole workspace |
+| `enabled` | `bool` | `True` | Whether the evaluator scores at all |
+| `alert_threshold` | `float \| None` | `5` | A score below this raises/updates a signal. `None` scores without ever raising one |
+| `severity` | `str` | `"medium"` | `"low"`, `"medium"`, `"high"`, or `"critical"`, applied to signals this evaluator raises |
+
+`publish()` returns a `MonitorOnlineEvaluator` with `.id`. `update()` is a partial update, same field names as the builder, pass only what changes.
+
 ---
 
 ## Async support

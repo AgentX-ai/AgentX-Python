@@ -236,6 +236,19 @@ Per-agent coverage/threshold settings (sample rate, retention, and threshold ove
 client.monitor.profile.update("agent_123", threshold_overrides={"latencyMs": 15000})
 ```
 
+Self-host also has **online evaluators**: a real LLM judge scoring a sample of live traffic continuously, distinct from a pattern's rule-matching. A score below `alert_threshold` raises a signal the same way a failing pattern does, deduped and triage-ready in `client.monitor.signals`.
+
+```python
+evaluator = client.monitor.online_evaluators.builder(
+    name="Helpfulness",
+    evaluation_settings_id=settings.id,
+    sample_rate=0.1,
+    alert_threshold=5,
+).publish()
+
+client.monitor.online_evaluators.ratings(evaluator.id, window="7d")
+```
+
 See **[TRACING.md](TRACING.md)** for the complete Monitor guide.
 
 ---

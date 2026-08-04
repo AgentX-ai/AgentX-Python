@@ -7,7 +7,14 @@ from typing import Any, List, Optional
 
 import requests
 
-from agentx.monitor.models import MonitorPattern, MonitorProfile, MonitorSignal
+from agentx.monitor.models import (
+    MonitorPattern,
+    MonitorProfile,
+    MonitorSignal,
+    MonitorOnlineEvaluator,
+    OnlineEvaluatorRatingPoint,
+    OnlineEvaluatorEvent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +78,12 @@ class MonitorClient:
         from agentx.monitor.patterns import MonitorPatternClient
         from agentx.monitor.signals import MonitorSignalClient
         from agentx.monitor.profile import MonitorProfileClient
+        from agentx.monitor.online_evaluators import MonitorOnlineEvaluatorClient
 
         self.patterns = MonitorPatternClient(self)
         self.signals = MonitorSignalClient(self)
         self.profile = MonitorProfileClient(self)
+        self.online_evaluators = MonitorOnlineEvaluatorClient(self)
 
     # ------------------------------------------------------------------
     # Low-level HTTP
@@ -136,6 +145,45 @@ class MonitorClient:
             "GET", f"/patterns/{pattern_id}", params=self._workspace_params()
         )
         return MonitorPattern(**data["pattern"])
+
+    # ------------------------------------------------------------------
+    # Online evaluator endpoints
+    # ------------------------------------------------------------------
+
+    def create_online_evaluator(self, payload: dict) -> MonitorOnlineEvaluator:
+        data = self._request("POST", "/online-evaluators", json=self._with_workspace(payload))
+        return MonitorOnlineEvaluator(**data["evaluator"])
+
+    def list_online_evaluators(self) -> List[MonitorOnlineEvaluator]:
+        data = self._request("GET", "/online-evaluators", params=self._workspace_params())
+        return [MonitorOnlineEvaluator(**e) for e in data.get("evaluators", [])]
+
+    def get_online_evaluator(self, evaluator_id: str) -> MonitorOnlineEvaluator:
+        data = self._request(
+            "GET", f"/online-evaluators/{evaluator_id}", params=self._workspace_params()
+        )
+        return MonitorOnlineEvaluator(**data["evaluator"])
+
+    def update_online_evaluator(self, evaluator_id: str, payload: dict) -> MonitorOnlineEvaluator:
+        data = self._request(
+            "PUT", f"/online-evaluators/{evaluator_id}", json=self._with_workspace(payload)
+        )
+        return MonitorOnlineEvaluator(**data["evaluator"])
+
+    def delete_online_evaluator(self, evaluator_id: str) -> None:
+        self._request(
+            "DELETE", f"/online-evaluators/{evaluator_id}", params=self._workspace_params()
+        )
+
+    def get_online_evaluator_ratings(self, evaluator_id: str, window: str) -> List[OnlineEvaluatorRatingPoint]:
+        params = {**(self._workspace_params() or {}), "window": window}
+        data = self._request("GET", f"/online-evaluators/{evaluator_id}/ratings", params=params)
+        return [OnlineEvaluatorRatingPoint(**p) for p in data.get("points", [])]
+
+    def get_online_evaluator_events(self, evaluator_id: str, window: str) -> List[OnlineEvaluatorEvent]:
+        params = {**(self._workspace_params() or {}), "window": window}
+        data = self._request("GET", f"/online-evaluators/{evaluator_id}/events", params=params)
+        return [OnlineEvaluatorEvent(**e) for e in data.get("events", [])]
 
     # ------------------------------------------------------------------
     # Signal endpoints
