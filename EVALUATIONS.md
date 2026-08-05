@@ -274,6 +274,7 @@ prompt = client.evaluations.prompts.create(
 # or, once it exists:
 prompt = client.evaluations.prompts.get("support-agent-system-prompt")   # latest version
 prompt = client.evaluations.prompts.get("support-agent-system-prompt", version=1)  # a specific one
+prompt = client.evaluations.prompts.get(prompt.id)                       # by id instead of name
 client.evaluations.prompts.list()                                        # every registered prompt
 
 # use prompt.text as your own agent's actual system prompt, however you call your LLM
@@ -299,7 +300,7 @@ with client.tracer.trace("support-agent", metadata={"promptName": prompt.name}) 
     ...  # your agent's own call
 ```
 
-From the self-host dashboard: Governance → Evaluate → **Prompts** → a prompt's row menu → **Suggest
+From the self-host dashboard: Governance → Improve → **Prompt Management** → a prompt's row menu → **Suggest
 improvement**. It merges both kinds of evidence — deliberate eval runs (defaulting to the *current
 published version only*, auto-widening to every version if there isn't enough recent evidence yet)
 and worst-scoring Online Evaluator ratings from a recent time window — feeds the worst-rated

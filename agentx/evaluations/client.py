@@ -213,6 +213,8 @@ class EvaluationsClient:
         return [Prompt(**p) for p in (data if isinstance(data, list) else data.get("prompts", []))]
 
     def get_prompt(self, name: str, version: Optional[int] = None) -> Prompt:
+        # `name` doubles as an id: the backend route tries a name match first, then falls back to
+        # an id match (see engine's getPromptRowByNameOrId), so callers can pass either.
         params = self._workspace_params() or {}
         if version is not None:
             params = {**params, "version": version}

@@ -34,6 +34,9 @@ class PromptClient:
                 }
             ),
         )
+
+    ``get()`` also accepts a prompt's ``id`` in place of its name, e.g.
+    ``client.evaluations.prompts.get(prompt.id)``.
     """
 
     def __init__(self, client: "EvaluationsClient"):
@@ -43,6 +46,9 @@ class PromptClient:
         return self._client.create_prompt({"name": name, "text": text, "description": description})
 
     def get(self, name: str, version: Optional[int] = None) -> Prompt:
+        """Accepts either the prompt's name or its ``id`` (e.g. ``prompt.id`` from an earlier
+        ``get``/``create`` call), useful for round-tripping an id you already have without a
+        second lookup method."""
         return self._client.get_prompt(name, version=version)
 
     def list(self) -> List[Prompt]:

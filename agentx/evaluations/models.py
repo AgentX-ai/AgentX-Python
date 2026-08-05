@@ -132,7 +132,7 @@ class EvaluationSettings(BaseModel):
 # Prompt registry — the external-agent analog to AgentX's native autotune. AgentX doesn't own
 # your agent's code, so instead of branching/applying a config it becomes the prompt's source of
 # truth (same shape as LangSmith's Prompt Hub / Langfuse's Prompt Management): pull a version at
-# runtime with ``client.evaluations.prompts.get(name)``, use ``prompt.text`` as your agent's
+# runtime with ``client.evaluations.prompts.get(name_or_id)``, use ``prompt.text`` as your agent's
 # system prompt, and tag your eval runs so the existing version-comparison view can tell you
 # which published version scored higher — see ``client.evaluations.prompts`` docs.
 # ---------------------------------------------------------------------------

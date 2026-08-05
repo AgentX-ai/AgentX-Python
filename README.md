@@ -281,7 +281,7 @@ Ask a case's question several extra ways each run, LLM-paraphrased server-side, 
 Since AgentX doesn't own your agent's code, `client.evaluations.prompts` lets AgentX become your prompt's *source of truth* instead — the same problem LangSmith's Prompt Hub and Langfuse's Prompt Management solve. Pull a version at runtime, tag your eval runs (or live traces) with it, and let a judge propose a rewrite from your real worst-rated results — a human always has to approve before it publishes:
 
 ```python
-prompt = client.evaluations.prompts.get("support-agent-system-prompt")
+prompt = client.evaluations.prompts.get("support-agent-system-prompt")  # or prompt.id
 # use prompt.text as your own agent's system prompt
 
 client.evaluations.run(
