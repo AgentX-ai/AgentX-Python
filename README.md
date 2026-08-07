@@ -4,7 +4,7 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/agentx-python)](https://pypi.org/project/agentx-python/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-The official Python SDK for **[AgentX](https://app.agentx.so/)** — build, chat with, orchestrate, and trace AI agents in a few lines of code.
+The official Python SDK for **[AgentX](https://app.agentx.so/)** — an evaluation, tracing, and monitoring framework for AI agents, plus a client for AgentX's own hosted agents.
 
 Also see [SDK Developer Docs](https://developers.agentx.so), [API Reference Docs](https://docs.agentx.so/reference)
 
@@ -16,30 +16,24 @@ Also see [SDK Developer Docs](https://developers.agentx.so), [API Reference Docs
 - [Installation](#installation)
 - [Authentication](#authentication)
 - [Quick start](#quick-start)
-- [Working with agents](#working-with-agents)
-  - [List agents](#list-agents)
-  - [Start a conversation](#start-a-conversation)
-  - [Chat (streaming and non-streaming)](#chat-streaming-and-non-streaming)
-- [Workforce (multi-agent orchestration)](#workforce-multi-agent-orchestration) — teams of agents with a designated manager
+- [Custom agent evaluations](#custom-agent-evaluations) — LLM-as-a-judge, cosine / Jaccard similarity, any framework
 - [Production tracing](#production-tracing) — record live agent runs from any framework
 - [Monitor](#monitor) — automatic production monitoring, patterns and signals
-- [Custom agent evaluations](#custom-agent-evaluations) — LLM-as-a-judge, cosine / Jaccard similarity
 - [Self-host](#self-host) — run Trace/Evaluate/Monitor on your own machine instead of the hosted dashboard
+- [Agents & conversations](#agents--conversations) — chat with and orchestrate AgentX's own hosted agents
 - [Links](#links)
 
 ---
 
 ## Why AgentX
 
-- **Simple mental model** — `Agent → Conversation → Message`.
-- **Chain-of-thought** is built in, no extra plumbing.
-- **Bring any LLM** — works across major open and closed-source vendors.
-- **Batteries included** — voice (ASR/TTS), image generation, document/CSV/Excel/OCR, RAG with built-in re-ranking.
-- **MCP support** — connect any Model Context Protocol server.
-- **Multi-agent orchestration** — workforces of agents with a designated manager, across LLM vendors.
-- **Production tracing** — one decorator or context manager records every agent run (input, output, latency, tool calls, token usage) into your workspace, for any framework.
-- **Agent Evaluations** — score any agent (LangChain, CrewAI, OpenAI, Anthropic, HTTP, …) with LLM-as-a-judge ratings plus optional cosine and Jaccard similarity metrics. Configurable judge prompt/model (OpenAI or Anthropic), per-question judge guidelines, and smoke testing for phrasing robustness.
-- **A2A** — Each agent can be published with agent-to-agent protocol compatible.
+- **Agent Evaluations** — score **any** agent (LangChain, CrewAI, AutoGen, LlamaIndex, OpenAI, Anthropic, HTTP, or plain Python) against a dataset with LLM-as-a-judge ratings plus optional cosine, Jaccard, and BLEU/ROUGE similarity metrics. Configurable judge prompt/model, per-question judge guidelines, smoke testing for phrasing robustness, and a durable multi-judge analysis pass for a qualitative report.
+- **Production tracing** — one decorator or context manager records every agent run (input, output, latency, tool calls, token usage, and a real span tree) into your workspace, for any framework.
+- **Monitor** — check live traces against detection patterns or a sampled LLM judge, and read back triage-ready signals, no dashboard setup required.
+- **Prompt registry** — make AgentX the source of truth for your own agent's prompts: pull a version at runtime, tag eval runs and live traces with it, let a judge propose a rewrite from your worst-rated results.
+- **Self-host** — run the whole Trace/Evaluate/Monitor stack locally, bring your own LLM keys, no account required.
+- **Bring any LLM** — works across major open and closed-source vendors, for evaluation, tracing, and AgentX's own hosted agents alike.
+- **AgentX's own hosted agents** — a simple `Agent → Conversation → Message` mental model, chain-of-thought built in, multi-agent workforces, MCP support, and A2A publishing, for when you want AgentX to run the agent too, not just evaluate/trace/monitor it.
 
 ---
 
@@ -70,80 +64,72 @@ client = AgentX.from_env()
 
 ## Quick start
 
+Evaluate your own agent — any framework, or plain Python — against a dataset:
+
 ```python
 from agentx import AgentX
 
 client = AgentX.from_env()
 
-# Pick an existing agent and chat with it
-agent = client.list_agents()[0]
-conversation = agent.new_conversation()
-print(conversation.chat("Hello! What can you help me with?"))
+def my_agent(case):
+    return call_my_agent(case.query)  # your agent's own code, any framework
+
+report = (
+    client.evaluations
+    .run(dataset_id="evds_…", subject={"kind": "custom_agent", "framework": "raw_python"})
+    .execute(my_agent)
+    .finalize()
+    .analyze()
+)
+
+print(report.average_rating)   # LLM-graded score, 0–10
+print(report.summary)          # AI-generated narrative from .analyze()
 ```
 
-That's it. The remaining sections show the same primitives in more detail.
+That's it. The rest of this section covers building the dataset, framework adapters, similarity metrics, and judge configuration.
 
 ---
 
-## Working with agents
+## Custom agent evaluations
 
-### List agents
-
-```python
-agents = client.list_agents()
-print(f"You have {len(agents)} agents")
-```
-
-### Start a conversation
+Evaluate **any** AI agent — LangChain, CrewAI, AutoGen, LlamaIndex, OpenAI, Anthropic, HTTP endpoints, or plain Python — using AgentX as the scoring and reporting backend. Includes optional **cosine**, **Jaccard**, and **BLEU/ROUGE** similarity metrics alongside LLM-graded ratings.
 
 ```python
-agent = client.get_agent(id="<agent-id>")
+report = (
+    client.evaluations
+    .run(dataset_id="evds_…", subject={"kind": "custom_agent", "framework": "raw_python"})
+    .execute(my_agent_fn)
+    .finalize()
+    .analyze()
+)
 
-# Either resume an existing conversation…
-existing = agent.list_conversations()
-last = existing[-1]
-for msg in last.list_messages():
-    print(msg)
+print(report.average_rating)       # LLM-graded score, 0–10
+print(report.cosine_similarity)    # embedding cosine, 0–1 (None if not enabled)
+print(report.jaccard_similarity)   # token-set overlap, 0–1 (None if not enabled)
 
-# …or start a fresh one
-conversation = agent.new_conversation()
+print(report.summary)              # AI-generated narrative from .analyze()
+print(report.recommendations)      # list of prioritized, actionable fixes
 ```
 
-### Chat (streaming and non-streaming)
+`.analyze()` also generates a full qualitative report (strengths, weaknesses, instruction adherence, reasoning quality, and recommendations), running the same durable, multi-judge pipeline as the dashboard's "Analyze" button. `analyze(mode=..., quality_mode=..., judges=[...])` controls how items are scored and by which models. See [AI analysis report](EVALUATIONS.md#ai-analysis-report) in the full guide for the complete field and parameter reference.
+
+Ask a case's question several extra ways each run, LLM-paraphrased server-side, to catch agents that break on phrasing rather than substance, and override the judge's prompt/model per config, see [Smoke testing](EVALUATIONS.md#smoke-testing-phrasing-robustness) and [Configuring the judge](EVALUATIONS.md#configuring-the-judge) in the full guide.
+
+Since AgentX doesn't own your agent's code, `client.evaluations.prompts` lets AgentX become your prompt's *source of truth* instead — the same problem LangSmith's Prompt Hub and Langfuse's Prompt Management solve. Pull a version at runtime, tag your eval runs (or live traces) with it, and let a judge propose a rewrite from your real worst-rated results — a human always has to approve before it publishes:
 
 ```python
-# Blocking — returns the full response once it's ready
-response = conversation.chat("What is your name?")
-print(response)
+prompt = client.evaluations.prompts.get("support-agent-system-prompt")  # or prompt.id
+# use prompt.text as your own agent's system prompt
 
-# Streaming — yields ChatResponse objects as the model produces them
-for chunk in conversation.chat_stream("Hello, what is your name?"):
-    if chunk.text:
-        print(chunk.text, end="")
+client.evaluations.run(
+    dataset_id="evds_…",
+    subject={"kind": "custom_agent", "metadata": {"promptName": prompt.name}},
+).execute(my_agent_fn)
 ```
 
-Each `ChatResponse` chunk exposes the agent's `text` and, where applicable, its `cot` (chain-of-thought) reasoning, along with any retrieved references and tasks.
+See [Prompt registry](EVALUATIONS.md#prompt-registry) in the full guide, or [self-host's docs](https://docs.agentx.so/self-host#prompt-registry) for the "Suggest improvement" dashboard flow (self-host only — no hosted-SaaS equivalent yet).
 
----
-
-## Workforce (multi-agent orchestration)
-
-A **workforce** is a team of agents coordinated by a designated manager agent. Workforces can mix LLM vendors and route work between specialists.
-
-```python
-workforces = client.list_workforces()
-workforce = workforces[0]
-
-print(f"Workforce: {workforce.name}")
-print(f"Manager:   {workforce.manager.name}")
-print(f"Agents:    {[a.name for a in workforce.agents]}")
-
-# Chat with the workforce — the manager decides which agent(s) to delegate to
-conversation = workforce.new_conversation()
-for chunk in workforce.chat_stream(conversation.id, "How can you help me with this project?"):
-    if chunk.text:
-        print(chunk.text, end="")
-```
+See **[EVALUATIONS.md](EVALUATIONS.md)** for the full guide — dataset builder, framework adapters, similarity metrics, smoke testing, judge configuration, prompt registry, and the complete API reference.
 
 ---
 
@@ -253,49 +239,6 @@ See **[TRACING.md](TRACING.md)** for the complete Monitor guide.
 
 ---
 
-## Custom agent evaluations
-
-Evaluate **any** AI agent — LangChain, CrewAI, AutoGen, LlamaIndex, OpenAI, Anthropic, HTTP endpoints, or plain Python — using AgentX as the scoring and reporting backend. Includes optional **cosine** and **Jaccard** similarity metrics alongside LLM-graded ratings.
-
-```python
-report = (
-    client.evaluations
-    .run(dataset_id="evds_…", subject={"kind": "custom_agent", "framework": "raw_python"})
-    .execute(my_agent_fn)
-    .finalize()
-    .analyze()
-)
-
-print(report.average_rating)       # LLM-graded score, 0–10
-print(report.cosine_similarity)    # embedding cosine, 0–1 (None if not enabled)
-print(report.jaccard_similarity)   # token-set overlap, 0–1 (None if not enabled)
-
-print(report.summary)              # AI-generated narrative from .analyze()
-print(report.recommendations)      # list of prioritized, actionable fixes
-```
-
-`.analyze()` also generates a full qualitative report (strengths, weaknesses, instruction adherence, reasoning quality, and recommendations), running the same durable, multi-judge pipeline as the dashboard's "Analyze" button. `analyze(mode=..., quality_mode=..., judges=[...])` controls how items are scored and by which models. See [AI analysis report](EVALUATIONS.md#ai-analysis-report) in the full guide for the complete field and parameter reference.
-
-Ask a case's question several extra ways each run, LLM-paraphrased server-side, to catch agents that break on phrasing rather than substance, and override the judge's prompt/model per config, see [Smoke testing](EVALUATIONS.md#smoke-testing-phrasing-robustness) and [Configuring the judge](EVALUATIONS.md#configuring-the-judge) in the full guide.
-
-Since AgentX doesn't own your agent's code, `client.evaluations.prompts` lets AgentX become your prompt's *source of truth* instead — the same problem LangSmith's Prompt Hub and Langfuse's Prompt Management solve. Pull a version at runtime, tag your eval runs (or live traces) with it, and let a judge propose a rewrite from your real worst-rated results — a human always has to approve before it publishes:
-
-```python
-prompt = client.evaluations.prompts.get("support-agent-system-prompt")  # or prompt.id
-# use prompt.text as your own agent's system prompt
-
-client.evaluations.run(
-    dataset_id="evds_…",
-    subject={"kind": "custom_agent", "metadata": {"promptName": prompt.name}},
-).execute(my_agent_fn)
-```
-
-See [Prompt registry](EVALUATIONS.md#prompt-registry) in the full guide, or [self-host's docs](https://docs.agentx.so/self-host#prompt-registry) for the "Suggest improvement" dashboard flow (self-host only — no hosted-SaaS equivalent yet).
-
-See **[EVALUATIONS.md](EVALUATIONS.md)** for the full guide — dataset builder, framework adapters, similarity metrics, smoke testing, judge configuration, prompt registry, and the complete API reference.
-
----
-
 ## Self-host
 
 Prefer to run Trace/Evaluate/Monitor locally instead of the hosted dashboard — no account, bring your own LLM keys? This SDK ships a launcher for [AgentX-trace-eval](https://github.com/AgentX-ai/AgentX-trace-eval), a separate, portable governance engine:
@@ -312,6 +255,38 @@ export AGENTX_API_KEY=<printed by agentx-trace-eval on first run>
 ```
 
 `agentx-trace-eval` isn't this SDK's own code — the engine itself is a separate, compiled binary, downloaded on demand rather than bundled into this package, so installing `agentx-python` doesn't get any heavier for the (much more common) case of just talking to the hosted AgentX API. See that repo's README for what's included, and `AGENTX_INSTALL_DIR`/`AGENTX_TRACE_EVAL_VERSION`/`AGENTX_TRACE_EVAL_SKIP_WEB` env vars to control where/what it installs.
+
+---
+
+## Agents & conversations
+
+Beyond evaluation, tracing, and monitoring, this SDK is also a client for AgentX's own hosted agents — build, chat with, and orchestrate them directly.
+
+```python
+agent = client.list_agents()[0]
+conversation = agent.new_conversation()
+
+# Blocking — returns the full response once it's ready
+print(conversation.chat("What can you help me with?"))
+
+# Streaming — yields ChatResponse objects as the model produces them
+for chunk in conversation.chat_stream("Hello!"):
+    if chunk.text:
+        print(chunk.text, end="")
+```
+
+Each `ChatResponse` chunk exposes the agent's `text` and, where applicable, its `cot` (chain-of-thought) reasoning, along with any retrieved references and tasks. `agent.list_conversations()` / `conversation.list_messages()` resume history instead of starting fresh.
+
+A **workforce** is a team of agents coordinated by a designated manager, mixing LLM vendors and routing work between specialists:
+
+```python
+workforce = client.list_workforces()[0]
+conversation = workforce.new_conversation()
+
+for chunk in workforce.chat_stream(conversation.id, "How can you help me with this project?"):
+    if chunk.text:
+        print(chunk.text, end="")
+```
 
 ---
 
