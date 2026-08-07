@@ -25,7 +25,6 @@ import time
 from typing import Any, Dict, List, Optional
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
-from agentx.integrations._perf import build_performance_summary
 
 try:
     from llama_index.core.callbacks.base_handler import BaseCallbackHandler
@@ -278,25 +277,27 @@ class AgentXLlamaIndexHandler(BaseCallbackHandler):
         return None
 
     def _send_trace(self, state: Dict[str, Any]) -> None:
-        latency_ms = int((time.time() - state["start"]) * 1000)
-        perf = build_performance_summary(
-            total_duration_ms=latency_ms,
-            execution_steps=state["execution_steps"],
-            tool_call_steps=state["tool_call_steps"],
-            retrieval_steps=state["retrieval_steps"],
-            has_errors=state["error"] is not None,
-        )
-        self._tracer._send(
-            name=self._name,
-            input=state["input"],
-            output=state["output"],
-            latency_ms=latency_ms,
-            error=state["error"],
-            framework="llamaindex",
-            model=state["model"],
-            metadata=self._metadata,
-            session_id=self._session_id,
-            performance_summary=perf,
-            input_tokens=state["input_tokens"] or None,
-            output_tokens=state["output_tokens"] or None,
-        )
+        # tool_call_steps entries carry start_time/end_time (unlike langchain.py's leaner
+        # wire-shaped tool_calls list) — _merge_child_run's tool_calls loop falls back to
+        # computing duration from those when no explicit latency_ms is present, so each tool
+        # call still positions correctly in the tree panel instead of defaulting to offset 0.
+        with self._tracer.trace(
+            self._name, metadata=self._metadata, session_id=self._session_id, framework="llamaindex"
+        ) as span:
+            # __enter__ just set _start to "now" — overridden to the query's real start time so
+            # __exit__'s latency_ms reflects the actual run, not the few microseconds between this
+            # trace()/with and its exit a couple lines below.
+            span._start = state["start"]
+            if state["error"]:
+                span.set_error(state["error"])
+            span._merge_child_run(
+                execution_steps=state["execution_steps"],
+                tool_calls=state["tool_call_steps"],
+                retrieval_steps=state["retrieval_steps"],
+                input=state["input"],
+                output=state["output"],
+                model=state["model"],
+                framework="llamaindex",
+                input_tokens=state["input_tokens"] or None,
+                output_tokens=state["output_tokens"] or None,
+            )

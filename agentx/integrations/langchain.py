@@ -26,7 +26,6 @@ from typing import Any, Dict, List, Optional, Union
 from uuid import UUID
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
-from agentx.integrations._perf import build_performance_summary
 
 try:
     from langchain_core.callbacks.base import BaseCallbackHandler
@@ -329,7 +328,6 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                 "tool_calls": [],
                 "model": None,
                 "execution_steps": [],
-                "perf_tool_calls": [],
                 "retrieval_steps": pending,
                 "input_tokens": 0,
                 "output_tokens": 0,
@@ -355,7 +353,6 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         state = self._runs.pop(run_id, None)
         if state is None:
             return
-        latency_ms = int((time.time() - state["start"]) * 1000)
         output = _extract_output(outputs)
         # Each tool_call dict already carries its own start_time/end_time (set in
         # on_tool_end/on_tool_error), so no re-pairing against perf_tool_calls by
@@ -383,26 +380,24 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                 output_tokens=state["output_tokens"] or None,
             )
         else:
-            perf = build_performance_summary(
-                total_duration_ms=latency_ms,
-                execution_steps=state["execution_steps"],
-                tool_call_steps=state["perf_tool_calls"],
-                retrieval_steps=state["retrieval_steps"],
-            )
-            self._tracer._send(
-                name=self._name,
-                input=state["input"],
-                output=output,
-                latency_ms=latency_ms,
-                framework="langchain",
-                model=state.get("model"),
-                tool_calls=tool_calls or None,
-                metadata=self._metadata,
-                session_id=self._session_id,
-                performance_summary=perf,
-                input_tokens=state["input_tokens"] or None,
-                output_tokens=state["output_tokens"] or None,
-            )
+            # Standalone usage (no enclosing `with tracer.trace()`): open a real root span for
+            # this chain invocation and let _merge_child_run explode its accumulated
+            # execution_steps/tool_calls/retrieval_steps into real child-span rows.
+            with self._tracer.trace(self._name, metadata=self._metadata, session_id=self._session_id) as span:
+                # __enter__ just set _start to "now" — overridden to the chain's real start time,
+                # see llamaindex.py's _send_trace for the identical fix and full rationale.
+                span._start = state["start"]
+                span._merge_child_run(
+                    execution_steps=state["execution_steps"],
+                    tool_calls=tool_calls,
+                    retrieval_steps=state["retrieval_steps"],
+                    input=state["input"],
+                    output=output,
+                    model=state.get("model"),
+                    framework="langchain",
+                    input_tokens=state["input_tokens"] or None,
+                    output_tokens=state["output_tokens"] or None,
+                )
 
     def on_chain_error(
         self,
@@ -420,7 +415,6 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         state = self._runs.pop(run_id, None)
         if state is None:
             return
-        latency_ms = int((time.time() - state["start"]) * 1000)
 
         active_span = self._tracer.current_span
         if active_span is not None:
@@ -436,27 +430,20 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                 output_tokens=state["output_tokens"] or None,
             )
         else:
-            perf = build_performance_summary(
-                total_duration_ms=latency_ms,
-                execution_steps=state["execution_steps"],
-                tool_call_steps=state["perf_tool_calls"],
-                retrieval_steps=state["retrieval_steps"],
-                has_errors=True,
-            )
-            self._tracer._send(
-                name=self._name,
-                input=state["input"],
-                error=str(error),
-                latency_ms=latency_ms,
-                framework="langchain",
-                model=state.get("model"),
-                tool_calls=state["tool_calls"] or None,
-                metadata=self._metadata,
-                session_id=self._session_id,
-                performance_summary=perf,
-                input_tokens=state["input_tokens"] or None,
-                output_tokens=state["output_tokens"] or None,
-            )
+            # See on_chain_end's matching branch — same standalone-usage handling.
+            with self._tracer.trace(self._name, metadata=self._metadata, session_id=self._session_id) as span:
+                span._start = state["start"]
+                span.set_error(str(error))
+                span._merge_child_run(
+                    execution_steps=state["execution_steps"],
+                    tool_calls=state["tool_calls"],
+                    retrieval_steps=state["retrieval_steps"],
+                    input=state["input"],
+                    model=state.get("model"),
+                    framework="langchain",
+                    input_tokens=state["input_tokens"] or None,
+                    output_tokens=state["output_tokens"] or None,
+                )
 
     # ------------------------------------------------------------------
     # LLM lifecycle
@@ -620,14 +607,6 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         with self._state_lock:
             if top and top in self._runs:
                 self._runs[top]["tool_calls"].append(tool_call)
-                self._runs[top]["perf_tool_calls"].append({
-                    "name": state["tool_name"],
-                    "duration_ms": (end_t - start_t) * 1000,
-                    "start_time": start_t,
-                    "end_time": end_t,
-                    "input": state["tool_input"],
-                    "output": tool_call["output"],
-                })
 
     def on_tool_error(
         self,
@@ -656,14 +635,6 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         with self._state_lock:
             if top and top in self._runs:
                 self._runs[top]["tool_calls"].append(tool_call)
-                self._runs[top]["perf_tool_calls"].append({
-                    "name": state.get("tool_name", "unknown"),
-                    "duration_ms": (end_t - start_t) * 1000,
-                    "start_time": start_t,
-                    "end_time": end_t,
-                    "input": tool_call["input"],
-                    "output": tool_call["output"],
-                })
 
     # ------------------------------------------------------------------
     # Retriever lifecycle

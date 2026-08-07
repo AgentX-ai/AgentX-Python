@@ -24,7 +24,6 @@ import time
 from typing import Any, Dict, List, Optional
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
-from agentx.integrations._perf import build_performance_summary
 
 try:
     from google.adk.plugins.base_plugin import BasePlugin
@@ -82,7 +81,8 @@ class AgentXADKPlugin(BasePlugin):
     Google ADK plugin that sends one AgentX trace per runner invocation.
 
     Captures input (user message), output (final model reply), model name,
-    tool calls, latency, and a performance_summary via the ADK plugin callbacks.
+    tool calls, and latency, each model/tool call as its own real child span of the
+    invocation's root, via the ADK plugin callbacks.
 
     Register via the ``plugins`` list when constructing the ADK ``Runner``.
     """
@@ -128,16 +128,21 @@ class AgentXADKPlugin(BasePlugin):
     async def before_run_callback(self, *, invocation_context: Any) -> None:
         inv_id = invocation_context.invocation_id
         agent_name = getattr(invocation_context.agent, "name", None) or self._agent_name
+        # Held directly (not relied on via tracer.current_span) — ADK callbacks for one
+        # invocation can interleave with callbacks for a different concurrent invocation on the
+        # same thread/task, so state["root_span"] (keyed by invocation_id, same as everything
+        # else here) is the reliable way to address the right parent.
+        root_span = self._tracer.trace(
+            agent_name, framework="google-adk", metadata=self._metadata, session_id=self._session_id
+        )
+        root_span.__enter__()
         self._runs[inv_id] = {
-            "start": time.time(),
-            "name": agent_name,
+            "root_span": root_span,
+            "llm_call_count": 0,
             "input": self._pending_inputs.pop(inv_id, None),
             "output": None,
             "model": None,
-            "tool_calls": [],
             "error": None,
-            "execution_steps": [],
-            "perf_tool_calls": [],
             "input_tokens": 0,
             "output_tokens": 0,
         }
@@ -147,27 +152,18 @@ class AgentXADKPlugin(BasePlugin):
         state = self._runs.pop(inv_id, None)
         if state is None:
             return
-        latency_ms = int((time.time() - state["start"]) * 1000)
-        perf = build_performance_summary(
-            total_duration_ms=latency_ms,
-            execution_steps=state["execution_steps"],
-            tool_call_steps=state["perf_tool_calls"],
-        )
-        self._tracer._send(
-            name=state["name"],
-            input=state["input"],
-            output=state["output"],
-            latency_ms=latency_ms,
-            error=state["error"],
-            framework="google-adk",
-            model=state["model"],
-            tool_calls=state["tool_calls"] or None,
-            metadata=self._metadata,
-            session_id=self._session_id,
-            performance_summary=perf,
-            input_tokens=state["input_tokens"] or None,
-            output_tokens=state["output_tokens"] or None,
-        )
+        # This invocation's own detail already went out as child-span rows via child_span() in
+        # the model/tool callbacks below — this just closes the root with a summary
+        # input/output/model/error/tokens.
+        root_span = state["root_span"]
+        root_span.input = state["input"]
+        root_span.output = state["output"]
+        root_span._captured_model = state["model"]
+        root_span._input_tokens = state["input_tokens"]
+        root_span._output_tokens = state["output_tokens"]
+        if state["error"]:
+            root_span.set_error(state["error"])
+        root_span.__exit__(None, None, None)
 
     # ------------------------------------------------------------------
     # Model callbacks — capture model name, output, and LLM step timing
@@ -223,20 +219,19 @@ class AgentXADKPlugin(BasePlugin):
         if call_output_tokens is not None:
             state["output_tokens"] += int(call_output_tokens)
 
-        # Execution step
+        # Execution step — a real child span of this invocation's root.
         if start_t is not None:
-            steps = state["execution_steps"]
-            steps.append({
-                "name": f"LLM Call {len(steps) + 1}",
-                "duration_ms": (end_t - start_t) * 1000,
-                "start_time": start_t,
-                "end_time": end_t,
-                "model": call_start.get("model") if call_start else None,
-                "input": call_start.get("input") if call_start else None,
-                "output": text,
-                "inputTokenSize": call_input_tokens,
-                "outputTokenSize": call_output_tokens,
-            })
+            state["llm_call_count"] += 1
+            state["root_span"].child_span(
+                f"LLM Call {state['llm_call_count']}",
+                start_time=start_t,
+                end_time=end_t,
+                input=call_start.get("input") if call_start else None,
+                output=text,
+                model=call_start.get("model") if call_start else None,
+                input_tokens=call_input_tokens,
+                output_tokens=call_output_tokens,
+            )
 
     async def on_model_error_callback(
         self, *, callback_context: Any, llm_request: Any, error: Exception
@@ -257,16 +252,16 @@ class AgentXADKPlugin(BasePlugin):
         state["error"] = str(error)
 
         if start_t is not None:
-            steps = state["execution_steps"]
-            steps.append({
-                "name": f"LLM Call {len(steps) + 1}",
-                "duration_ms": (end_t - start_t) * 1000,
-                "start_time": start_t,
-                "end_time": end_t,
-                "model": call_start.get("model") if call_start else None,
-                "input": call_start.get("input") if call_start else None,
-                "output": f"ERROR: {error}",
-            })
+            state["llm_call_count"] += 1
+            state["root_span"].child_span(
+                f"LLM Call {state['llm_call_count']}",
+                start_time=start_t,
+                end_time=end_t,
+                input=call_start.get("input") if call_start else None,
+                output=f"ERROR: {error}",
+                model=call_start.get("model") if call_start else None,
+                error=str(error),
+            )
 
     # ------------------------------------------------------------------
     # Tool callbacks
@@ -294,23 +289,9 @@ class AgentXADKPlugin(BasePlugin):
         tool_name = getattr(tool, "name", "unknown")
         tool_input = _safe_serialize(tool_args)
         tool_output = str(result) if result is not None else None
-        tool_call: Dict[str, Any] = {
-            "name": tool_name,
-            "input": tool_input,
-            "output": tool_output,
-        }
-        if start_t is not None:
-            tool_call["latency_ms"] = max(0, int((end_t - start_t) * 1000))
-        state["tool_calls"].append(tool_call)
-        if start_t is not None:
-            state["perf_tool_calls"].append({
-                "name": tool_name,
-                "duration_ms": (end_t - start_t) * 1000,
-                "start_time": start_t,
-                "end_time": end_t,
-                "input": tool_input,
-                "output": tool_output,
-            })
+        state["root_span"].child_span(
+            tool_name, start_time=start_t, end_time=end_t, input=tool_input, output=tool_output
+        )
 
     async def on_tool_error_callback(
         self,
@@ -329,20 +310,6 @@ class AgentXADKPlugin(BasePlugin):
         tool_name = getattr(tool, "name", "unknown")
         tool_input = _safe_serialize(tool_args)
         tool_output = f"ERROR: {error}"
-        tool_call: Dict[str, Any] = {
-            "name": tool_name,
-            "input": tool_input,
-            "output": tool_output,
-        }
-        if start_t is not None:
-            tool_call["latency_ms"] = max(0, int((end_t - start_t) * 1000))
-        state["tool_calls"].append(tool_call)
-        if start_t is not None:
-            state["perf_tool_calls"].append({
-                "name": tool_name,
-                "duration_ms": (end_t - start_t) * 1000,
-                "start_time": start_t,
-                "end_time": end_t,
-                "input": tool_input,
-                "output": tool_output,
-            })
+        state["root_span"].child_span(
+            tool_name, start_time=start_t, end_time=end_t, input=tool_input, output=tool_output, error=str(error)
+        )

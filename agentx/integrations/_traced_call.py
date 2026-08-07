@@ -16,7 +16,6 @@ import inspect
 from typing import Any, Callable, Dict, Optional
 
 from agentx.tracing.tracer import Tracer
-from agentx.integrations._perf import build_performance_summary
 
 
 def call_and_trace(
@@ -82,15 +81,16 @@ def finish_llm_call(
     """
     Close out one raw-client LLM call — shared by the ``on_finish``/exit
     callbacks of every integration that patches a raw provider client
-    (``anthropic.py``, ``google_genai.py``, ``openai.py``) rather than a
+    (``anthropic.py``, ``google_genai.py``, ``openai.py``, ``litellm.py``) rather than a
     framework-level callback/plugin system.
 
-    If the call happened inside a ``with tracer.trace(...)`` block, attach it
-    as one LLM-call step on that span instead of sending an independent
-    trace — the same "part of a multi-call agentic loop" behavior
-    ``anthropic.py`` already had; folded in here so every raw-client
-    integration gets it instead of each having to remember to check
-    ``tracer.current_span`` itself.
+    If the call happened inside a ``with tracer.trace(...)`` block, it becomes that span's own
+    real child span (via _record_llm_call) instead of an independent trace — the same "part of a
+    multi-call agentic loop" behavior ``anthropic.py`` already had; folded in here so every
+    raw-client integration gets it instead of each having to remember to check
+    ``tracer.current_span`` itself. Otherwise it becomes its own real root span, opened/closed
+    directly here (not via ``tracer._send()``) so it still gets a real span_id/session_id and the
+    call's exact timing rather than wall-clock "now".
     """
     latency_ms = int((end_t - start_t) * 1000)
 
@@ -110,32 +110,15 @@ def finish_llm_call(
         )
         return
 
-    perf = build_performance_summary(
-        total_duration_ms=latency_ms,
-        execution_steps=[{
-            "name": "LLM Call 1",
-            "duration_ms": latency_ms,
-            "start_time": start_t,
-            "end_time": end_t,
-            "model": model,
-            "input": input_repr,
-            "output": output,
-            "inputTokenSize": input_tokens,
-            "outputTokenSize": output_tokens,
-        }],
-        has_errors=error is not None,
-    )
-    tracer._send(
-        name=name,
-        input=input_repr,
-        output=output,
-        latency_ms=latency_ms,
-        error=error,
-        framework=framework,
-        model=model,
-        metadata=metadata,
-        session_id=session_id,
-        performance_summary=perf,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-    )
+    span = tracer.trace(name, metadata=metadata, framework=framework, model=model, session_id=session_id)
+    span.__enter__()
+    span._start = start_t
+    span.input = input_repr
+    span.output = output
+    if error:
+        span.set_error(error)
+    if input_tokens:
+        span._input_tokens = input_tokens
+    if output_tokens:
+        span._output_tokens = output_tokens
+    span.__exit__(None, None, None)

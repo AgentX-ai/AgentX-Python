@@ -15,12 +15,10 @@ Requires: ``pip install "agentx-python[openai-agents]"``
 """
 from __future__ import annotations
 
-import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
-from agentx.integrations._perf import build_performance_summary
 
 
 def _iso_to_ts(iso: Optional[str]) -> Optional[float]:
@@ -137,15 +135,23 @@ class AgentXTracingProcessor:
 
     def on_trace_start(self, trace: Any) -> None:
         trace_id = getattr(trace, "trace_id", None) or str(id(trace))
+        # Held directly (not relied on via tracer.current_span) since the Agents SDK's own
+        # callbacks aren't guaranteed to fire on the same thread/async context throughout a
+        # trace's lifetime — on_span_end below calls child_span() on this exact reference,
+        # sidestepping the thread-local active-span stack entirely.
+        root_span = self._tracer.trace(
+            getattr(trace, "name", "openai-agent"),
+            framework="openai-agents",
+            metadata=self._metadata,
+            session_id=self._session_id,
+        )
+        root_span.__enter__()
         self._spans[trace_id] = {
-            "start": time.time(),
-            "name": getattr(trace, "name", "openai-agent"),
+            "root_span": root_span,
+            "llm_call_count": 0,
             "input": None,
             "output": None,
-            "tool_calls": [],
             "model": None,
-            "execution_steps": [],
-            "perf_tool_calls": [],
             "input_tokens": 0,
             "output_tokens": 0,
             "error": None,
@@ -156,27 +162,18 @@ class AgentXTracingProcessor:
         state = self._spans.pop(trace_id, None)
         if state is None:
             return
-        latency_ms = int((time.time() - state["start"]) * 1000)
-        perf = build_performance_summary(
-            total_duration_ms=latency_ms,
-            execution_steps=state["execution_steps"],
-            tool_call_steps=state["perf_tool_calls"],
-        )
-        self._tracer._send(
-            name=state["name"],
-            input=state.get("input"),
-            output=state.get("output"),
-            latency_ms=latency_ms,
-            error=state.get("error"),
-            framework="openai-agents",
-            model=state.get("model"),
-            tool_calls=state["tool_calls"] or None,
-            metadata=self._metadata,
-            session_id=self._session_id,
-            performance_summary=perf,
-            input_tokens=state["input_tokens"] or None,
-            output_tokens=state["output_tokens"] or None,
-        )
+        # This trace's own detail already went out as child-span rows via child_span() in
+        # on_span_end — this just closes the root with a summary input/output/model/error/tokens,
+        # the same "adopt into self" role _merge_child_run plays for its own callers.
+        root_span = state["root_span"]
+        root_span.input = state.get("input")
+        root_span.output = state.get("output")
+        root_span._captured_model = state.get("model")
+        root_span._input_tokens = state["input_tokens"]
+        root_span._output_tokens = state["output_tokens"]
+        if state.get("error"):
+            root_span.set_error(state["error"])
+        root_span.__exit__(None, None, None)
 
     def on_span_start(self, span: Any) -> None:
         pass  # All data is captured in on_span_end when fields are fully populated
@@ -229,20 +226,19 @@ class AgentXTracingProcessor:
             if call_output_tokens is not None:
                 state["output_tokens"] += int(call_output_tokens)
 
-            # Execution step
+            # Execution step — a real child span of this trace's root.
             if t0 is not None and t1 is not None:
-                steps = state["execution_steps"]
-                steps.append({
-                    "name": f"LLM Call {len(steps) + 1}",
-                    "duration_ms": (t1 - t0) * 1000,
-                    "start_time": t0,
-                    "end_time": t1,
-                    "model": call_model,
-                    "input": call_input,
-                    "output": call_output,
-                    "inputTokenSize": call_input_tokens,
-                    "outputTokenSize": call_output_tokens,
-                })
+                state["llm_call_count"] += 1
+                state["root_span"].child_span(
+                    f"LLM Call {state['llm_call_count']}",
+                    start_time=t0,
+                    end_time=t1,
+                    input=call_input,
+                    output=call_output,
+                    model=call_model,
+                    input_tokens=call_input_tokens,
+                    output_tokens=call_output_tokens,
+                )
 
         elif span_type == "response":
             # Responses API path — extract from the response object
@@ -279,43 +275,32 @@ class AgentXTracingProcessor:
                     state["input_tokens"] += int(call_input_tokens)
                 if call_output_tokens is not None:
                     state["output_tokens"] += int(call_output_tokens)
-            # Execution step
+            # Execution step — a real child span of this trace's root.
             if t0 is not None and t1 is not None:
-                steps = state["execution_steps"]
-                steps.append({
-                    "name": f"LLM Call {len(steps) + 1}",
-                    "duration_ms": (t1 - t0) * 1000,
-                    "start_time": t0,
-                    "end_time": t1,
-                    "model": call_model,
-                    "input": call_input,
-                    "output": call_output,
-                    "inputTokenSize": call_input_tokens,
-                    "outputTokenSize": call_output_tokens,
-                })
+                state["llm_call_count"] += 1
+                state["root_span"].child_span(
+                    f"LLM Call {state['llm_call_count']}",
+                    start_time=t0,
+                    end_time=t1,
+                    input=call_input,
+                    output=call_output,
+                    model=call_model,
+                    input_tokens=call_input_tokens,
+                    output_tokens=call_output_tokens,
+                )
 
         elif span_type == "function":
-            # Tool / function call
+            # Tool / function call — a real child span of this trace's root.
             latency = _span_latency_ms(span)
             tool_output = str(span_data.output) if span_data.output is not None else None
-            tool_entry: Dict[str, Any] = {
-                "name": span_data.name,
-                "input": span_data.input,
-                "output": tool_output,
-            }
-            if latency is not None:
-                tool_entry["latency_ms"] = latency
-            state["tool_calls"].append(tool_entry)
-            # Perf tool call with timestamps
-            if t0 is not None and t1 is not None:
-                state["perf_tool_calls"].append({
-                    "name": span_data.name,
-                    "duration_ms": (t1 - t0) * 1000,
-                    "start_time": t0,
-                    "end_time": t1,
-                    "input": span_data.input,
-                    "output": tool_output,
-                })
+            state["root_span"].child_span(
+                span_data.name,
+                start_time=t0,
+                end_time=t1,
+                duration_ms=latency if t0 is None or t1 is None else None,
+                input=span_data.input,
+                output=tool_output,
+            )
 
     def force_flush(self) -> None:
         self._tracer.flush()

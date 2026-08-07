@@ -22,7 +22,6 @@ import time
 from typing import Any, Dict, List, Optional
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
-from agentx.integrations._perf import build_performance_summary
 
 
 class AgentXCrewObserver:
@@ -73,35 +72,30 @@ class AgentXCrewObserver:
                 output = getattr(result, "raw", None) or _safe_serialize(result)
 
             task_outputs = list(getattr(result, "tasks_output", []) or []) if result is not None else []
-            tool_calls: List[Dict[str, Any]] = []
             execution_steps: List[Dict[str, Any]] = []
 
             if task_timings:
-                execution_steps, tool_calls = self._build_steps_from_timings(task_timings, task_outputs)
+                execution_steps, _ = self._build_steps_from_timings(task_timings, task_outputs)
             elif task_outputs:
-                execution_steps, tool_calls = self._build_steps_evenly_divided(task_outputs, latency_ms)
+                execution_steps, _ = self._build_steps_evenly_divided(task_outputs, latency_ms)
 
-            if not execution_steps:
-                # No per-task breakdown available — record the whole kickoff
-                # as a single step so the trace still gets timing detail.
-                execution_steps.append({"name": self._name, "duration_ms": latency_ms})
-
-            self._tracer._send(
-                name=self._name,
-                input=_safe_serialize(inputs) if inputs else None,
-                output=output,
-                latency_ms=latency_ms,
-                error=error,
-                framework="crewai",
-                tool_calls=tool_calls or None,
-                metadata=self._metadata,
-                session_id=self._session_id,
-                performance_summary=build_performance_summary(
-                    total_duration_ms=latency_ms,
+            # Each task becomes its own real child span. tool_calls isn't passed to
+            # _merge_child_run here: _build_steps_from_timings/_build_steps_evenly_divided both
+            # build it from the exact same per-task loop as execution_steps (no separate timing of
+            # its own), so passing both would double-emit each task as two child spans. No
+            # `return` here (this whole method body runs inside the try's `finally`) — an
+            # explicit return/break/continue in a finally block silently swallows any exception
+            # propagating from crew.kickoff() above.
+            with self._tracer.trace(self._name, metadata=self._metadata, session_id=self._session_id) as span:
+                span._start = start
+                if error:
+                    span.set_error(error)
+                span._merge_child_run(
                     execution_steps=execution_steps,
-                    has_errors=error is not None,
-                ),
-            )
+                    input=_safe_serialize(inputs) if inputs else None,
+                    output=output,
+                    framework="crewai",
+                )
 
     def _start_task_timing_capture(self):
         """

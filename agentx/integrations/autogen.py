@@ -23,7 +23,6 @@ import time
 from typing import Any, Dict, List, Optional
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
-from agentx.integrations._perf import build_performance_summary
 
 
 def _message_text(message: Any) -> Optional[str]:
@@ -93,8 +92,6 @@ class AgentXAutoGenObserver:
             error = str(exc)
             raise
         finally:
-            end_t = time.time()
-            latency_ms = int((end_t - start_t) * 1000)
             messages = getattr(result, "messages", None) or []
             execution_steps, tool_call_steps, output_text, input_tokens, output_tokens = self._summarize_messages(
                 messages, start_t
@@ -106,24 +103,23 @@ class AgentXAutoGenObserver:
             # normalized .content, regardless of which form was passed in.
             input_text = _message_text(messages[0]) if messages else (task if isinstance(task, str) else None)
 
-            self._tracer._send(
-                name=self._name,
-                input=input_text,
-                output=output_text,
-                latency_ms=latency_ms,
-                error=error,
-                framework="autogen",
-                metadata=self._metadata,
-                session_id=self._session_id,
-                performance_summary=build_performance_summary(
-                    total_duration_ms=latency_ms,
+            # No `return` here — this whole block runs inside the try's `finally`, and an
+            # explicit return/break/continue there would silently swallow any exception
+            # propagating from agent_or_team.run() above (see crewai.py's kickoff() for the same
+            # hazard spelled out in full).
+            with self._tracer.trace(self._name, metadata=self._metadata, session_id=self._session_id) as span:
+                span._start = start_t
+                if error:
+                    span.set_error(error)
+                span._merge_child_run(
                     execution_steps=execution_steps,
-                    tool_call_steps=tool_call_steps,
-                    has_errors=error is not None,
-                ),
-                input_tokens=input_tokens or None,
-                output_tokens=output_tokens or None,
-            )
+                    tool_calls=tool_call_steps,
+                    input=input_text,
+                    output=output_text,
+                    framework="autogen",
+                    input_tokens=input_tokens or None,
+                    output_tokens=output_tokens or None,
+                )
 
     def _summarize_messages(self, messages: List[Any], run_start: float) -> tuple:
         execution_steps: List[Dict[str, Any]] = []

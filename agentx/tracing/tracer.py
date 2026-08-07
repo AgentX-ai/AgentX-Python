@@ -4,27 +4,17 @@ import asyncio
 import concurrent.futures
 import functools
 import inspect
-import re
 import threading
 import time
 from contextlib import contextmanager
 from typing import Any, Callable, Dict, Iterator, List, Optional, TypeVar
+from uuid import uuid4
 
 from agentx.exceptions import CIGateFailure
 from agentx.tracing.ingest_client import IngestClient
 from agentx.tracing.ci_types import CIRun, CIRunResult, CIRunStatus, CIQuestionScore
-from agentx.integrations._perf import (
-    build_performance_summary,
-    merge_retrieval_steps,
-    merge_tool_call_steps,
-)
 
 F = TypeVar("F", bound=Callable[..., Any])
-
-# Matches the generic "LLM Call N" step names integrations generate (e.g.
-# langchain.py numbers steps within one top-level chain run). Used by
-# _TraceSpan._merge_child_run to renumber them on merge — see there.
-_LLM_CALL_NAME_RE = re.compile(r"^LLM Call \d+$")
 
 
 def _safe_serialize(value: Any, depth: int = 0) -> Any:
@@ -93,6 +83,17 @@ class _TraceSpan:
         # is populated by the time the `with` block exits — see Tracer.trace()'s sync param.
         self._sync = sync
         self._trace_id: Optional[str] = None
+
+        # Real span hierarchy — every span always gets an id and links to its real parent (if
+        # any) and a shared session_id, the same model AgentX's OTel ingestion path uses. A
+        # nested `with tracer.trace(...)` block, or any auto-instrumented call made while this
+        # span is active (a patched Anthropic/OpenAI/Google GenAI/LiteLLM client, or a framework
+        # integration like AgentXCallbackHandler), becomes its own linked child-span row — see
+        # __enter__/_merge_child_run/child_span.
+        self._span_id = uuid4().hex
+        self._parent_span_id: Optional[str] = None
+        # Numbers auto-named "LLM Call N"/"Retrieval N" child spans — see _merge_child_run.
+        self._child_span_count = 0
         # Monitor: check this trace against patterns immediately on ingest, no dashboard profile
         # required. pattern_ids (if given) fully defines what's checked — only those patterns run,
         # the built-in checks are skipped. See Tracer.trace()'s monitor/pattern_ids params.
@@ -106,13 +107,6 @@ class _TraceSpan:
         self._start: Optional[float] = None
         self._error: Optional[str] = None
 
-        # Populated by auto-instrumented calls (e.g. patched Anthropic
-        # client, AgentXCallbackHandler) made while this span is the
-        # tracer's active span, so a whole multi-call / multi-chain run
-        # collapses into one trace instead of one trace per call. See
-        # Tracer.current_span / _record_llm_call / _merge_child_run.
-        self._execution_steps: list = []
-        self._retrieval_steps: list = []
         self._captured_model: Optional[str] = None
         # Adopted from a merged child run (e.g. AgentXCallbackHandler) when this span itself
         # wasn't opened with an explicit framework= — see _merge_child_run below.
@@ -129,6 +123,15 @@ class _TraceSpan:
 
     def __enter__(self) -> "_TraceSpan":
         self._start = time.time()
+        # Resolve real span hierarchy against whatever's currently active on this thread, before
+        # pushing self (so `parent` here is the actual enclosing span, not self).
+        parent = self._tracer.current_span
+        if parent is not None:
+            self._parent_span_id = parent._span_id
+            if self._session_id is None:
+                self._session_id = parent._session_id
+        elif self._session_id is None:
+            self._session_id = f"sdk_{uuid4().hex}"
         self._tracer._push_active_span(self)
         return self
 
@@ -137,47 +140,6 @@ class _TraceSpan:
         latency_ms = int((time.time() - self._start) * 1000) if self._start else None
         if exc_val is not None and self._error is None:
             self._error = str(exc_val)
-
-        # Auto-instrumented integrations (patched Anthropic client, AgentXCallbackHandler, ...)
-        # populate _execution_steps via _record_llm_call while this span is active. Wrapping a raw
-        # API call with no such integration (e.g. a bare `openai` call) never populates it — without
-        # this fallback the Execution Timeline would be empty despite the span having real
-        # input/output, since nothing else here describes what the wrapped code actually did.
-        # Mirrors what the @tracer.trace(...) decorator form has always synthesized for exactly
-        # this case (see _wrap_sync/_wrap_async below).
-        execution_steps = self._execution_steps or (
-            [
-                {
-                    "name": "LLM Call 1",
-                    "duration_ms": latency_ms or 0,
-                    "start_time": self._start,
-                    "end_time": time.time(),
-                    "model": self._model or self._captured_model,
-                    "input": _safe_serialize(self.input) if self.input is not None else None,
-                    "output": _safe_serialize(self.output) if self.output is not None else None,
-                }
-            ]
-            if self.input is not None or self.output is not None
-            else []
-        )
-
-        perf = build_performance_summary(
-            total_duration_ms=latency_ms or 0,
-            execution_steps=execution_steps,
-            tool_call_steps=[
-                {
-                    "name": tc.get("name"),
-                    "duration_ms": tc.get("latency_ms") or 0,
-                    "start_time": tc.get("start_time"),
-                    "end_time": tc.get("end_time"),
-                    "input": tc.get("input"),
-                    "output": tc.get("output"),
-                }
-                for tc in self.tool_calls
-            ],
-            retrieval_steps=self._retrieval_steps,
-            has_errors=self._error is not None,
-        )
 
         self._trace_id = self._tracer._send(
             sync=self._sync,
@@ -193,11 +155,19 @@ class _TraceSpan:
             model=self._model or self._captured_model,
             tool_calls=self.tool_calls or None,
             session_id=self._session_id,
-            performance_summary=perf,
             input_tokens=self._input_tokens or None,
             output_tokens=self._output_tokens or None,
+            span_id=self._span_id,
+            parent_span_id=self._parent_span_id,
+            started_at_unix_nano=str(int(self._start * 1_000_000_000)) if self._start else None,
         )
         return False  # never suppress exceptions
+
+    @property
+    def span_id(self) -> str:
+        """This span's id — usable to parent a further span via child_span() or an explicit
+        session_id/parent chain."""
+        return self._span_id
 
     @property
     def trace_id(self) -> Optional[str]:
@@ -224,10 +194,10 @@ class _TraceSpan:
         input_tokens: Optional[int] = None,
         output_tokens: Optional[int] = None,
     ) -> None:
-        """Append a single LLM-call execution step (e.g. one patched Anthropic call)."""
+        """Record one LLM-call child span (e.g. one patched Anthropic call) under this span —
+        name left unset so _merge_child_run auto-numbers it "LLM Call N"."""
         self._merge_child_run(
             execution_steps=[{
-                "name": f"LLM Call {len(self._execution_steps) + 1}",
                 "duration_ms": duration_ms,
                 "start_time": start_time,
                 "end_time": end_time,
@@ -244,6 +214,89 @@ class _TraceSpan:
             output_tokens=output_tokens,
         )
 
+    def child_span(
+        self,
+        name: str,
+        *,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
+        duration_ms: Optional[float] = None,
+        input: Any = None,
+        output: Any = None,
+        model: Optional[str] = None,
+        framework: Optional[str] = None,
+        input_tokens: Optional[int] = None,
+        output_tokens: Optional[int] = None,
+        error: Optional[str] = None,
+        tool_calls: Optional[List[Dict[str, Any]]] = None,
+    ) -> "_TraceSpan":
+        """
+        Send one real child-span row parented to this span, with explicit timing (the caller's
+        own recorded start/end, not wall-clock time.time() at call time) — the
+        AgentXCallbackHandler / _merge_child_run counterpart for integrations that already track
+        their own real per-step identity and timing (LangChain's run_id/parent_run_id,
+        LlamaIndex's parent_id, the OpenAI Agents SDK's own span objects) and want to parent a new
+        child under a specific span they're holding a reference to — not just whatever's on top of
+        the tracer's thread-local active-span stack.
+
+        Returns the child span (its ``.span_id`` can parent a further-nested grandchild via
+        another ``child_span()`` call on it). The returned span is not pushed onto the
+        active-span stack and has already been sent by the time this returns, since the caller
+        supplies finished timing rather than opening a ``with`` block.
+        """
+        child = _TraceSpan(
+            tracer=self._tracer,
+            name=name,
+            framework=framework or self._framework or self._captured_framework,
+            model=model,
+            session_id=self._session_id,
+        )
+        child._parent_span_id = self._span_id
+        child.input = input
+        child.output = output
+        child.tool_calls = tool_calls or []
+        if error:
+            child.set_error(error)
+
+        latency_ms = (
+            int(duration_ms)
+            if duration_ms is not None
+            else int((end_time - start_time) * 1000)
+            if start_time is not None and end_time is not None
+            else None
+        )
+        # Wire dict built directly (not via Tracer._send()) so this bypasses that method's
+        # pending-tool-call drain — see Tracer._dispatch's docstring for why a child send must not
+        # consume queue entries meant for a sibling or the outer span.
+        wire: Dict[str, Any] = {"name": name}
+        if input is not None:
+            wire["input"] = _safe_serialize(input)
+        if output is not None:
+            wire["output"] = _safe_serialize(output)
+        if latency_ms is not None:
+            wire["latency_ms"] = latency_ms
+        if child._error is not None:
+            wire["error"] = child._error
+        if child._framework:
+            wire["framework"] = child._framework
+        if model:
+            wire["model"] = model
+        if child.tool_calls:
+            wire["tool_calls"] = child.tool_calls
+        if child._session_id:
+            wire["session_id"] = child._session_id
+        wire["span_id"] = child._span_id
+        if child._parent_span_id:
+            wire["parent_span_id"] = child._parent_span_id
+        if start_time is not None:
+            wire["started_at_unix_nano"] = str(int(start_time * 1_000_000_000))
+        if input_tokens:
+            wire["input_tokens"] = input_tokens
+        if output_tokens:
+            wire["output_tokens"] = output_tokens
+        child._trace_id = self._tracer._dispatch(wire)
+        return child
+
     def _merge_child_run(
         self,
         *,
@@ -258,27 +311,54 @@ class _TraceSpan:
         output_tokens: Optional[int] = None,
     ) -> None:
         """
-        Fold a whole auto-instrumented sub-run (e.g. one top-level LangChain
-        chain/agent/retriever invocation) into this span, instead of it
-        becoming its own independent trace.
+        Explode a whole auto-instrumented sub-run (e.g. one top-level LangChain
+        chain/agent/retriever invocation) into real child-span rows — one per step, tool call,
+        and retrieval — parented to this span, instead of it becoming its own independent trace.
+        Also adopts a reasonable input/output/model/token summary onto this span itself, so it
+        stays useful even though its own detail now lives entirely in the child rows below it.
+        tool_calls entries here carry no start/end timing (only latency_ms, see callers e.g.
+        langchain.py) — their child span falls back to offset-0 positioning in the tree panel;
+        execution_steps (LLM calls) always carry real timing and position correctly.
         """
         with self._merge_lock:
-            if execution_steps:
-                # Step names like "LLM Call N" are numbered locally within
-                # whatever sub-run produced them (e.g. one LangChain chain
-                # invocation numbers its own calls 1, 2, 3...). When several
-                # sub-runs merge into this span — e.g. a sequence of
-                # single-call specialist chains all folded into one
-                # orchestrator span via use_span() — renumber so the merged
-                # trace doesn't end up with several "LLM Call 1" entries.
-                next_n = len(self._execution_steps) + 1
-                for offset, step in enumerate(execution_steps):
-                    name = step.get("name")
-                    if isinstance(name, str) and _LLM_CALL_NAME_RE.match(name):
-                        step["name"] = f"LLM Call {next_n + offset}"
-            self._execution_steps.extend(execution_steps or [])
-            self.tool_calls.extend(tool_calls or [])
-            self._retrieval_steps.extend(retrieval_steps or [])
+            for step in execution_steps or []:
+                self._child_span_count += 1
+                self.child_span(
+                    step.get("name") or f"LLM Call {self._child_span_count}",
+                    start_time=step.get("start_time"),
+                    end_time=step.get("end_time"),
+                    duration_ms=step.get("duration_ms"),
+                    input=step.get("input"),
+                    output=step.get("output"),
+                    model=step.get("model"),
+                    input_tokens=step.get("inputTokenSize"),
+                    output_tokens=step.get("outputTokenSize"),
+                )
+            for tc in tool_calls or []:
+                # Some callers' tool_calls dicts (e.g. langchain.py's, which sets these on the
+                # same dict for exactly this reason — see its on_tool_end) already carry real
+                # start_time/end_time; prefer those over latency_ms alone when both know duration
+                # since they also let this child span position correctly in the tree panel
+                # instead of defaulting to offset 0.
+                self.child_span(
+                    tc.get("name") or "Tool call",
+                    start_time=tc.get("start_time"),
+                    end_time=tc.get("end_time"),
+                    duration_ms=tc.get("latency_ms"),
+                    input=tc.get("input"),
+                    output=tc.get("output"),
+                )
+            for step in retrieval_steps or []:
+                self._child_span_count += 1
+                self.child_span(
+                    step.get("name") or f"Retrieval {self._child_span_count}",
+                    start_time=step.get("start_time"),
+                    end_time=step.get("end_time"),
+                    duration_ms=step.get("duration_ms"),
+                    input=step.get("query"),
+                    output=step.get("output"),
+                )
+
             if self.input is None and input is not None:
                 self.input = input
             if output is not None:
@@ -328,86 +408,49 @@ class _TraceSpan:
     def _wrap_sync(self, fn: F) -> F:
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
-            captured_input = _capture_fn_input(fn, args, kwargs)
-            start_t = time.time()
-            error: Optional[str] = None
-            output = None
+            # A fresh span per call (not `self` reused across every call the decorator wraps) —
+            # `self` here is only ever the one template object tracer.trace(...) returned at
+            # decoration time, so reusing it directly would give every invocation the same
+            # span_id/timing. Built via tracer.trace(...) (not the constructor directly) so it
+            # picks up real parent/session linkage the normal way if a decorated function happens
+            # to be called from inside another active span.
+            span = self._tracer.trace(
+                self.name, metadata=self._metadata, framework=self._framework, model=self._model,
+                session_id=self._session_id,
+            )
+            span.__enter__()
             try:
+                span.input = _capture_fn_input(fn, args, kwargs)
                 output = fn(*args, **kwargs)
+                span.output = _safe_serialize(output) if output is not None else None
                 return output
             except Exception as exc:
-                error = str(exc)
+                span.set_error(str(exc))
                 raise
             finally:
-                end_t = time.time()
-                latency_ms = int((end_t - start_t) * 1000)
-                self._tracer._send(
-                    name=self.name,
-                    input=captured_input,
-                    output=_safe_serialize(output) if output is not None else None,
-                    latency_ms=latency_ms,
-                    error=error,
-                    metadata=self._metadata,
-                    framework=self._framework,
-                    model=self._model,
-                    session_id=self._session_id,
-                    performance_summary=build_performance_summary(
-                        total_duration_ms=latency_ms,
-                        execution_steps=[{
-                            "name": "LLM Call 1",
-                            "duration_ms": latency_ms,
-                            "start_time": start_t,
-                            "end_time": end_t,
-                            "model": self._model,
-                            "input": captured_input,
-                            "output": _safe_serialize(output) if output is not None else None,
-                        }],
-                        has_errors=error is not None,
-                    ),
-                )
+                span.__exit__(None, None, None)
 
         return wrapper  # type: ignore[return-value]
 
     def _wrap_async(self, fn: F) -> F:
         @functools.wraps(fn)
         async def wrapper(*args, **kwargs):
-            captured_input = _capture_fn_input(fn, args, kwargs)
-            start_t = time.time()
-            error: Optional[str] = None
-            output = None
+            # See _wrap_sync's comment — same "fresh span per call" reasoning applies here.
+            span = self._tracer.trace(
+                self.name, metadata=self._metadata, framework=self._framework, model=self._model,
+                session_id=self._session_id,
+            )
+            span.__enter__()
             try:
+                span.input = _capture_fn_input(fn, args, kwargs)
                 output = await fn(*args, **kwargs)
+                span.output = _safe_serialize(output) if output is not None else None
                 return output
             except Exception as exc:
-                error = str(exc)
+                span.set_error(str(exc))
                 raise
             finally:
-                end_t = time.time()
-                latency_ms = int((end_t - start_t) * 1000)
-                self._tracer._send(
-                    name=self.name,
-                    input=captured_input,
-                    output=_safe_serialize(output) if output is not None else None,
-                    latency_ms=latency_ms,
-                    error=error,
-                    metadata=self._metadata,
-                    framework=self._framework,
-                    model=self._model,
-                    session_id=self._session_id,
-                    performance_summary=build_performance_summary(
-                        total_duration_ms=latency_ms,
-                        execution_steps=[{
-                            "name": "LLM Call 1",
-                            "duration_ms": latency_ms,
-                            "start_time": start_t,
-                            "end_time": end_t,
-                            "model": self._model,
-                            "input": captured_input,
-                            "output": _safe_serialize(output) if output is not None else None,
-                        }],
-                        has_errors=error is not None,
-                    ),
-                )
+                span.__exit__(None, None, None)
 
         return wrapper  # type: ignore[return-value]
 
@@ -452,7 +495,6 @@ class Tracer:
 
     def __init__(self, ingest_client: IngestClient) -> None:
         self._client = ingest_client
-        self._pending_retrievals: List[Dict[str, Any]] = []
         self._pending_tool_calls: List[Dict[str, Any]] = []
         self._local = threading.local()
 
@@ -526,18 +568,21 @@ class Tracer:
         Manually record a tool call that an auto-instrumented framework
         integration can't see — e.g. a hand-rolled Anthropic/OpenAI tool-use
         loop where the tool executes in plain Python between two
-        ``messages.create()`` calls. Queued and attached to both the
-        ``tool_calls`` list and the ``performance_summary`` of the next
-        trace this tracer sends.
+        ``messages.create()`` calls. Sent as a real child-span row of the active span (see
+        ``current_span``) immediately; queued onto the next trace's plain ``tool_calls`` list if
+        there's no active span to attach a child to.
         """
+        active_span = self.current_span
+        if active_span is not None:
+            active_span.child_span(
+                name, start_time=start_time, end_time=end_time, duration_ms=latency_ms, input=input, output=output
+            )
+            return
         self._pending_tool_calls.append({
             "name": name,
             "input": _safe_serialize(input) if input is not None else None,
             "output": _safe_serialize(output) if output is not None else None,
             "latency_ms": latency_ms,
-            "duration_ms": latency_ms if latency_ms is not None else 0,
-            "start_time": start_time,
-            "end_time": end_time,
         })
 
     @contextmanager
@@ -580,18 +625,16 @@ class Tracer:
         Manually record a knowledge-base / vector-store retrieval that an
         auto-instrumented framework integration can't see on its own — e.g. a
         hand-rolled RAG lookup wrapped around a raw Anthropic/OpenAI call or a
-        CrewAI kickoff. Queued and attached to the ``performance_summary`` of
-        the next trace this tracer sends.
+        CrewAI kickoff. Sent as a real child-span row of the active span (see ``current_span``) —
+        requires an enclosing ``with tracer.trace(...)`` block; a no-op (nothing to attach a child
+        to) if called outside one.
         """
-        self._pending_retrievals.append({
-            "name": name,
-            "duration_ms": duration_ms or 0,
-            "start_time": start_time,
-            "end_time": end_time,
-            "query": query,
-            "doc_count": doc_count,
-            "output": _safe_serialize(output) if output is not None else None,
-        })
+        active_span = self.current_span
+        if active_span is None:
+            return
+        active_span.child_span(
+            name, start_time=start_time, end_time=end_time, duration_ms=duration_ms, input=query, output=output
+        )
 
     @contextmanager
     def trace_retrieval(self, name: str = "Retrieval", *, query: Optional[str] = None) -> Iterator["_RetrievalRecorder"]:
@@ -636,6 +679,17 @@ class Tracer:
         """
         Return a :class:`_TraceSpan` that works as both a decorator and a
         context manager.
+
+        Nested calls link as real parent/child span rows (the same model AgentX's OTel ingestion
+        path uses), grouped by a shared session_id — a multi-step run shows up as a real tree in
+        the trace dialog's span panel. Nesting is automatic: any `with tracer.trace(...)` opened
+        while another is already active becomes its child, and so does every auto-instrumented
+        call made while a span is active (a patched Anthropic/OpenAI/Google GenAI/LiteLLM client,
+        or a framework integration like ``AgentXCallbackHandler``)::
+
+            with client.tracer.trace("support_agent_call") as span:
+                reply = call_llm(...)  # becomes its own child-span row
+                span.output = reply
 
         By default the trace is queued and sent on a background thread — fire-and-forget, never
         blocks the caller, but there's no way to learn the resulting trace_id. Pass ``sync=True``
@@ -888,8 +942,6 @@ class Tracer:
             wire["metadata"] = payload["metadata"]
         if "session_id" in payload:
             wire["session_id"] = payload["session_id"]
-        if "performance_summary" in payload:
-            wire["performance_summary"] = payload["performance_summary"]
         if "input_tokens" in payload:
             wire["input_tokens"] = payload["input_tokens"]
         if "output_tokens" in payload:
@@ -898,10 +950,14 @@ class Tracer:
             wire["monitor"] = payload["monitor"]
         if "pattern_ids" in payload:
             wire["pattern_ids"] = payload["pattern_ids"]
+        if "span_id" in payload:
+            wire["span_id"] = payload["span_id"]
+        if "parent_span_id" in payload:
+            wire["parent_span_id"] = payload["parent_span_id"]
+        if "started_at_unix_nano" in payload:
+            wire["started_at_unix_nano"] = payload["started_at_unix_nano"]
 
-        pending_retrievals, self._pending_retrievals = self._pending_retrievals, []
         pending_tool_calls, self._pending_tool_calls = self._pending_tool_calls, []
-
         if pending_tool_calls:
             wire["tool_calls"] = list(wire.get("tool_calls") or []) + [
                 {
@@ -913,21 +969,19 @@ class Tracer:
                 for t in pending_tool_calls
             ]
 
-        if pending_retrievals or pending_tool_calls:
-            if "performance_summary" not in wire:
-                wire["performance_summary"] = build_performance_summary(
-                    total_duration_ms=wire.get("latency_ms") or 0,
-                    has_errors="error" in wire,
-                )
-            if pending_retrievals:
-                wire["performance_summary"] = merge_retrieval_steps(
-                    wire["performance_summary"], pending_retrievals
-                )
-            if pending_tool_calls:
-                wire["performance_summary"] = merge_tool_call_steps(
-                    wire["performance_summary"], pending_tool_calls
-                )
+        return self._dispatch(wire, sync=sync)
 
+    def _dispatch(self, wire: Dict[str, Any], *, sync: bool = False) -> Optional[str]:
+        """
+        Enqueue (or, if ``sync``, synchronously send) an already wire-shaped payload — the tail
+        end of ``_send()``, split out so ``_TraceSpan.child_span()`` can post a child-span row
+        directly without going through ``_send()``'s pending-tool-call drain above. That drain
+        attaches ``tracer.record_tool_call()`` queue entries (only reached when there's no active
+        span to attach a real child span to) to "whatever this tracer sends next" — correct when
+        there's exactly one `_send()` per top-level span, but a span with children triggers
+        several child sends during its own lifetime, and a pending item recorded for the outer
+        span must not get silently attached to an unrelated child span's row instead.
+        """
         if sync:
             return self._client.send_trace_sync(wire)
         self._client.enqueue(wire)

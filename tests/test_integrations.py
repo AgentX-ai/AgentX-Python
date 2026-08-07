@@ -354,12 +354,14 @@ def test_langchain_retriever_error_is_recorded():
     )
     handler.on_chain_end({"output": "I don't know"}, run_id=chain_run_id, parent_run_id=None)
 
+    # The retrieval is now its own real child span (see tracer.py's _merge_child_run), sent via
+    # _dispatch/enqueue rather than the root's own _send() call — tracer._send stays mocked here
+    # for the root only, so the child is observed via the ingest_client mock directly instead.
     tracer._send.assert_called_once()
-    _, kwargs = tracer._send.call_args
-    retrievals = kwargs["performance_summary"]["knowledge_retrievals"]
-    assert len(retrievals) == 1
-    assert retrievals[0]["output"] == "ERROR: vector store unreachable"
-    assert retrievals[0]["query"] == "weather query"
+    retrieval_calls = [c.args[0] for c in tracer._client.enqueue.call_args_list]
+    assert len(retrieval_calls) == 1
+    assert retrieval_calls[0]["output"] == "ERROR: vector store unreachable"
+    assert retrieval_calls[0]["input"] == "weather query"
 
 
 def test_langchain_retriever_error_before_chain_start_is_buffered():
@@ -379,10 +381,9 @@ def test_langchain_retriever_error_before_chain_start_is_buffered():
     handler.on_chain_end({"output": "done"}, run_id=chain_run_id, parent_run_id=None)
 
     tracer._send.assert_called_once()
-    _, kwargs = tracer._send.call_args
-    retrievals = kwargs["performance_summary"]["knowledge_retrievals"]
-    assert len(retrievals) == 1
-    assert retrievals[0]["output"] == "ERROR: timeout"
+    retrieval_calls = [c.args[0] for c in tracer._client.enqueue.call_args_list]
+    assert len(retrieval_calls) == 1
+    assert retrieval_calls[0]["output"] == "ERROR: timeout"
 
 
 # ---------------------------------------------------------------------------
@@ -687,11 +688,12 @@ def test_crewai_falls_back_to_even_split_without_event_bus():
         observer._start_task_timing_capture = original
 
     assert result.raw == "final output"
+    # Each task is now a real child span (see tracer.py's _merge_child_run), sent via
+    # _dispatch/enqueue rather than the root's own _send() call.
     tracer._send.assert_called_once()
-    _, kwargs = tracer._send.call_args
-    steps = kwargs["performance_summary"]["execution_steps"]
+    steps = [c.args[0] for c in tracer._client.enqueue.call_args_list]
     assert len(steps) == 2
-    assert steps[0]["duration_ms"] == steps[1]["duration_ms"]
+    assert steps[0]["latency_ms"] == steps[1]["latency_ms"]
 
 
 # ---------------------------------------------------------------------------
@@ -873,10 +875,13 @@ def test_llamaindex_query_engine_traces_retrieval_and_llm_steps():
     _, kwargs = tracer._send.call_args
     assert kwargs["input"] == "What is LiteLLM?"
     assert kwargs["output"]
-    perf = kwargs["performance_summary"]
-    assert len(perf["execution_steps"]) >= 1  # the LLM call
-    assert len(perf["knowledge_retrievals"]) == 1  # the retrieval step
-    assert "LiteLLM is a proxy" in perf["knowledge_retrievals"][0]["output"]
+    # The LLM call and the retrieval are now each their own real child span (see tracer.py's
+    # _merge_child_run), sent via _dispatch/enqueue rather than folded into the root's own send.
+    children = [c.args[0] for c in tracer._client.enqueue.call_args_list]
+    assert len(children) >= 2  # at least one LLM call child + one retrieval child
+    retrieval_children = [c for c in children if c["name"].startswith("Retrieval")]
+    assert len(retrieval_children) == 1
+    assert "LiteLLM is a proxy" in retrieval_children[0]["output"]
 
 
 def test_llamaindex_llm_error_is_captured():
