@@ -166,7 +166,12 @@ with tracer.trace("rag-agent", framework="langchain") as span:
 
 ### Framework integrations
 
-Each integration auto-captures LLM calls, tool calls, and token usage — install the matching extra:
+Each integration auto-captures LLM calls, tool calls, and token usage — including prompt-caching
+token counts (Anthropic's cache write/read, OpenAI/LiteLLM's cached tokens, Google GenAI's cached
+content), reported as their own `cache_read_tokens`/`cache_write_tokens` fields alongside the
+regular totals, no extra config needed. Self-host's cost estimate prices these separately from a
+regular input token when you've set optional cache rates on that model. Install the matching
+extra:
 
 | Framework             | Install                                      | Integration              |
 | --------------------- | -------------------------------------------- | ------------------------ |

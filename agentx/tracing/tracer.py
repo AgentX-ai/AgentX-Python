@@ -70,6 +70,7 @@ class _TraceSpan:
         sync: bool = False,
         monitor: bool = False,
         pattern_ids: Optional[List[str]] = None,
+        agent_id: Optional[str] = None,
     ) -> None:
         self._tracer = tracer
         self.name = name
@@ -79,6 +80,10 @@ class _TraceSpan:
         self._framework = framework
         self._model = model
         self._session_id = session_id
+        # Disambiguator for when `name` alone isn't enough — pass an already-known agent id (e.g.
+        # from a prior GET /agents lookup) to pin this trace to that exact agent. None (the
+        # default) resolves from `name` alone server-side, one stable agent per distinct name.
+        self._agent_id = agent_id
         # When True, __exit__ sends synchronously (blocking) instead of enqueueing, so trace_id
         # is populated by the time the `with` block exits — see Tracer.trace()'s sync param.
         self._sync = sync
@@ -113,6 +118,10 @@ class _TraceSpan:
         self._captured_framework: Optional[str] = None
         self._input_tokens: int = 0
         self._output_tokens: int = 0
+        # Subsets of _input_tokens (not additional tokens) — a prompt-caching write/read, when the
+        # provider reports one. See _record_llm_call/child_span for where these get populated.
+        self._cache_read_tokens: int = 0
+        self._cache_write_tokens: int = 0
         # Guards _merge_child_run — with Tracer.use_span(), multiple threads
         # (e.g. a ThreadPoolExecutor) can merge into this span concurrently.
         self._merge_lock = threading.Lock()
@@ -146,6 +155,7 @@ class _TraceSpan:
             monitor=self._monitor or None,
             pattern_ids=self._pattern_ids,
             name=self.name,
+            agent_id=self._agent_id,
             input=_safe_serialize(self.input) if self.input is not None else None,
             output=_safe_serialize(self.output) if self.output is not None else None,
             latency_ms=latency_ms,
@@ -157,6 +167,8 @@ class _TraceSpan:
             session_id=self._session_id,
             input_tokens=self._input_tokens or None,
             output_tokens=self._output_tokens or None,
+            cache_read_tokens=self._cache_read_tokens or None,
+            cache_write_tokens=self._cache_write_tokens or None,
             span_id=self._span_id,
             parent_span_id=self._parent_span_id,
             started_at_unix_nano=str(int(self._start * 1_000_000_000)) if self._start else None,
@@ -193,6 +205,8 @@ class _TraceSpan:
         model: Optional[str] = None,
         input_tokens: Optional[int] = None,
         output_tokens: Optional[int] = None,
+        cache_read_tokens: Optional[int] = None,
+        cache_write_tokens: Optional[int] = None,
     ) -> None:
         """Record one LLM-call child span (e.g. one patched Anthropic call) under this span —
         name left unset so _merge_child_run auto-numbers it "LLM Call N"."""
@@ -206,12 +220,16 @@ class _TraceSpan:
                 "output": output,
                 "inputTokenSize": input_tokens,
                 "outputTokenSize": output_tokens,
+                "cacheReadTokenSize": cache_read_tokens,
+                "cacheWriteTokenSize": cache_write_tokens,
             }],
             input=input,
             output=output,
             model=model,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
         )
 
     def child_span(
@@ -227,6 +245,8 @@ class _TraceSpan:
         framework: Optional[str] = None,
         input_tokens: Optional[int] = None,
         output_tokens: Optional[int] = None,
+        cache_read_tokens: Optional[int] = None,
+        cache_write_tokens: Optional[int] = None,
         error: Optional[str] = None,
         tool_calls: Optional[List[Dict[str, Any]]] = None,
     ) -> "_TraceSpan":
@@ -294,6 +314,10 @@ class _TraceSpan:
             wire["input_tokens"] = input_tokens
         if output_tokens:
             wire["output_tokens"] = output_tokens
+        if cache_read_tokens:
+            wire["cache_read_tokens"] = cache_read_tokens
+        if cache_write_tokens:
+            wire["cache_write_tokens"] = cache_write_tokens
         child._trace_id = self._tracer._dispatch(wire)
         return child
 
@@ -309,6 +333,8 @@ class _TraceSpan:
         framework: Optional[str] = None,
         input_tokens: Optional[int] = None,
         output_tokens: Optional[int] = None,
+        cache_read_tokens: Optional[int] = None,
+        cache_write_tokens: Optional[int] = None,
     ) -> None:
         """
         Explode a whole auto-instrumented sub-run (e.g. one top-level LangChain
@@ -333,6 +359,8 @@ class _TraceSpan:
                     model=step.get("model"),
                     input_tokens=step.get("inputTokenSize"),
                     output_tokens=step.get("outputTokenSize"),
+                    cache_read_tokens=step.get("cacheReadTokenSize"),
+                    cache_write_tokens=step.get("cacheWriteTokenSize"),
                 )
             for tc in tool_calls or []:
                 # Some callers' tool_calls dicts (e.g. langchain.py's, which sets these on the
@@ -348,6 +376,20 @@ class _TraceSpan:
                     input=tc.get("input"),
                     output=tc.get("output"),
                 )
+                # Also mirror onto this span's own flat tool_calls list, sent in this span's own
+                # wire payload on __exit__ (see tool_calls=self.tool_calls or None below). The
+                # child span above is only for the trace detail view's span tree; the engine's
+                # built-in "Tool failure" Monitor check reads *this* flat list specifically,
+                # looking for a `success: false` entry — a child span row has no such field, so
+                # without this a failed tool call recorded via a framework integration (e.g.
+                # langchain.py's on_tool_error) would silently never trip that check.
+                self.tool_calls.append({
+                    "name": tc.get("name") or "Tool call",
+                    "input": tc.get("input"),
+                    "output": tc.get("output"),
+                    "latency_ms": tc.get("latency_ms"),
+                    "success": tc.get("success", True),
+                })
             for step in retrieval_steps or []:
                 self._child_span_count += 1
                 self.child_span(
@@ -371,6 +413,10 @@ class _TraceSpan:
                 self._input_tokens += input_tokens
             if output_tokens:
                 self._output_tokens += output_tokens
+            if cache_read_tokens:
+                self._cache_read_tokens += cache_read_tokens
+            if cache_write_tokens:
+                self._cache_write_tokens += cache_write_tokens
 
     # ------------------------------------------------------------------
     # Context manager helpers
@@ -675,6 +721,7 @@ class Tracer:
         sync: bool = False,
         monitor: bool = False,
         pattern_ids: Optional[List[str]] = None,
+        agent_id: Optional[str] = None,
     ) -> _TraceSpan:
         """
         Return a :class:`_TraceSpan` that works as both a decorator and a
@@ -713,6 +760,15 @@ class Tracer:
 
             with client.tracer.trace("support_agent_call", monitor=True, pattern_ids=[pattern.id]) as span:
                 span.output = call_llm(...)
+
+        ``agent_id`` disambiguates when ``name`` alone isn't enough — pass an already-known agent
+        id (e.g. one you've seen in the dashboard's Overview tab, or from a direct ``GET /agents``
+        call) to pin this trace to that exact agent instead of resolving by name. Omit it (the
+        default) and this resolves from ``name`` alone — one stable agent per distinct name,
+        created on first use::
+
+            with client.tracer.trace("support-agent", agent_id="ag_123", sync=True) as span:
+                span.output = call_llm(...)
         """
         return _TraceSpan(
             tracer=self,
@@ -725,6 +781,7 @@ class Tracer:
             sync=sync,
             monitor=monitor,
             pattern_ids=pattern_ids,
+            agent_id=agent_id,
         )
 
     def flush(self, timeout: float = 5.0) -> None:
@@ -946,6 +1003,10 @@ class Tracer:
             wire["input_tokens"] = payload["input_tokens"]
         if "output_tokens" in payload:
             wire["output_tokens"] = payload["output_tokens"]
+        if "cache_read_tokens" in payload:
+            wire["cache_read_tokens"] = payload["cache_read_tokens"]
+        if "cache_write_tokens" in payload:
+            wire["cache_write_tokens"] = payload["cache_write_tokens"]
         if "monitor" in payload:
             wire["monitor"] = payload["monitor"]
         if "pattern_ids" in payload:
@@ -956,6 +1017,8 @@ class Tracer:
             wire["parent_span_id"] = payload["parent_span_id"]
         if "started_at_unix_nano" in payload:
             wire["started_at_unix_nano"] = payload["started_at_unix_nano"]
+        if "agent_id" in payload:
+            wire["agent_id"] = payload["agent_id"]
 
         pending_tool_calls, self._pending_tool_calls = self._pending_tool_calls, []
         if pending_tool_calls:

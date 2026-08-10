@@ -70,23 +70,26 @@ def _prepend_system(messages: Any, system: Any) -> Any:
     return [system_entry, messages]
 
 
-def _extract_usage_tokens(usage: Any) -> Tuple[Optional[int], Optional[int]]:
+def _extract_usage_tokens(
+    usage: Any,
+) -> Tuple[Optional[int], Optional[int], Optional[int], Optional[int]]:
     """
-    Pull input/output token counts off a ``response.usage`` object, folding
-    prompt-caching tokens (``cache_creation_input_tokens`` /
-    ``cache_read_input_tokens``) into the input total — they're still real
-    input tokens for cost/context-window purposes, and the backend has no
-    separate column for them today.
+    Pull input/output/cache token counts off a ``response.usage`` object.
+    ``input_tokens`` stays the *total* (base + cache_creation + cache_read) —
+    still real input tokens for cost/context-window purposes — while
+    ``cache_read``/``cache_write`` are reported alongside as the subset of
+    that total the provider actually billed at a different (cache) rate, so
+    the backend can price them separately instead of at the full input rate.
     """
     if usage is None:
-        return None, None
+        return None, None, None, None
     input_tokens = getattr(usage, "input_tokens", None)
     output_tokens = getattr(usage, "output_tokens", None)
     cache_creation = getattr(usage, "cache_creation_input_tokens", None)
     cache_read = getattr(usage, "cache_read_input_tokens", None)
     if cache_creation or cache_read:
         input_tokens = (input_tokens or 0) + (cache_creation or 0) + (cache_read or 0)
-    return input_tokens, output_tokens
+    return input_tokens, output_tokens, cache_read, cache_creation
 
 
 def patch_anthropic_client(
@@ -141,10 +144,14 @@ def _patch_create(
             output = None
             input_tokens = None
             output_tokens = None
+            cache_read_tokens = None
+            cache_write_tokens = None
             if response is not None:
                 output = _extract_output_text(response)
                 try:
-                    input_tokens, output_tokens = _extract_usage_tokens(getattr(response, "usage", None))
+                    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = _extract_usage_tokens(
+                        getattr(response, "usage", None)
+                    )
                 except Exception:
                     pass
 
@@ -161,6 +168,8 @@ def _patch_create(
                 model=model,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
                 error=error,
             )
 
@@ -195,10 +204,14 @@ def _patch_stream(
             output = None
             input_tokens = None
             output_tokens = None
+            cache_read_tokens = None
+            cache_write_tokens = None
             if final_message is not None:
                 output = _extract_output_text(final_message)
                 try:
-                    input_tokens, output_tokens = _extract_usage_tokens(getattr(final_message, "usage", None))
+                    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = _extract_usage_tokens(
+                        getattr(final_message, "usage", None)
+                    )
                 except Exception:
                     pass
             finish_llm_call(
@@ -214,6 +227,8 @@ def _patch_stream(
                 model=model,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
                 error=error,
             )
 

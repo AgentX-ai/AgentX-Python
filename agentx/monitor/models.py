@@ -117,6 +117,13 @@ class MonitorProfile(BaseModel):
     approval policy gating autotune actions. See ``client.monitor.profile.get()/update()``.
     ``None`` from ``get()`` means this agent has never been configured and is running on
     platform defaults (e.g. the built-in latency threshold defaults to 20000ms).
+
+    Self-host only: ``coverage_mode``/``sample_rate``/``retention_days``/``redaction_mode``, and
+    ``threshold_overrides["latencyMs"]`` are project-level defaults now (set once for every agent
+    via the dashboard's Platform Settings screen), not real per-agent settings — this model and
+    ``update()`` still accept/return them for wire compatibility, but a self-host engine no longer
+    reads the stored per-agent values for any behavior. ``enabled``/``failure_detection_enabled``/
+    ``info_detection_enabled``/``channels`` remain real per-agent settings on self-host too.
     """
 
     id: Optional[str] = Field(default=None, alias="_id")

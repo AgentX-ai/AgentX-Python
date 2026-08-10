@@ -56,11 +56,16 @@ def _extract_output_text(response: Any) -> Optional[str]:
     return None
 
 
-def _extract_usage_tokens(response: Any) -> Tuple[Optional[int], Optional[int]]:
+def _extract_usage_tokens(response: Any) -> Tuple[Optional[int], Optional[int], Optional[int]]:
+    """Same posture as agentx.integrations.openai's own _extract_usage_tokens — LiteLLM normalizes
+    every provider's response to an OpenAI-shaped ModelResponse, so prompt_tokens_details.cached_tokens
+    is the right field here too regardless of which underlying provider actually served the call."""
     usage = getattr(response, "usage", None)
     if usage is None:
-        return None, None
-    return getattr(usage, "prompt_tokens", None), getattr(usage, "completion_tokens", None)
+        return None, None, None
+    details = getattr(usage, "prompt_tokens_details", None)
+    cached_tokens = getattr(details, "cached_tokens", None) if details is not None else None
+    return getattr(usage, "prompt_tokens", None), getattr(usage, "completion_tokens", None), cached_tokens
 
 
 class AgentXLiteLLMLogger(CustomLogger):
@@ -96,9 +101,10 @@ class AgentXLiteLLMLogger(CustomLogger):
         output = None
         input_tokens = None
         output_tokens = None
+        cache_read_tokens = None
         if error is None and response_obj is not None:
             output = _extract_output_text(response_obj)
-            input_tokens, output_tokens = _extract_usage_tokens(response_obj)
+            input_tokens, output_tokens, cache_read_tokens = _extract_usage_tokens(response_obj)
 
         finish_llm_call(
             self._tracer,
@@ -113,6 +119,7 @@ class AgentXLiteLLMLogger(CustomLogger):
             model=model,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
             error=error,
         )
 

@@ -58,16 +58,21 @@ def _extract_output_text(response: Any) -> Optional[str]:
     return None
 
 
-def _extract_usage_tokens(usage: Any) -> Tuple[Optional[int], Optional[int]]:
+def _extract_usage_tokens(usage: Any) -> Tuple[Optional[int], Optional[int], Optional[int]]:
     """
-    Pull input/output token counts off a ``response.usage`` object.
+    Pull input/output/cached token counts off a ``response.usage`` object.
     ``prompt_tokens`` already includes cached tokens (``prompt_tokens_details
     .cached_tokens`` is a discount breakdown, not an addition), so — unlike
-    Anthropic's cache accounting — no extra folding is needed here.
+    Anthropic's cache accounting — no extra folding is needed for the input
+    total; ``cached_tokens`` is reported alongside it so the backend can
+    price that subset at its own (cheaper) cache rate instead of the full
+    input rate. OpenAI has no cache-*write* concept to report.
     """
     if usage is None:
-        return None, None
-    return getattr(usage, "prompt_tokens", None), getattr(usage, "completion_tokens", None)
+        return None, None, None
+    details = getattr(usage, "prompt_tokens_details", None)
+    cached_tokens = getattr(details, "cached_tokens", None) if details is not None else None
+    return getattr(usage, "prompt_tokens", None), getattr(usage, "completion_tokens", None), cached_tokens
 
 
 def patch_openai_client(
@@ -129,10 +134,13 @@ def _patch_chat_completions_create(
             output = None
             input_tokens = None
             output_tokens = None
+            cache_read_tokens = None
             if response is not None:
                 output = _extract_output_text(response)
                 try:
-                    input_tokens, output_tokens = _extract_usage_tokens(getattr(response, "usage", None))
+                    input_tokens, output_tokens, cache_read_tokens = _extract_usage_tokens(
+                        getattr(response, "usage", None)
+                    )
                 except Exception:
                     pass
 
@@ -149,6 +157,7 @@ def _patch_chat_completions_create(
                 model=model,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
                 error=error,
             )
 

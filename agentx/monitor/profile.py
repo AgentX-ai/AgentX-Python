@@ -47,9 +47,15 @@ class MonitorProfileClient:
         """Update (and enable, if not already) this agent's Monitor profile. Only fields passed
         here are changed; everything else on the existing profile is left as is.
 
-        Example, overriding the built-in "Latency regression" pattern's threshold for one agent::
+        Self-host only: ``coverage_mode``/``sample_rate``/``retention_days``/``redaction_mode``,
+        and ``threshold_overrides["latencyMs"]`` are project-level defaults now (see
+        ``MonitorProfile``'s docstring) — set them via the dashboard's Platform Settings screen
+        instead, passing them here is accepted but has no effect. ``enabled``/
+        ``failure_detection_enabled``/``info_detection_enabled``/``channels`` still work per-agent.
 
-            client.monitor.profile.update("agent_123", threshold_overrides={"latencyMs": 15000})
+        Example (hosted, or self-host's still-per-agent fields)::
+
+            client.monitor.profile.update("agent_123", info_detection_enabled=False)
         """
         payload: Dict[str, Any] = {
             "enabled": enabled,

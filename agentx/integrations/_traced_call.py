@@ -77,6 +77,8 @@ def finish_llm_call(
     input_tokens: Optional[int],
     output_tokens: Optional[int],
     error: Optional[str],
+    cache_read_tokens: Optional[int] = None,
+    cache_write_tokens: Optional[int] = None,
 ) -> None:
     """
     Close out one raw-client LLM call — shared by the ``on_finish``/exit
@@ -107,6 +109,8 @@ def finish_llm_call(
             model=model,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
         )
         return
 
@@ -121,4 +125,8 @@ def finish_llm_call(
         span._input_tokens = input_tokens
     if output_tokens:
         span._output_tokens = output_tokens
+    if cache_read_tokens:
+        span._cache_read_tokens = cache_read_tokens
+    if cache_write_tokens:
+        span._cache_write_tokens = cache_write_tokens
     span.__exit__(None, None, None)

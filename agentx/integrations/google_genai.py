@@ -112,11 +112,16 @@ def _patch_generate_content(
             output = _extract_response_text(response) if response is not None else None
             input_tokens = None
             output_tokens = None
+            cache_read_tokens = None
             if response is not None:
                 usage = getattr(response, "usage_metadata", None)
                 if usage is not None:
                     input_tokens = getattr(usage, "prompt_token_count", None)
                     output_tokens = getattr(usage, "candidates_token_count", None)
+                    # prompt_token_count already includes this — a discount breakdown, same
+                    # "total unchanged, cache portion reported alongside" posture as OpenAI's
+                    # prompt_tokens_details.cached_tokens.
+                    cache_read_tokens = getattr(usage, "cached_content_token_count", None)
             finish_llm_call(
                 tracer,
                 name=name,
@@ -130,6 +135,7 @@ def _patch_generate_content(
                 model=str(model) if model else None,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
                 error=error,
             )
 
@@ -195,9 +201,11 @@ def _patch_sync_generate_content_stream(
             end_t = time.time()
             input_tokens = None
             output_tokens = None
+            cache_read_tokens = None
             if last_usage_metadata is not None:
                 input_tokens = getattr(last_usage_metadata, "prompt_token_count", None)
                 output_tokens = getattr(last_usage_metadata, "candidates_token_count", None)
+                cache_read_tokens = getattr(last_usage_metadata, "cached_content_token_count", None)
             output_repr = "".join(accumulated_text) or None
             finish_llm_call(
                 tracer,
@@ -212,6 +220,7 @@ def _patch_sync_generate_content_stream(
                 model=model,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
                 error=error,
             )
 
@@ -260,9 +269,11 @@ def _patch_async_generate_content_stream(
                 end_t = time.time()
                 input_tokens = None
                 output_tokens = None
+                cache_read_tokens = None
                 if last_usage_metadata is not None:
                     input_tokens = getattr(last_usage_metadata, "prompt_token_count", None)
                     output_tokens = getattr(last_usage_metadata, "candidates_token_count", None)
+                    cache_read_tokens = getattr(last_usage_metadata, "cached_content_token_count", None)
                 output_repr = "".join(accumulated_text) or None
                 finish_llm_call(
                     tracer,
@@ -277,6 +288,7 @@ def _patch_async_generate_content_stream(
                     model=model,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
+                    cache_read_tokens=cache_read_tokens,
                     error=error,
                 )
 
