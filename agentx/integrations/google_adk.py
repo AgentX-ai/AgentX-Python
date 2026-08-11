@@ -38,7 +38,7 @@ def _content_to_text(content: Any) -> Optional[str]:
     """
     Extract plain text from a google.genai types.Content object, falling back
     to a description of any function_call parts when there's no text (Gemini
-    function calling — the model responded with a pure tool call).
+    function calling - the model responded with a pure tool call).
     """
     if content is None:
         return None
@@ -108,7 +108,7 @@ class AgentXADKPlugin(BasePlugin):
         self._tool_starts: Dict[int, float] = {}
         # invocation_id → stack of model call start times (FIFO)
         # ADK creates new CallbackContext objects for before/after model callbacks,
-        # so we cannot use id(callback_context) as a key — use invocation_id instead.
+        # so we cannot use id(callback_context) as a key - use invocation_id instead.
         self._model_starts: Dict[str, List[float]] = {}
 
     # ------------------------------------------------------------------
@@ -128,7 +128,7 @@ class AgentXADKPlugin(BasePlugin):
     async def before_run_callback(self, *, invocation_context: Any) -> None:
         inv_id = invocation_context.invocation_id
         agent_name = getattr(invocation_context.agent, "name", None) or self._agent_name
-        # Held directly (not relied on via tracer.current_span) — ADK callbacks for one
+        # Held directly (not relied on via tracer.current_span) - ADK callbacks for one
         # invocation can interleave with callbacks for a different concurrent invocation on the
         # same thread/task, so state["root_span"] (keyed by invocation_id, same as everything
         # else here) is the reliable way to address the right parent.
@@ -153,7 +153,7 @@ class AgentXADKPlugin(BasePlugin):
         if state is None:
             return
         # This invocation's own detail already went out as child-span rows via child_span() in
-        # the model/tool callbacks below — this just closes the root with a summary
+        # the model/tool callbacks below - this just closes the root with a summary
         # input/output/model/error/tokens.
         root_span = state["root_span"]
         root_span.input = state["input"]
@@ -166,7 +166,7 @@ class AgentXADKPlugin(BasePlugin):
         root_span.__exit__(None, None, None)
 
     # ------------------------------------------------------------------
-    # Model callbacks — capture model name, output, and LLM step timing
+    # Model callbacks - capture model name, output, and LLM step timing
     # ------------------------------------------------------------------
 
     async def before_model_callback(
@@ -195,7 +195,7 @@ class AgentXADKPlugin(BasePlugin):
     ) -> None:
         inv_id = callback_context.get_invocation_context().invocation_id
         state = self._runs.get(inv_id)
-        # Pop the earliest queued call (FIFO — model calls are sequential)
+        # Pop the earliest queued call (FIFO - model calls are sequential)
         starts = self._model_starts.get(inv_id, [])
         call_start = starts.pop(0) if starts else None
         start_t = call_start.get("start") if call_start else None
@@ -206,7 +206,7 @@ class AgentXADKPlugin(BasePlugin):
 
         content = getattr(llm_response, "content", None)
         text = _content_to_text(content)
-        # Keep updating — the last non-empty model reply is the final answer
+        # Keep updating - the last non-empty model reply is the final answer
         if text:
             state["output"] = text
 
@@ -219,7 +219,7 @@ class AgentXADKPlugin(BasePlugin):
         if call_output_tokens is not None:
             state["output_tokens"] += int(call_output_tokens)
 
-        # Execution step — a real child span of this invocation's root.
+        # Execution step - a real child span of this invocation's root.
         if start_t is not None:
             state["llm_call_count"] += 1
             state["root_span"].child_span(
@@ -238,7 +238,7 @@ class AgentXADKPlugin(BasePlugin):
     ) -> None:
         inv_id = callback_context.get_invocation_context().invocation_id
         state = self._runs.get(inv_id)
-        # Pop the earliest queued call (FIFO — model calls are sequential),
+        # Pop the earliest queued call (FIFO - model calls are sequential),
         # same pairing after_model_callback uses, so a failed call's
         # timing/model/input isn't lost even though there's no llm_response.
         starts = self._model_starts.get(inv_id, [])

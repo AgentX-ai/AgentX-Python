@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
 
 class PromptClient:
-    """Thin wrapper surfaced as ``client.evaluations.prompts`` — the external-agent analog to
+    """Thin wrapper surfaced as ``client.evaluations.prompts`` - the external-agent analog to
     AgentX's native autotune. AgentX doesn't own your agent's code, so instead of branching and
     applying a config, it becomes the prompt's source of truth (the same shape as LangSmith's
     Prompt Hub / Langfuse's Prompt Management): create/pull versions here, use ``prompt.text`` as

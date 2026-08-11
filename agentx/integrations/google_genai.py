@@ -36,15 +36,15 @@ def patch_genai_client(
     send a trace for every call.
 
     The original methods are still called and their return values are passed
-    through unchanged — nothing in the caller needs to change. Works with
+    through unchanged - nothing in the caller needs to change. Works with
     both the sync client (``client.models``) and the async client
-    (``client.aio.models``) — pass whichever ``.models`` resource you use;
+    (``client.aio.models``) - pass whichever ``.models`` resource you use;
     ``generate_content`` on the async side returns a coroutine, which is
     detected and awaited before the trace is built.
 
     Streaming (``client.models.generate_content_stream`` /
     ``client.aio.models.generate_content_stream``) is patched too, sync or
-    async — detected via ``inspect.iscoroutinefunction``, which (unlike
+    async - detected via ``inspect.iscoroutinefunction``, which (unlike
     ``generate_content``/``create`` on this and other raw SDK clients) is
     reliable here since the SDK implements the async variant as a plain
     top-level ``async def``.
@@ -118,7 +118,7 @@ def _patch_generate_content(
                 if usage is not None:
                     input_tokens = getattr(usage, "prompt_token_count", None)
                     output_tokens = getattr(usage, "candidates_token_count", None)
-                    # prompt_token_count already includes this — a discount breakdown, same
+                    # prompt_token_count already includes this - a discount breakdown, same
                     # "total unchanged, cache portion reported alongside" posture as OpenAI's
                     # prompt_tokens_details.cached_tokens.
                     cache_read_tokens = getattr(usage, "cached_content_token_count", None)
@@ -238,11 +238,11 @@ def _patch_async_generate_content_stream(
 ) -> None:
     async def patched_stream(*args, **kwargs):
         # The real SDK method is itself `async def` and returns an async
-        # iterable — callers use `async for chunk in await client.aio.models
+        # iterable - callers use `async for chunk in await client.aio.models
         # .generate_content_stream(...)`. To preserve that exact shape,
         # `patched_stream` is also `async def`: awaiting it runs this setup
         # (including the real `await original_stream(...)` call) and
-        # resolves to `traced_agen()`, an async generator object — not yet
+        # resolves to `traced_agen()`, an async generator object - not yet
         # iterated, so no chunk is consumed until the caller's `async for`
         # drives it.
         start_t = time.time()

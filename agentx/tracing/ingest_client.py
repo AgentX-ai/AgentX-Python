@@ -84,7 +84,7 @@ class IngestClient:
         try:
             self._queue.put_nowait(payload)
         except queue.Full:
-            logger.debug("agentx ingest queue full — trace dropped")
+            logger.debug("agentx ingest queue full - trace dropped")
 
     def flush(self, timeout: float = 5.0) -> None:
         """Block until all queued traces have been sent (or timeout elapses)."""
@@ -94,7 +94,7 @@ class IngestClient:
         """
         Send a trace payload synchronously and return the ingested trace's id, or ``None`` on
         failure. Used by ``Tracer.trace(..., sync=True)`` when the caller needs the trace_id back
-        immediately (e.g. to attach it to an evaluation result) — unlike ``enqueue()``, this blocks
+        immediately (e.g. to attach it to an evaluation result) - unlike ``enqueue()``, this blocks
         and does not retry, trading the tracer's usual fire-and-forget guarantee for a same-call
         result. Never raises; a failed send just means no trace_id (never blocks the caller's eval
         run over a tracing hiccup).
@@ -125,7 +125,7 @@ class IngestClient:
         Synchronously score a previously-ingested trace against a dataset.
 
         The trace's recorded input/output are used as the pre-computed agent
-        result — the agent is NOT re-run.
+        result - the agent is NOT re-run.
 
         Returns a dict with keys: run_id, trace_id, rating, justification, status.
         Raises requests.HTTPError on non-2xx responses.

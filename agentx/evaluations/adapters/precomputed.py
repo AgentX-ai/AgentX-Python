@@ -8,7 +8,7 @@ from agentx.evaluations.results import normalize_result
 
 class PrecomputedAdapter:
     """
-    Adapter for pre-computed outputs — useful when you already have agent
+    Adapter for pre-computed outputs - useful when you already have agent
     responses and just want AgentX to score them.
 
     Accepts a list or dict keyed by case_id::

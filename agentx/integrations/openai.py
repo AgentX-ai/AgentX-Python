@@ -1,7 +1,7 @@
 """
 Raw OpenAI SDK integration for AgentX production tracing.
 
-This patches the plain ``openai`` Python client directly — for tracing
+This patches the plain ``openai`` Python client directly - for tracing
 agents built on the higher-level OpenAI Agents SDK instead, see
 ``agentx.integrations.openai_agents``.
 
@@ -18,7 +18,7 @@ Usage::
 Works with both ``openai.OpenAI`` and ``openai.AsyncOpenAI`` clients.
 
 Streaming calls (``stream=True``) are passed through untouched and are not
-currently traced — see ``patch_openai_client``'s docstring.
+currently traced - see ``patch_openai_client``'s docstring.
 
 Requires: ``pip install "agentx-python[openai]"``
 """
@@ -62,8 +62,8 @@ def _extract_usage_tokens(usage: Any) -> Tuple[Optional[int], Optional[int], Opt
     """
     Pull input/output/cached token counts off a ``response.usage`` object.
     ``prompt_tokens`` already includes cached tokens (``prompt_tokens_details
-    .cached_tokens`` is a discount breakdown, not an addition), so — unlike
-    Anthropic's cache accounting — no extra folding is needed for the input
+    .cached_tokens`` is a discount breakdown, not an addition), so - unlike
+    Anthropic's cache accounting - no extra folding is needed for the input
     total; ``cached_tokens`` is reported alongside it so the backend can
     price that subset at its own (cheaper) cache rate instead of the full
     input rate. OpenAI has no cache-*write* concept to report.
@@ -88,7 +88,7 @@ def patch_openai_client(
 
     The original method is still called and its return value is passed
     through unchanged so nothing in the caller needs to change. Works with
-    both sync (``OpenAI``) and async (``AsyncOpenAI``) clients — the async
+    both sync (``OpenAI``) and async (``AsyncOpenAI``) clients - the async
     client's ``create()`` returns a coroutine, which is detected and awaited
     before the trace is built.
 
@@ -120,7 +120,7 @@ def _patch_chat_completions_create(
 
     def patched_create(*args, **kwargs):
         if kwargs.get("stream"):
-            # Not traced — see patch_openai_client's docstring. Passed
+            # Not traced - see patch_openai_client's docstring. Passed
             # through completely untouched, sync or async.
             return original(*args, **kwargs)
 

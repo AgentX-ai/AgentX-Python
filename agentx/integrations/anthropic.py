@@ -57,7 +57,7 @@ def _prepend_system(messages: Any, system: Any) -> Any:
     """
     Fold the ``system`` kwarg (a separate top-level parameter in the Anthropic
     SDK, not part of ``messages``) into the traced input as a leading
-    system-role entry — the same shape trace consumers already expect from
+    system-role entry - the same shape trace consumers already expect from
     other frameworks' captured input.
     """
     if not system:
@@ -75,8 +75,8 @@ def _extract_usage_tokens(
 ) -> Tuple[Optional[int], Optional[int], Optional[int], Optional[int]]:
     """
     Pull input/output/cache token counts off a ``response.usage`` object.
-    ``input_tokens`` stays the *total* (base + cache_creation + cache_read) —
-    still real input tokens for cost/context-window purposes — while
+    ``input_tokens`` stays the *total* (base + cache_creation + cache_read) -
+    still real input tokens for cost/context-window purposes - while
     ``cache_read``/``cache_write`` are reported alongside as the subset of
     that total the provider actually billed at a different (cache) rate, so
     the backend can price them separately instead of at the full input rate.
@@ -192,7 +192,7 @@ def _patch_stream(
 
     def patched_stream(*args, **kwargs):
         # `.stream()` itself returns a context-manager object synchronously
-        # for both `Anthropic` and `AsyncAnthropic` — the async/sync split
+        # for both `Anthropic` and `AsyncAnthropic` - the async/sync split
         # only shows up in whether `with`/`async with` and
         # `get_final_message()` are used, handled inside `_TracedStream`.
         start_t = time.time()

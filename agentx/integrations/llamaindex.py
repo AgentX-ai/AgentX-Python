@@ -14,7 +14,7 @@ Usage::
     #   query_engine = index.as_query_engine(callback_manager=CallbackManager([handler]))
 
     # Every top-level query()/chat()/retrieve() call, or bare llm.complete()/
-    # chat() call, is now traced automatically — including nested retrieval
+    # chat() call, is now traced automatically - including nested retrieval
     # and LLM steps within it.
 
 Requires: ``pip install "agentx-python[llamaindex]"``
@@ -39,11 +39,11 @@ except ImportError as exc:  # pragma: no cover
 # Event types that can anchor a top-level AgentX trace. QUERY/AGENT_STEP are
 # the usual top-level boundary for a query engine or agent; LLM/RETRIEVE are
 # included too since a bare `llm.complete()`/`retriever.retrieve()` call (no
-# enclosing query engine) fires directly at the root with no QUERY wrapper —
+# enclosing query engine) fires directly at the root with no QUERY wrapper -
 # confirmed via a live run against llama-index-core 0.14.x, whose
 # `start_trace(trace_id)` uses a fixed operation-name string ("query",
 # "completion", ...) rather than a unique id per call, so it isn't safe to
-# key state on under concurrent calls — root-run tracking here is driven
+# key state on under concurrent calls - root-run tracking here is driven
 # entirely by `on_event_start`/`on_event_end`'s unique `event_id`/`parent_id`
 # instead, the same "walk the parent chain to find the top ancestor" pattern
 # `langchain.py`'s `AgentXCallbackHandler` already uses for the same reason.
@@ -124,7 +124,7 @@ class AgentXLlamaIndexHandler(BaseCallbackHandler):
     # ------------------------------------------------------------------
 
     def start_trace(self, trace_id: Optional[str] = None) -> None:
-        pass  # see _ROOT_EVENT_TYPES' comment — not used for state tracking
+        pass  # see _ROOT_EVENT_TYPES' comment - not used for state tracking
 
     def end_trace(self, trace_id: Optional[str] = None, trace_map: Optional[Dict[str, List[str]]] = None) -> None:
         pass
@@ -278,13 +278,13 @@ class AgentXLlamaIndexHandler(BaseCallbackHandler):
 
     def _send_trace(self, state: Dict[str, Any]) -> None:
         # tool_call_steps entries carry start_time/end_time (unlike langchain.py's leaner
-        # wire-shaped tool_calls list) — _merge_child_run's tool_calls loop falls back to
+        # wire-shaped tool_calls list) - _merge_child_run's tool_calls loop falls back to
         # computing duration from those when no explicit latency_ms is present, so each tool
         # call still positions correctly in the tree panel instead of defaulting to offset 0.
         with self._tracer.trace(
             self._name, metadata=self._metadata, session_id=self._session_id, framework="llamaindex"
         ) as span:
-            # __enter__ just set _start to "now" — overridden to the query's real start time so
+            # __enter__ just set _start to "now" - overridden to the query's real start time so
             # __exit__'s latency_ms reflects the actual run, not the few microseconds between this
             # trace()/with and its exit a couple lines below.
             span._start = state["start"]

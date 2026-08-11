@@ -55,7 +55,7 @@ class MonitorClient:
             raise AgentXAuthError("AGENTX_API_KEY is required")
         self._api_key = api_key
         self._sdk_version = sdk_version
-        # Falls back to the caller's default workspace server-side when unset — mirrors
+        # Falls back to the caller's default workspace server-side when unset - mirrors
         # EvaluationsClient. Without this, pattern creation silently lands in whatever
         # workspace the API key's user defaults to, not the one the caller intended.
         self._workspace_id = workspace_id

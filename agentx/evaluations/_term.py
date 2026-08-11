@@ -1,4 +1,4 @@
-"""Minimal ANSI terminal helpers — no external dependencies."""
+"""Minimal ANSI terminal helpers - no external dependencies."""
 
 from __future__ import annotations
 

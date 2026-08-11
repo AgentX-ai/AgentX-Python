@@ -59,7 +59,7 @@ def normalize_result(
         if isinstance(meta_raw, dict):
             metadata = redact_dict(meta_raw)
 
-        # Extract token counts — top-level keys take priority, fall back to metadata
+        # Extract token counts - top-level keys take priority, fall back to metadata
         input_tokens = _to_int(raw.get("input_tokens"))
         output_tokens = _to_int(raw.get("output_tokens"))
         if input_tokens is None and isinstance(meta_raw, dict):

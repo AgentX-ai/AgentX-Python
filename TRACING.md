@@ -1,8 +1,8 @@
-# Production Tracing — Python SDK
+# Production Tracing - Python SDK
 
 ## Overview
 
-The AgentX Python SDK lets you record production agent runs into your workspace with a single decorator or context manager — no changes to your agent's logic. Traces appear in the **Live Traces** tab and can be evaluated against your test datasets.
+The AgentX Python SDK lets you record production agent runs into your workspace with a single decorator or context manager - no changes to your agent's logic. Traces appear in the **Live Traces** tab and can be evaluated against your test datasets.
 
 Works with LangChain, CrewAI, OpenAI Agents, Anthropic, or any Python function.
 
@@ -65,7 +65,7 @@ All tracing methods are on the `tracer` object.
 
 ---
 
-## `tracer.trace()` — decorator / context manager
+## `tracer.trace()` - decorator / context manager
 
 The primary tracing interface. Captures the wrapped function's arguments as `input`, return value as `output`, wall-clock time as `latencyMs`, and any exception as `error`.
 
@@ -97,10 +97,10 @@ with tracer.trace("agent-name", framework="langchain") as span:
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `name` | `str` | ✓ | Agent or operation label shown in the UI |
-| `framework` | `str` | — | Framework identifier: `"langchain"`, `"crewai"`, `"openai-agents"`, `"anthropic"`, or custom |
-| `model` | `str` | — | LLM model used, e.g. `"gpt-4o"`, `"claude-sonnet-4-6"` |
-| `session_id` | `str` | — | Groups traces from the same user session or thread |
-| `metadata` | `dict` | — | Arbitrary key-value metadata (not indexed, max 16 KB) |
+| `framework` | `str` | - | Framework identifier: `"langchain"`, `"crewai"`, `"openai-agents"`, `"anthropic"`, or custom |
+| `model` | `str` | - | LLM model used, e.g. `"gpt-4o"`, `"claude-sonnet-4-6"` |
+| `session_id` | `str` | - | Groups traces from the same user session or thread |
+| `metadata` | `dict` | - | Arbitrary key-value metadata (not indexed, max 16 KB) |
 
 ### `_TraceSpan` methods (context manager only)
 
@@ -236,6 +236,22 @@ with tracer.trace("rag-agent", framework="langchain") as span:
 
 Tool calls are displayed in the expanded trace view in the AgentX UI with per-call latency.
 
+### Capturing tool failures: `tracer.trace_tool_call()`
+
+`add_tool_call()` reports a call after the fact; `tracer.trace_tool_call()` wraps the execution itself, timing it and capturing failures automatically:
+
+```python
+with tracer.trace("support-agent") as span:
+    span.input = query
+
+    with tracer.trace_tool_call("search_orders", input=order_id) as t:
+        t.output = search_orders(order_id)   # raising here records a failed call
+
+    span.output = answer
+```
+
+An exception escaping the block records the call with `success=False` plus the error text, then propagates unchanged so your own error handling still runs. That `success: false` is what Monitor's built-in "Tool failure" check and the dashboard's Tool quality column read, so a flaky tool shows up in triage without any extra wiring. To set the outcome yourself instead (an API that returned a well-formed error payload, say), use `tracer.record_tool_call(name, input=..., output=..., success=False, error="...")`.
+
 ---
 
 ## Session grouping
@@ -256,11 +272,15 @@ handle("First question")
 handle("Follow-up question")
 ```
 
+On self-host, sessions are a first-class surface: Governance > Observe > **Sessions** lists each conversation with its turn count and latest coherence score, and opening one shows every turn in order. A built-in **session coherence** judge (and any [online evaluator](#clientmonitoronline_evaluators-self-host-only) created with `scope="session"`) scores the conversation as a whole, catching the failure mode where every individual reply looks fine but the conversation goes in circles.
+
+When you don't pass `session_id`, each trace gets its own auto-generated session, so passing it is only about grouping, never required.
+
 ---
 
 ## Error handling
 
-Exceptions raised inside a traced function or context manager are automatically captured as the `error` field and re-raised — they do not affect the trace submission:
+Exceptions raised inside a traced function or context manager are automatically captured as the `error` field and re-raised - they do not affect the trace submission:
 
 ```python
 @tracer.trace("my-agent")
@@ -296,7 +316,7 @@ Evaluate a previously submitted trace against a dataset, without re-running the 
 result = tracer.evaluate_trace(
     trace_id="6876abc123def456789abc01",
     dataset_id="6876ddd222bbb333ccc444ee",
-    question_index=0,   # optional — which question to score against
+    question_index=0,   # optional - which question to score against
 )
 
 print(result.rating)         # 1–5
@@ -310,7 +330,7 @@ print(result.run_id)         # ID of the created eval run
 |---|---|---|---|
 | `trace_id` | `str` | ✓ | Trace ID returned by `POST /ingest/traces` |
 | `dataset_id` | `str` | ✓ | Evaluation dataset to score against |
-| `question_index` | `int` | — | 0-based question index. Omit to score against general criteria only |
+| `question_index` | `int` | - | 0-based question index. Omit to score against general criteria only |
 
 ### Return type: `TraceEvalResult`
 
@@ -484,8 +504,12 @@ A score below `alert_threshold` raises/updates a signal the same way a failing p
 | `enabled` | `bool` | `True` | Whether the evaluator scores at all |
 | `alert_threshold` | `float \| None` | `5` | A score below this raises/updates a signal. `None` scores without ever raising one |
 | `severity` | `str` | `"medium"` | `"low"`, `"medium"`, `"high"`, or `"critical"`, applied to signals this evaluator raises |
+| `scope` | `str` | `"trace"` | `"trace"` scores individual traces at ingest; `"session"` scores whole conversations instead |
+| `idle_seconds` | `int` | `120` | For `scope="session"`: how long a session must be quiet before the engine judges it. A session that resumes after being scored gets re-scored on its next idle |
 
 `publish()` returns a `MonitorOnlineEvaluator` with `.id`. `update()` is a partial update, same field names as the builder, pass only what changes.
+
+A `scope="session"` evaluator is judged by the engine's background sweep rather than at ingest: only sessions with 2+ turns are considered, and a verdict below `alert_threshold` raises a signal exactly like the trace-scoped case. Verdicts appear in the dashboard's session detail view alongside the built-in coherence score.
 
 ---
 
@@ -515,8 +539,8 @@ from agentx import AgentX
 
 client = AgentX(
     api_key="ax_live_xxxxxxxxxxxxxxxx",   # Required (or use AGENTX_API_KEY env var)
-    workspace_id="...",                    # Optional — explicit workspace override
-    base_url="https://api.agentx.so",     # Optional — for self-hosted deployments
+    workspace_id="...",                    # Optional - explicit workspace override
+    base_url="https://api.agentx.so",     # Optional - for self-hosted deployments
     timeout=10,                            # HTTP timeout in seconds (default 10)
 )
 ```

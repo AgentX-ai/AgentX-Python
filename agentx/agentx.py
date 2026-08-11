@@ -54,6 +54,12 @@ class AgentX:
             workspace_id=self.workspace_id,
         )
 
+        from agentx.outcomes import OutcomesClient
+
+        # Report real, after-the-fact outcomes ("the ticket got reopened") against traces - the
+        # ground truth behind the dashboard's Judge Calibration card. Self-host only.
+        self.outcomes = OutcomesClient(api_key=self.api_key)
+
         _ingest_client = IngestClient(
             api_key=self.api_key,
             sdk_version=VERSION,

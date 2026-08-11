@@ -49,7 +49,7 @@ class MonitorProfileClient:
 
         Self-host only: ``coverage_mode``/``sample_rate``/``retention_days``/``redaction_mode``,
         and ``threshold_overrides["latencyMs"]`` are project-level defaults now (see
-        ``MonitorProfile``'s docstring) — set them via the dashboard's Platform Settings screen
+        ``MonitorProfile``'s docstring) - set them via the dashboard's Platform Settings screen
         instead, passing them here is accepted but has no effect. ``enabled``/
         ``failure_detection_enabled``/``info_detection_enabled``/``channels`` still work per-agent.
 

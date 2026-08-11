@@ -74,7 +74,7 @@ class Dataset(BaseModel):
     questions: List[DatasetQuestion] = Field(default_factory=list)
     status: str = "published"
     version_id: Optional[str] = Field(default=None, alias="versionId")
-    # Sovereignty & Portability — models selected to compare on this dataset.
+    # Sovereignty & Portability - models selected to compare on this dataset.
     # Hoisted from the nested ``sovereigntyIndex`` object when enabled.
     sovereignty_models: List[str] = Field(default_factory=list)
 
@@ -93,7 +93,7 @@ class Dataset(BaseModel):
 
 
 class EvaluationSettings(BaseModel):
-    """A standalone, reusable grading config — no dataset/questions attached.
+    """A standalone, reusable grading config - no dataset/questions attached.
     Created via ``client.evaluations.settings.builder(...).publish()`` and run
     against any dataset by passing its id as ``evaluation_settings_id`` to
     ``client.evaluations.run(...)``."""
@@ -110,7 +110,7 @@ class EvaluationSettings(BaseModel):
     judge_prompt: Optional[str] = Field(default=None, alias="judgePrompt")
     judge_model: Optional[str] = Field(default=None, alias="judgeModel")
     status: str = "published"
-    # Sovereignty & Portability — models selected to compare when this config runs.
+    # Sovereignty & Portability - models selected to compare when this config runs.
     # Hoisted from the nested ``sovereigntyIndex`` object when enabled.
     sovereignty_models: List[str] = Field(default_factory=list)
 
@@ -129,12 +129,12 @@ class EvaluationSettings(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Prompt registry — the external-agent analog to AgentX's native autotune. AgentX doesn't own
+# Prompt registry - the external-agent analog to AgentX's native autotune. AgentX doesn't own
 # your agent's code, so instead of branching/applying a config it becomes the prompt's source of
 # truth (same shape as LangSmith's Prompt Hub / Langfuse's Prompt Management): pull a version at
 # runtime with ``client.evaluations.prompts.get(name_or_id)``, use ``prompt.text`` as your agent's
 # system prompt, and tag your eval runs so the existing version-comparison view can tell you
-# which published version scored higher — see ``client.evaluations.prompts`` docs.
+# which published version scored higher - see ``client.evaluations.prompts`` docs.
 # ---------------------------------------------------------------------------
 
 
@@ -193,7 +193,7 @@ class EvaluationSubject(BaseModel):
 
 
 class ModelInfo(BaseModel):
-    """One entry from the AgentX supported-model registry — the set selectable
+    """One entry from the AgentX supported-model registry - the set selectable
     for the Sovereignty & Portability Index. Returned by ``list_models()``."""
 
     name: str
@@ -231,7 +231,7 @@ class ServerLimits(BaseModel):
 
 
 class LiveStatistics(BaseModel):
-    """Rating aggregate computed server-side from submitted results — available
+    """Rating aggregate computed server-side from submitted results - available
     as soon as results are scored, independent of the `.analyze()` step (which
     only adds the LLM-driven qualitative report). Returned on the run resource
     (``GET /runs/:runId``) as ``liveStatistics``."""
@@ -342,7 +342,7 @@ class EvaluationResult(BaseModel):
     timings: Optional[ResultTimings] = None
     metadata: Optional[Dict[str, Any]] = None
     idempotency_key: Optional[str] = Field(default=None, alias="idempotencyKey")
-    # Links this result to a PromptTrace ingested via client.tracer.trace(..., sync=True) — lets
+    # Links this result to a PromptTrace ingested via client.tracer.trace(..., sync=True) - lets
     # the dashboard's "Message Trace Details -> Execution Timeline" render the full execution
     # trace for this case, not just the lightweight observable_trace events above.
     trace_id: Optional[str] = Field(default=None, alias="traceId")
@@ -386,7 +386,7 @@ class BatchAppendResponse(BaseModel):
     scored_results: List[ScoredResult] = Field(
         default_factory=list, alias="scoredResults"
     )
-    # Server-computed rating aggregate, refreshed after this batch — see LiveStatistics.
+    # Server-computed rating aggregate, refreshed after this batch - see LiveStatistics.
     live_statistics: Optional[LiveStatistics] = Field(default=None, alias="liveStatistics")
 
     class Config:
@@ -500,7 +500,7 @@ class SovereigntyModelMetrics(BaseModel):
 
 
 class SovereigntyIndex(BaseModel):
-    """Sovereignty & Portability matrix — side-by-side per-model performance,
+    """Sovereignty & Portability matrix - side-by-side per-model performance,
     grouped from the model-tagged results of a run."""
 
     enabled: bool = False

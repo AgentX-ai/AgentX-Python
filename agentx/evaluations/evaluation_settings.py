@@ -61,7 +61,7 @@ class EvaluationSettingsBuilder:
             self._payload["bleuScore"] = {"enabled": True}
         if rouge_score:
             self._payload["rougeScore"] = {"enabled": True}
-        # Sovereignty & Portability — the models to compare when this config runs
+        # Sovereignty & Portability - the models to compare when this config runs
         # (use client.evaluations.list_models() to discover valid ids).
         if sovereignty_models:
             self._payload["sovereigntyIndex"] = {

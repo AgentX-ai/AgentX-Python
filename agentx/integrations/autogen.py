@@ -52,14 +52,14 @@ class AgentXAutoGenObserver:
     AgentX trace per run.
 
     Scope: covers ``.run()`` only (returns the full ``TaskResult`` up front),
-    not ``.run_stream()`` — the same "trace the request/response call, leave
+    not ``.run_stream()`` - the same "trace the request/response call, leave
     the streaming variant as a deliberate follow-up" boundary
     ``patch_openai_client``/``google_genai``'s async-streaming gap already
     draw elsewhere in this package, rather than silently half-supporting it.
 
     Per-step timing is derived from each ``BaseChatMessage``'s real
     ``created_at`` timestamp (chained against the previous message's
-    timestamp, or the run's own start for the first one) — AutoGen's message
+    timestamp, or the run's own start for the first one) - AutoGen's message
     schema has no explicit start/end pair per LLM call, so this is real but
     approximate, the same caveat CrewAI's per-task timing has for its
     positional tasks_output correlation.
@@ -97,13 +97,13 @@ class AgentXAutoGenObserver:
                 messages, start_t
             )
             # Read the input back off messages[0] rather than the `task` arg
-            # directly — `task` can be a plain str, a single BaseChatMessage,
+            # directly - `task` can be a plain str, a single BaseChatMessage,
             # or a sequence of them (per AssistantAgent.run's signature), but
             # TaskResult.messages[0] is always a real message object with a
             # normalized .content, regardless of which form was passed in.
             input_text = _message_text(messages[0]) if messages else (task if isinstance(task, str) else None)
 
-            # No `return` here — this whole block runs inside the try's `finally`, and an
+            # No `return` here - this whole block runs inside the try's `finally`, and an
             # explicit return/break/continue there would silently swallow any exception
             # propagating from agent_or_team.run() above (see crewai.py's kickoff() for the same
             # hazard spelled out in full).
@@ -171,7 +171,7 @@ class AgentXAutoGenObserver:
                 continue
 
             # models_usage is only set on messages a real LLM call produced
-            # (TextMessage / ToolCallRequestEvent) — user-authored task
+            # (TextMessage / ToolCallRequestEvent) - user-authored task
             # messages and ToolCallSummaryMessage don't have it.
             input_tokens, out_tokens = _message_tokens(message)
             text = _message_text(message)

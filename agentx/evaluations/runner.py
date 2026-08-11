@@ -74,13 +74,13 @@ class EvaluationRunContext:
         self._run = run
         self._subject = subject
         # When set, this run was started with an independently chosen grading
-        # config (evaluation_settings_id) — its fields take precedence over the
+        # config (evaluation_settings_id) - its fields take precedence over the
         # dataset's own for anything execution-time reads (see _build_cases).
         self._evaluation_settings = evaluation_settings
         self._results: List[EvaluationResult] = []
         self._submitted_keys: Set[str] = set()
         self._report: Optional[Report] = None
-        # Server-computed rating aggregate (Evaluate.liveStatistics) — refreshed
+        # Server-computed rating aggregate (Evaluate.liveStatistics) - refreshed
         # from the response of each append_results()/finalize_run() call. The
         # API is the single source of truth for this number (same value the
         # dashboard UI reads), so the SDK does not average results itself.
@@ -111,7 +111,7 @@ class EvaluationRunContext:
         n_smoke = sum(1 for c in cases if c.is_smoke_test_variant)
 
         print(cyan(sep))
-        print(f"  {bold('AgentX Evaluation')}  {dim('—')}  {name}")
+        print(f"  {bold('AgentX Evaluation')}  {dim(' - ')}  {name}")
         print(cyan(sep))
         print(f"  {dim('Run   :')} {dim(self._run.run_id)}")
         if display:
@@ -164,7 +164,7 @@ class EvaluationRunContext:
     def _flush_batch(self, batch: List[EvaluationResult]) -> None:
         batch_id = str(uuid.uuid4())
         n = len(batch)
-        with Spinner(f"Scoring — AI is rating {n} result{'s' if n != 1 else ''}"):
+        with Spinner(f"Scoring - AI is rating {n} result{'s' if n != 1 else ''}"):
             try:
                 resp = self._client.append_results(self._run.run_id, batch_id, batch)
                 if resp.live_statistics is not None:
@@ -186,7 +186,7 @@ class EvaluationRunContext:
     def _fetch_submitted_keys(self) -> Set[str]:
         try:
             missing = self._client.get_missing_results(self._run.run_id)
-            # missing-results returns cases NOT yet submitted — we want the inverse
+            # missing-results returns cases NOT yet submitted - we want the inverse
             # but if the endpoint isn't live yet, just return empty set
             return set()
         except Exception:
@@ -198,7 +198,7 @@ class EvaluationRunContext:
 
     def finalize(self) -> "EvaluationRunContext":
         print()
-        with Spinner("Finalizing — submitting results"):
+        with Spinner("Finalizing - submitting results"):
             try:
                 data = self._client.finalize_run(self._run.run_id)
                 if isinstance(data, dict) and data.get("liveStatistics") is not None:
@@ -211,10 +211,10 @@ class EvaluationRunContext:
         return self
 
     # ------------------------------------------------------------------
-    # Live rating stats — server-computed (Evaluate.liveStatistics), refreshed
+    # Live rating stats - server-computed (Evaluate.liveStatistics), refreshed
     # from the response of each append_results()/finalize_run() call. Available
     # as soon as .execute() submits batches, no .analyze() required. The SDK
-    # does not average ratings itself — this mirrors exactly what the dashboard
+    # does not average ratings itself - this mirrors exactly what the dashboard
     # UI reads, computed once in the API.
     # ------------------------------------------------------------------
 
@@ -226,7 +226,7 @@ class EvaluationRunContext:
     @property
     def average_rating(self) -> Optional[float]:
         """Live average rating across all results scored so far. Populated as
-        soon as .execute() submits batches — unlike Report.average_rating,
+        soon as .execute() submits batches - unlike Report.average_rating,
         does not require .analyze()."""
         return self._live_stats.average_rating if self._live_stats else None
 
@@ -272,7 +272,7 @@ class EvaluationRunContext:
         resolved_judges = judges if judges is not None else [_DEFAULT_JUDGE_MODEL]
 
         print()
-        with Spinner("Analyzing — AI is reviewing your results") as spinner:
+        with Spinner("Analyzing - AI is reviewing your results") as spinner:
             try:
                 self._client.analyze_run(
                     self._run.run_id,
@@ -338,7 +338,7 @@ class EvaluationsRunner:
         self.prompts = client.prompts
 
     def list_models(self, provider: Optional[str] = None) -> List[ModelInfo]:
-        """List the LLM models AgentX supports — the same set selectable for
+        """List the LLM models AgentX supports - the same set selectable for
         the Sovereignty & Portability Index. Pass ``provider`` (e.g. "Google")
         to filter. Useful for discovering valid model identifiers to compare
         against."""
@@ -411,7 +411,7 @@ def _build_cases(
     cases: List[EvaluationCase] = []
     # When an independent evaluation_settings was chosen (evaluation_settings_id
     # passed to .run()), its numberOfRequests/sovereigntyIndex take precedence
-    # over the dataset's own — that's the whole point of decoupling them. With
+    # over the dataset's own - that's the whole point of decoupling them. With
     # no evaluation_settings, this reproduces today's exact behavior.
     n_runs = max(
         (evaluation_settings.number_of_requests if evaluation_settings else dataset.number_of_requests),

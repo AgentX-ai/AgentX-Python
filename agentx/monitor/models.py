@@ -58,6 +58,10 @@ class MonitorOnlineEvaluator(BaseModel):
     enabled: bool = True
     alert_threshold: Optional[float] = Field(default=5, alias="alertThreshold")
     severity: str = "medium"
+    # "trace" judges each sampled trace at ingest; "session" (self-host only) judges whole
+    # conversations after idle_seconds of quiet, via the engine's idle-session sweep.
+    scope: str = "trace"
+    idle_seconds: int = Field(default=120, alias="idleSeconds")
     created_at: Optional[str] = Field(default=None, alias="createdAt")
 
     class Config:
@@ -120,7 +124,7 @@ class MonitorProfile(BaseModel):
 
     Self-host only: ``coverage_mode``/``sample_rate``/``retention_days``/``redaction_mode``, and
     ``threshold_overrides["latencyMs"]`` are project-level defaults now (set once for every agent
-    via the dashboard's Platform Settings screen), not real per-agent settings — this model and
+    via the dashboard's Platform Settings screen), not real per-agent settings - this model and
     ``update()`` still accept/return them for wire compatibility, but a self-host engine no longer
     reads the stored per-agent values for any behavior. ``enabled``/``failure_detection_enabled``/
     ``info_detection_enabled``/``channels`` remain real per-agent settings on self-host too.

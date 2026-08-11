@@ -15,10 +15,10 @@ class MonitorPatternBuilder:
     """Fluent builder for creating a custom pattern. ``detector_kind`` selects which of
     ``include_terms``/``regex``/``semantic_prompt`` is used:
 
-    - ``"contains"`` (default): ``include_terms`` — a match if any (or all, with
+    - ``"contains"`` (default): ``include_terms`` - a match if any (or all, with
       ``match_mode="all"``) phrase appears in the target text.
-    - ``"regex"``: ``regex`` — a single regular expression.
-    - ``"semantic"``: ``semantic_prompt`` — an LLM judges whether the response violates the
+    - ``"regex"``: ``regex`` - a single regular expression.
+    - ``"semantic"``: ``semantic_prompt`` - an LLM judges whether the response violates the
       described rubric.
     """
 

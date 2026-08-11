@@ -57,7 +57,7 @@ class EvaluationsClient:
             raise AgentXAuthError("AGENTX_API_KEY is required")
         self._api_key = api_key
         self._sdk_version = sdk_version
-        # Falls back to the caller's default workspace server-side when unset — see
+        # Falls back to the caller's default workspace server-side when unset - see
         # _with_workspace(). Without this, dataset/settings/run creation silently land in
         # whatever workspace the API key's user defaults to, not the one the caller intended.
         self._workspace_id = workspace_id
@@ -139,7 +139,7 @@ class EvaluationsClient:
     # ------------------------------------------------------------------
 
     def list_models(self, provider: Optional[str] = None) -> List[ModelInfo]:
-        """List the LLM models AgentX supports — the same set selectable for
+        """List the LLM models AgentX supports - the same set selectable for
         the Sovereignty & Portability Index. Pass ``provider`` (e.g. "Google")
         to filter."""
         params = {"provider": provider} if provider else None
@@ -169,7 +169,7 @@ class EvaluationsClient:
         return Dataset(**data)
 
     # ------------------------------------------------------------------
-    # Evaluation Settings endpoints — standalone grading config, reusable
+    # Evaluation Settings endpoints - standalone grading config, reusable
     # across datasets.
     # ------------------------------------------------------------------
 
@@ -199,7 +199,7 @@ class EvaluationsClient:
         return EvaluationSettings(**data)
 
     # ------------------------------------------------------------------
-    # Prompt registry endpoints — see agentx.evaluations.prompts.PromptClient for the concept
+    # Prompt registry endpoints - see agentx.evaluations.prompts.PromptClient for the concept
     # (the external-agent analog to native autotune). Deliberately read-mostly: no publish here,
     # a new version only ever comes from the dashboard's human-approved propose/publish flow.
     # ------------------------------------------------------------------

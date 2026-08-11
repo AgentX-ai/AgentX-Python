@@ -1,4 +1,4 @@
-# Agent CI/CD Evaluation — Python SDK
+# Agent CI/CD Evaluation - Python SDK
 
 ## Overview
 
@@ -43,7 +43,7 @@ sys.exit(0 if result.gate == "pass" else 1)
 
 ---
 
-## `tracer.run_eval()` — high-level helper
+## `tracer.run_eval()` - high-level helper
 
 Runs the full CI/CD evaluation lifecycle in one call:
 1. Creates a CI run and fetches test cases from the dataset
@@ -69,8 +69,8 @@ result = tracer.run_eval(
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `dataset_id` | `str` | — | ID of the evaluation dataset (must have `ci.enabled: true`) |
-| `agent_fn` | `Callable[[str], str]` | — | Function that takes a query string and returns the agent's response |
+| `dataset_id` | `str` | - | ID of the evaluation dataset (must have `ci.enabled: true`) |
+| `agent_fn` | `Callable[[str], str]` | - | Function that takes a query string and returns the agent's response |
 | `agent_name` | `str` | `None` | Label for this agent (used to create/reuse a reference agent in AgentX) |
 | `pass_rate_threshold` | `float` | `None` | Override the dataset's `passRateThreshold` for this run (0.0–1.0) |
 | `git_context` | `dict` | `None` | Git metadata (see [Git context](#git-context)) |
@@ -241,9 +241,9 @@ for case in run.test_cases:
         output=output,
         input=case.query,
     )
-    print(f"Q{case.index}: {score.rating}/5 — {score.justification[:60]}")
+    print(f"Q{case.index}: {score.rating}/5 - {score.justification[:60]}")
     if score.gate_fired:
-        print("Gate fired (failFast) — stopping early")
+        print("Gate fired (failFast) - stopping early")
         break
 ```
 
@@ -263,7 +263,7 @@ result = tracer.finalize_ci_run(run_id: str)
 
 ```python
 result = tracer.finalize_ci_run(run_id=run.run_id)
-print(f"Gate: {result.gate} — {result.pass_rate:.0%} passed")
+print(f"Gate: {result.gate} - {result.pass_rate:.0%} passed")
 ```
 
 ---
@@ -605,9 +605,9 @@ test_case = run.test_cases[2]   # pick question index 2
 
 output = my_agent(test_case.query)
 score = tracer.submit_result(run.run_id, test_case.index, output)
-print(f"Q{test_case.index}: {score.rating}/5 — {score.justification}")
+print(f"Q{test_case.index}: {score.rating}/5 - {score.justification}")
 
-# No need to finalize — just abandon the run (it expires automatically)
+# No need to finalize - just abandon the run (it expires automatically)
 ```
 
 ---

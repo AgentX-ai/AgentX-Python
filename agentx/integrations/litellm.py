@@ -9,7 +9,7 @@ Usage::
     litellm.callbacks = [AgentXLiteLLMLogger(agentx.tracer, name="my-agent")]
 
     # All subsequent litellm.completion()/acompletion() calls are now traced
-    # automatically — sync, async, and streaming.
+    # automatically - sync, async, and streaming.
 
 Requires: ``pip install "agentx-python[litellm]"``
 """
@@ -57,7 +57,7 @@ def _extract_output_text(response: Any) -> Optional[str]:
 
 
 def _extract_usage_tokens(response: Any) -> Tuple[Optional[int], Optional[int], Optional[int]]:
-    """Same posture as agentx.integrations.openai's own _extract_usage_tokens — LiteLLM normalizes
+    """Same posture as agentx.integrations.openai's own _extract_usage_tokens - LiteLLM normalizes
     every provider's response to an OpenAI-shaped ModelResponse, so prompt_tokens_details.cached_tokens
     is the right field here too regardless of which underlying provider actually served the call."""
     usage = getattr(response, "usage", None)
@@ -72,14 +72,14 @@ class AgentXLiteLLMLogger(CustomLogger):
     """
     LiteLLM ``CustomLogger`` that sends one AgentX trace per completion call.
 
-    Covers ``litellm.completion``/``acompletion``, streaming or not — LiteLLM
+    Covers ``litellm.completion``/``acompletion``, streaming or not - LiteLLM
     reassembles a streamed response into one final ``ModelResponse`` before
     invoking these callbacks, so no separate streaming handling is needed
     here, and no ``call_and_trace``-style async-coroutine detection either:
     LiteLLM's own sync/async callback split (``log_*_event`` vs
     ``async_log_*_event``) already tells you which one fired.
 
-    Register via ``litellm.callbacks`` — affects every call in the process
+    Register via ``litellm.callbacks`` - affects every call in the process
     from that point on, the same scope ``litellm.callbacks`` itself has.
     """
 

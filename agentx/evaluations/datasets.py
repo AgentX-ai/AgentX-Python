@@ -67,7 +67,7 @@ class DatasetBuilder:
             self._payload["bleuScore"] = {"enabled": True}
         if rouge_score:
             self._payload["rougeScore"] = {"enabled": True}
-        # Sovereignty & Portability — the models to compare on this dataset (use
+        # Sovereignty & Portability - the models to compare on this dataset (use
         # client.evaluations.list_models() to discover valid ids).
         if sovereignty_models:
             self._payload["sovereigntyIndex"] = {

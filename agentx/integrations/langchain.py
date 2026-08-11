@@ -218,7 +218,7 @@ def _extract_llm_output(response: "LLMResult") -> Optional[str]:
             if text:
                 texts.append(text)
                 continue
-            # No text content — the model likely responded with a pure tool
+            # No text content - the model likely responded with a pure tool
             # call instead of commentary. Fall back to describing it so the
             # step's output isn't silently omitted.
             described = _describe_tool_calls(message)
@@ -273,14 +273,14 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         # Safety net for a run_id whose start callback never gets a matching
         # end/error callback at all (e.g. a hard crash, or a custom Runnable
         # that swallows exceptions before they reach LangChain's own callback
-        # dispatch) — normal on_*_end/on_*_error pairing already frees
+        # dispatch) - normal on_*_end/on_*_error pairing already frees
         # everything else. This handler is typically a long-lived singleton
         # across many requests, so entries older than this are swept out the
         # next time a new top-level chain starts.
         self._max_run_age_seconds = max_run_age_seconds
 
     def _prune_stale_entries(self) -> None:
-        """Sweep out run_id entries older than max_run_age_seconds — see __init__'s comment."""
+        """Sweep out run_id entries older than max_run_age_seconds - see __init__'s comment."""
         cutoff = time.time() - self._max_run_age_seconds
 
         stale_run_ids = [
@@ -343,7 +343,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
     ) -> None:
         # Pop _top_level/_parents for every chain run, not just top-level ones.
         # Nested chain steps (LCEL sub-chains, LangGraph nodes, AgentExecutor
-        # internals) fire on_chain_start/on_chain_end too — leaving their
+        # internals) fire on_chain_start/on_chain_end too - leaving their
         # entries behind here would leak forever in a long-lived singleton
         # handler, since nothing else ever cleans up a non-top-level run_id.
         is_top = self._top_level.pop(run_id, None)
@@ -366,7 +366,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         active_span = self._tracer.current_span
         if active_span is not None:
             # Part of a `with tracer.trace(...)` block (e.g. an orchestrator
-            # spanning several chain/agent/retriever calls) — fold this
+            # spanning several chain/agent/retriever calls) - fold this
             # top-level run into it instead of sending an independent trace.
             active_span._merge_child_run(
                 execution_steps=state["execution_steps"],
@@ -384,7 +384,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
             # this chain invocation and let _merge_child_run explode its accumulated
             # execution_steps/tool_calls/retrieval_steps into real child-span rows.
             with self._tracer.trace(self._name, metadata=self._metadata, session_id=self._session_id) as span:
-                # __enter__ just set _start to "now" — overridden to the chain's real start time,
+                # __enter__ just set _start to "now" - overridden to the chain's real start time,
                 # see llamaindex.py's _send_trace for the identical fix and full rationale.
                 span._start = state["start"]
                 span._merge_child_run(
@@ -407,7 +407,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         parent_run_id: Optional[UUID] = None,
         **kwargs,
     ) -> None:
-        # See on_chain_end's comment — pop for every chain run, not just top-level.
+        # See on_chain_end's comment - pop for every chain run, not just top-level.
         is_top = self._top_level.pop(run_id, None)
         self._parents.pop(run_id, None)
         if not is_top:
@@ -430,7 +430,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                 output_tokens=state["output_tokens"] or None,
             )
         else:
-            # See on_chain_end's matching branch — same standalone-usage handling.
+            # See on_chain_end's matching branch - same standalone-usage handling.
             with self._tracer.trace(self._name, metadata=self._metadata, session_id=self._session_id) as span:
                 span._start = state["start"]
                 span.set_error(str(error))
@@ -685,7 +685,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
 
         top = self._find_top_ancestor(parent_run_id)
         if top and top in self._runs:
-            # Retriever ran inside an active chain — attach directly
+            # Retriever ran inside an active chain - attach directly
             retrievals = self._runs[top]["retrieval_steps"]
             step["name"] = f"Retrieval {len(retrievals) + 1}"
             retrievals.append(step)
@@ -721,7 +721,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
 
         top = self._find_top_ancestor(parent_run_id)
         if top and top in self._runs:
-            # Retriever ran inside an active chain — attach directly
+            # Retriever ran inside an active chain - attach directly
             retrievals = self._runs[top]["retrieval_steps"]
             step["name"] = f"Retrieval {len(retrievals) + 1}"
             retrievals.append(step)

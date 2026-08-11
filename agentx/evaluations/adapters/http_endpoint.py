@@ -12,7 +12,7 @@ from agentx.evaluations.results import normalize_error, normalize_result
 class HttpEndpointAdapter:
     """
     Calls a user-hosted HTTP endpoint for each evaluation case.
-    The SDK (running locally) makes the request — the AgentX API never
+    The SDK (running locally) makes the request - the AgentX API never
     touches the customer's endpoint.
 
     The endpoint receives a POST with::

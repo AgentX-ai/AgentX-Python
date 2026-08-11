@@ -30,6 +30,8 @@ class MonitorOnlineEvaluatorBuilder:
         enabled: bool = True,
         alert_threshold: Optional[float] = 5,
         severity: str = "medium",
+        scope: str = "trace",
+        idle_seconds: int = 120,
     ):
         self._client = client
         self._payload: Dict[str, Any] = {
@@ -45,6 +47,11 @@ class MonitorOnlineEvaluatorBuilder:
             # MonitorPattern already lands on. None scores without ever raising one.
             "alertThreshold": alert_threshold,
             "severity": severity,
+            # "trace" (default) judges each sampled trace at ingest. "session" (self-host only)
+            # judges whole conversations once they've been idle for idle_seconds, re-judging if
+            # the conversation resumes - see the engine's idle-session sweep.
+            "scope": scope,
+            "idleSeconds": idle_seconds,
         }
 
     def publish(self) -> MonitorOnlineEvaluator:
@@ -68,6 +75,8 @@ class MonitorOnlineEvaluatorClient:
         enabled: bool = True,
         alert_threshold: Optional[float] = 5,
         severity: str = "medium",
+        scope: str = "trace",
+        idle_seconds: int = 120,
     ) -> MonitorOnlineEvaluatorBuilder:
         return MonitorOnlineEvaluatorBuilder(
             self._client,
@@ -79,6 +88,8 @@ class MonitorOnlineEvaluatorClient:
             enabled=enabled,
             alert_threshold=alert_threshold,
             severity=severity,
+            scope=scope,
+            idle_seconds=idle_seconds,
         )
 
     def get(self, evaluator_id: str) -> MonitorOnlineEvaluator:
@@ -92,8 +103,9 @@ class MonitorOnlineEvaluatorClient:
         ``client.monitor.online_evaluators.update(id, enabled=False)`` to pause one, or
         ``sample_rate=0.25`` to change its sampling. Field names match the builder's
         (``evaluation_settings_id``, ``sample_rate``, ``scope_mode``, ``agent_ids``, ``enabled``,
-        ``alert_threshold``, ``severity``). Pass ``alert_threshold=None`` to stop this evaluator
-        from ever raising a Signal.
+        ``alert_threshold``, ``severity``, ``scope``, ``idle_seconds``). Pass
+        ``alert_threshold=None`` to stop this evaluator from ever raising a Signal;
+        ``scope="session"`` (self-host only) switches it to judging whole idle conversations.
         """
         alias_map = {
             "evaluation_settings_id": "evaluationSettingsId",
@@ -101,6 +113,7 @@ class MonitorOnlineEvaluatorClient:
             "scope_mode": "scopeMode",
             "agent_ids": "agentIds",
             "alert_threshold": "alertThreshold",
+            "idle_seconds": "idleSeconds",
         }
         payload = {alias_map.get(key, key): value for key, value in fields.items()}
         return self._client.update_online_evaluator(evaluator_id, payload)

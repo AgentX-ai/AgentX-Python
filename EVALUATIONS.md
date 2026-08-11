@@ -1,4 +1,4 @@
-## Custom Agent Evaluations — Installation
+## Custom Agent Evaluations - Installation
 
 Install only what you need, or everything at once:
 
@@ -35,14 +35,14 @@ pip install -r examples/evaluations/requirements.txt
 
 ## Custom Agent Evaluations
 
-Evaluate **any AI agent** — LangChain, CrewAI, AutoGen, LlamaIndex, OpenAI, Anthropic, HTTP endpoints, or plain Python — using AgentX as a scoring and reporting backend. Your agent runs locally; AgentX scores results and generates a full analysis report.
+Evaluate **any AI agent** - LangChain, CrewAI, AutoGen, LlamaIndex, OpenAI, Anthropic, HTTP endpoints, or plain Python - using AgentX as a scoring and reporting backend. Your agent runs locally; AgentX scores results and generates a full analysis report.
 
 ### How it works
 
-1. **Build a dataset** — define cases (queries + acceptance/rejection criteria).
-2. **Run your agent** — the SDK calls your function or endpoint for each case.
-3. **Finalize + analyze** — AgentX scores every response and generates a report.
-4. **View results** — in the terminal and on the AgentX dashboard.
+1. **Build a dataset** - define cases (queries + acceptance/rejection criteria).
+2. **Run your agent** - the SDK calls your function or endpoint for each case.
+3. **Finalize + analyze** - AgentX scores every response and generates a report.
+4. **View results** - in the terminal and on the AgentX dashboard.
 
 ```
 Your agent (local)  →  AgentX SDK  →  AgentX API (scores + analyzes)  →  Report
@@ -71,7 +71,7 @@ report = (
 
 print(f"Average rating:    {report.average_rating:.2f}")
 
-# Optional similarity metrics — present only when enabled on the dataset.
+# Optional similarity metrics - present only when enabled on the dataset.
 if report.cosine_similarity is not None:
     print(f"Cosine similarity: {report.cosine_similarity:.3f}")   # 0–1
 if report.jaccard_similarity is not None:
@@ -197,9 +197,9 @@ client.evaluations.datasets.builder(name="Support Agent v2").add_case(
 
 ---
 
-### Evaluation Settings builder — reusable grading configs
+### Evaluation Settings builder - reusable grading configs
 
-By default, a dataset runs against the grading config it was created with (`number_of_requests`, `acceptance_criteria`, similarity metrics, etc. — see above). If you want to grade the **same dataset** against **different configs** (e.g. a strict config vs. a lenient one, or reuse one config across many datasets), create a standalone `EvaluationSettings` and pass its id to `.run()`:
+By default, a dataset runs against the grading config it was created with (`number_of_requests`, `acceptance_criteria`, similarity metrics, etc. - see above). If you want to grade the **same dataset** against **different configs** (e.g. a strict config vs. a lenient one, or reuse one config across many datasets), create a standalone `EvaluationSettings` and pass its id to `.run()`:
 
 ```python
 strict_settings = (
@@ -222,7 +222,7 @@ report = (
 )
 ```
 
-Omit `evaluation_settings_id` to keep using the dataset's own config, exactly as before — this is fully additive, no existing code needs to change. The builder accepts the same config kwargs as `datasets.builder(...)` (`number_of_requests`, the three criteria fields, `vector_similarity`/`jaccard_similarity`/`bleu_score`/`rouge_score`, `sovereignty_models`, `judge_prompt`/`judge_model` below) but no `questions` — it's config-only and reusable.
+Omit `evaluation_settings_id` to keep using the dataset's own config, exactly as before - this is fully additive, no existing code needs to change. The builder accepts the same config kwargs as `datasets.builder(...)` (`number_of_requests`, the three criteria fields, `vector_similarity`/`jaccard_similarity`/`bleu_score`/`rouge_score`, `sovereignty_models`, `judge_prompt`/`judge_model` below) but no `questions` - it's config-only and reusable.
 
 ```python
 client.evaluations.settings.get(strict_settings.id)   # fetch one
@@ -262,9 +262,9 @@ Score strictly: any missing policy detail is a failing response.""",
 
 ### Prompt registry
 
-**Self-host only** (see [Self-host](README.md#self-host)) — no hosted-SaaS equivalent yet.
+**Self-host only** (see [Self-host](README.md#self-host)) - no hosted-SaaS equivalent yet.
 
-AgentX doesn't own your agent's code, so it can't do what native Autotune does — branch and merge a config directly. `client.evaluations.prompts` solves the same "how do I close the loop" problem the way LangSmith's Prompt Hub and Langfuse's Prompt Management do instead: become the prompt's *source of truth*. Your agent pulls a version at runtime, you tag your evaluation evidence with which version it used, and "improvement" becomes propose → a human approves → publish a new version — never a direct edit to your deployed code.
+AgentX doesn't own your agent's code, so it can't do what native Autotune does - branch and merge a config directly. `client.evaluations.prompts` solves the same "how do I close the loop" problem the way LangSmith's Prompt Hub and Langfuse's Prompt Management do instead: become the prompt's *source of truth*. Your agent pulls a version at runtime, you tag your evaluation evidence with which version it used, and "improvement" becomes propose → a human approves → publish a new version - never a direct edit to your deployed code.
 
 ```python
 prompt = client.evaluations.prompts.create(
@@ -281,7 +281,7 @@ client.evaluations.prompts.list()                                        # every
 ```
 
 Tag whichever evidence you want the dashboard's judge (or the `improve-prompt` Claude Code skill)
-to learn from by setting `metadata.promptName` — on a deliberate eval run:
+to learn from by setting `metadata.promptName` - on a deliberate eval run:
 
 ```python
 client.evaluations.run(
@@ -301,11 +301,11 @@ with client.tracer.trace("support-agent", metadata={"promptName": prompt.name}) 
 ```
 
 From the self-host dashboard: Governance → Improve → **Prompt Management** → a prompt's row menu → **Suggest
-improvement**. It merges both kinds of evidence — deliberate eval runs (defaulting to the *current
+improvement**. It merges both kinds of evidence - deliberate eval runs (defaulting to the *current
 published version only*, auto-widening to every version if there isn't enough recent evidence yet)
-and worst-scoring Online Evaluator ratings from a recent time window — feeds the worst-rated
+and worst-scoring Online Evaluator ratings from a recent time window - feeds the worst-rated
 examples to a judge, and shows a full rewrite plus reasoning. **Nothing is saved until a human
-clicks Publish as new version** — there is no `publish()` on this client; a rewrite only ever
+clicks Publish as new version** - there is no `publish()` on this client; a rewrite only ever
 reaches your agent through that one explicit, dashboard-only write. Your agent's next
 `client.evaluations.prompts.get(name)` call picks up the new version immediately. Tagging
 `metadata.version` as `<promptName>@v<N>` (shown above) means the dataset's **Compare versions**
@@ -544,7 +544,7 @@ Full example: [`examples/evaluations/llamaindex_eval.py`](examples/evaluations/l
 
 #### HTTP endpoint
 
-Use `HttpEndpointAdapter` to evaluate any agent exposed as an HTTP service — FastAPI, LangServe, Flask, n8n webhooks, etc.
+Use `HttpEndpointAdapter` to evaluate any agent exposed as an HTTP service - FastAPI, LangServe, Flask, n8n webhooks, etc.
 
 ```python
 from agentx.evaluations.adapters.http_endpoint import HttpEndpointAdapter
@@ -621,11 +621,11 @@ Each scored result can be enriched with reference-based similarity scores compar
 | Metric | What it measures | Cost |
 |---|---|---|
 | **Cosine** (vector similarity) | Cosine of OpenAI embeddings of `expected_results` vs the actual response. Captures semantic similarity. | One embedding API call per case. |
-| **Jaccard** | Token-set overlap `|A ∩ B| / |A ∪ B|` over lowercased word tokens. Pure lexical match. | Free — no API calls. |
-| **BLEU** | Sentence-level BLEU-4 (n-gram precision, up to 4-grams, with brevity penalty). Standard machine-translation-style metric — rewards responses that reuse the expected result's exact phrasing. | Free — no API calls. |
-| **ROUGE-L** | F1 over the longest common (in-order) subsequence of tokens. Standard summarization-style metric — more tolerant of reordering/insertions than BLEU. | Free — no API calls. |
+| **Jaccard** | Token-set overlap `|A ∩ B| / |A ∪ B|` over lowercased word tokens. Pure lexical match. | Free - no API calls. |
+| **BLEU** | Sentence-level BLEU-4 (n-gram precision, up to 4-grams, with brevity penalty). Standard machine-translation-style metric - rewards responses that reuse the expected result's exact phrasing. | Free - no API calls. |
+| **ROUGE-L** | F1 over the longest common (in-order) subsequence of tokens. Standard summarization-style metric - more tolerant of reordering/insertions than BLEU. | Free - no API calls. |
 
-All four metrics are returned in the range `[0, 1]` and averaged across all scored results in the report. BLEU and ROUGE-L are computed server-side in the same way as Jaccard (no external API call, pure token-based math) — they're a good default choice when you want a similarity signal without embedding cost.
+All four metrics are returned in the range `[0, 1]` and averaged across all scored results in the report. BLEU and ROUGE-L are computed server-side in the same way as Jaccard (no external API call, pure token-based math) - they're a good default choice when you want a similarity signal without embedding cost.
 
 **Enable them on the dataset** (via the AgentX dashboard or the dataset API):
 
@@ -654,13 +654,13 @@ builder = client.evaluations.datasets.builder(
 ```python
 report = client.evaluations.run(...).execute(my_agent).finalize().analyze()
 
-# Top-level convenience accessors — return None when the metric was not
+# Top-level convenience accessors - return None when the metric was not
 # enabled on the dataset, or no case has a value yet.
-report.average_rating       # float | None  — same as report.statistics.average_rating
-report.cosine_similarity    # float | None  — averaged across cases (0–1)
-report.jaccard_similarity   # float | None  — averaged across cases (0–1)
-report.bleu_score           # float | None  — averaged across cases (0–1)
-report.rouge_score          # float | None  — averaged across cases (0–1), ROUGE-L F1
+report.average_rating       # float | None  - same as report.statistics.average_rating
+report.cosine_similarity    # float | None  - averaged across cases (0–1)
+report.jaccard_similarity   # float | None  - averaged across cases (0–1)
+report.bleu_score           # float | None  - averaged across cases (0–1)
+report.rouge_score          # float | None  - averaged across cases (0–1), ROUGE-L F1
 
 # Same values are also available nested under the statistics block:
 report.statistics.cosine_similarity
@@ -731,7 +731,7 @@ Your callable can return any of:
 |---|---|
 | `str` | Used directly as the output text |
 | `dict` with `"output"` key | Output text from `output`, rest stored as metadata |
-| `EvaluationResult` | Full control — pass rating, justification, trace, timings |
+| `EvaluationResult` | Full control - pass rating, justification, trace, timings |
 
 ### Security and redaction
 
@@ -741,4 +741,4 @@ The SDK automatically scrubs secrets from outputs and metadata before uploading:
 - Authorization headers
 - Password-like fields
 
-Raw agent outputs, prompts, and CoT reasoning are **never uploaded** — only the text response, metadata you explicitly include, and optional observable trace summaries.
+Raw agent outputs, prompts, and CoT reasoning are **never uploaded** - only the text response, metadata you explicitly include, and optional observable trace summaries.

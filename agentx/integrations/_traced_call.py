@@ -3,7 +3,7 @@ Shared helper for tracing a raw SDK client call that may be sync or async.
 
 Anthropic's and Google GenAI's raw clients expose the same method names for
 both their sync and async client variants (``client.messages.create``,
-``client.models.generate_content``) — the only way to tell them apart is to
+``client.models.generate_content``) - the only way to tell them apart is to
 call the method and check whether the result is awaitable.
 ``inspect.iscoroutinefunction`` is unreliable for this: it returns ``False``
 even for ``AsyncAnthropic().messages.create``, since these SDKs don't
@@ -34,7 +34,7 @@ def call_and_trace(
     normal value (sync client), call ``on_finish`` immediately.
 
     Either way, the original call's own return value / exception behavior is
-    unchanged for the caller — this only affects when/how the trace is built.
+    unchanged for the caller - this only affects when/how the trace is built.
     """
     try:
         result = original(*args, **kwargs)
@@ -81,13 +81,13 @@ def finish_llm_call(
     cache_write_tokens: Optional[int] = None,
 ) -> None:
     """
-    Close out one raw-client LLM call — shared by the ``on_finish``/exit
+    Close out one raw-client LLM call - shared by the ``on_finish``/exit
     callbacks of every integration that patches a raw provider client
     (``anthropic.py``, ``google_genai.py``, ``openai.py``, ``litellm.py``) rather than a
     framework-level callback/plugin system.
 
     If the call happened inside a ``with tracer.trace(...)`` block, it becomes that span's own
-    real child span (via _record_llm_call) instead of an independent trace — the same "part of a
+    real child span (via _record_llm_call) instead of an independent trace - the same "part of a
     multi-call agentic loop" behavior ``anthropic.py`` already had; folded in here so every
     raw-client integration gets it instead of each having to remember to check
     ``tracer.current_span`` itself. Otherwise it becomes its own real root span, opened/closed

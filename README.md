@@ -4,7 +4,7 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/agentx-python)](https://pypi.org/project/agentx-python/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-The official Python SDK for **[AgentX](https://app.agentx.so/)** — an evaluation, tracing, and monitoring framework for AI agents, plus a client for AgentX's own hosted agents.
+The official Python SDK for **[AgentX](https://app.agentx.so/)** - an evaluation, tracing, and monitoring framework for AI agents, plus a client for AgentX's own hosted agents.
 
 Also see [SDK Developer Docs](https://developers.agentx.so), [API Reference Docs](https://docs.agentx.so/reference)
 
@@ -16,24 +16,24 @@ Also see [SDK Developer Docs](https://developers.agentx.so), [API Reference Docs
 - [Installation](#installation)
 - [Authentication](#authentication)
 - [Quick start](#quick-start)
-- [Custom agent evaluations](#custom-agent-evaluations) — LLM-as-a-judge, cosine / Jaccard similarity, any framework
-- [Production tracing](#production-tracing) — record live agent runs from any framework
-- [Monitor](#monitor) — automatic production monitoring, patterns and signals
-- [Self-host](#self-host) — run Trace/Evaluate/Monitor on your own machine instead of the hosted dashboard
-- [Agents & conversations](#agents--conversations) — chat with and orchestrate AgentX's own hosted agents
+- [Custom agent evaluations](#custom-agent-evaluations) - LLM-as-a-judge, cosine / Jaccard similarity, any framework
+- [Production tracing](#production-tracing) - record live agent runs from any framework
+- [Monitor](#monitor) - automatic production monitoring, patterns and signals
+- [Self-host](#self-host) - run Trace/Evaluate/Monitor on your own machine instead of the hosted dashboard
+- [Agents & conversations](#agents--conversations) - chat with and orchestrate AgentX's own hosted agents
 - [Links](#links)
 
 ---
 
 ## Why AgentX
 
-- **Agent Evaluations** — score **any** agent (LangChain, CrewAI, AutoGen, LlamaIndex, OpenAI, Anthropic, HTTP, or plain Python) against a dataset with LLM-as-a-judge ratings plus optional cosine, Jaccard, and BLEU/ROUGE similarity metrics. Configurable judge prompt/model, per-question judge guidelines, smoke testing for phrasing robustness, and a durable multi-judge analysis pass for a qualitative report.
-- **Production tracing** — one decorator or context manager records every agent run (input, output, latency, tool calls, token usage, and a real span tree) into your workspace, for any framework.
-- **Monitor** — check live traces against detection patterns or a sampled LLM judge, and read back triage-ready signals, no dashboard setup required.
-- **Prompt registry** — make AgentX the source of truth for your own agent's prompts: pull a version at runtime, tag eval runs and live traces with it, let a judge propose a rewrite from your worst-rated results.
-- **Self-host** — run the whole Trace/Evaluate/Monitor stack locally, bring your own LLM keys, no account required.
-- **Bring any LLM** — works across major open and closed-source vendors, for evaluation, tracing, and AgentX's own hosted agents alike.
-- **AgentX's own hosted agents** — a simple `Agent → Conversation → Message` mental model, chain-of-thought built in, multi-agent workforces, MCP support, and A2A publishing, for when you want AgentX to run the agent too, not just evaluate/trace/monitor it.
+- **Agent Evaluations** - score **any** agent (LangChain, CrewAI, AutoGen, LlamaIndex, OpenAI, Anthropic, HTTP, or plain Python) against a dataset with LLM-as-a-judge ratings plus optional cosine, Jaccard, and BLEU/ROUGE similarity metrics. Configurable judge prompt/model, per-question judge guidelines, smoke testing for phrasing robustness, and a durable multi-judge analysis pass for a qualitative report.
+- **Production tracing** - one decorator or context manager records every agent run (input, output, latency, tool calls, token usage, and a real span tree) into your workspace, for any framework.
+- **Monitor** - check live traces against detection patterns or a sampled LLM judge, and read back triage-ready signals, no dashboard setup required.
+- **Prompt registry** - make AgentX the source of truth for your own agent's prompts: pull a version at runtime, tag eval runs and live traces with it, let a judge propose a rewrite from your worst-rated results.
+- **Self-host** - run the whole Trace/Evaluate/Monitor stack locally, bring your own LLM keys, no account required.
+- **Bring any LLM** - works across major open and closed-source vendors, for evaluation, tracing, and AgentX's own hosted agents alike.
+- **AgentX's own hosted agents** - a simple `Agent → Conversation → Message` mental model, chain-of-thought built in, multi-agent workforces, MCP support, and A2A publishing, for when you want AgentX to run the agent too, not just evaluate/trace/monitor it.
 
 ---
 
@@ -52,11 +52,11 @@ Requires Python 3.9 or newer.
 Get your API key at [app.agentx.so](https://app.agentx.so), then either pass it inline or expose it as an environment variable.
 
 ```python
-# Option A — pass the key inline
+# Option A - pass the key inline
 from agentx import AgentX
 client = AgentX(api_key="your-api-key-here")
 
-# Option B — set AGENTX_API_KEY in your environment, then:
+# Option B - set AGENTX_API_KEY in your environment, then:
 client = AgentX.from_env()
 ```
 
@@ -64,7 +64,7 @@ client = AgentX.from_env()
 
 ## Quick start
 
-Evaluate your own agent — any framework, or plain Python — against a dataset:
+Evaluate your own agent - any framework, or plain Python - against a dataset:
 
 ```python
 from agentx import AgentX
@@ -92,7 +92,7 @@ That's it. The rest of this section covers building the dataset, framework adapt
 
 ## Custom agent evaluations
 
-Evaluate **any** AI agent — LangChain, CrewAI, AutoGen, LlamaIndex, OpenAI, Anthropic, HTTP endpoints, or plain Python — using AgentX as the scoring and reporting backend. Includes optional **cosine**, **Jaccard**, and **BLEU/ROUGE** similarity metrics alongside LLM-graded ratings.
+Evaluate **any** AI agent - LangChain, CrewAI, AutoGen, LlamaIndex, OpenAI, Anthropic, HTTP endpoints, or plain Python - using AgentX as the scoring and reporting backend. Includes optional **cosine**, **Jaccard**, and **BLEU/ROUGE** similarity metrics alongside LLM-graded ratings.
 
 ```python
 report = (
@@ -115,7 +115,7 @@ print(report.recommendations)      # list of prioritized, actionable fixes
 
 Ask a case's question several extra ways each run, LLM-paraphrased server-side, to catch agents that break on phrasing rather than substance, and override the judge's prompt/model per config, see [Smoke testing](EVALUATIONS.md#smoke-testing-phrasing-robustness) and [Configuring the judge](EVALUATIONS.md#configuring-the-judge) in the full guide.
 
-Since AgentX doesn't own your agent's code, `client.evaluations.prompts` lets AgentX become your prompt's *source of truth* instead — the same problem LangSmith's Prompt Hub and Langfuse's Prompt Management solve. Pull a version at runtime, tag your eval runs (or live traces) with it, and let a judge propose a rewrite from your real worst-rated results — a human always has to approve before it publishes:
+Since AgentX doesn't own your agent's code, `client.evaluations.prompts` lets AgentX become your prompt's *source of truth* instead - the same problem LangSmith's Prompt Hub and Langfuse's Prompt Management solve. Pull a version at runtime, tag your eval runs (or live traces) with it, and let a judge propose a rewrite from your real worst-rated results - a human always has to approve before it publishes:
 
 ```python
 prompt = client.evaluations.prompts.get("support-agent-system-prompt")  # or prompt.id
@@ -127,15 +127,15 @@ client.evaluations.run(
 ).execute(my_agent_fn)
 ```
 
-See [Prompt registry](EVALUATIONS.md#prompt-registry) in the full guide, or [self-host's docs](https://docs.agentx.so/self-host#prompt-registry) for the "Suggest improvement" dashboard flow (self-host only — no hosted-SaaS equivalent yet).
+See [Prompt registry](EVALUATIONS.md#prompt-registry) in the full guide, or [self-host's docs](https://docs.agentx.so/self-host#prompt-management) for the "Suggest improvement" dashboard flow (self-host only - no hosted-SaaS equivalent yet).
 
-See **[EVALUATIONS.md](EVALUATIONS.md)** for the full guide — dataset builder, framework adapters, similarity metrics, smoke testing, judge configuration, prompt registry, and the complete API reference.
+See **[EVALUATIONS.md](EVALUATIONS.md)** for the full guide - dataset builder, framework adapters, similarity metrics, smoke testing, judge configuration, prompt registry, and the complete API reference.
 
 ---
 
 ## Production tracing
 
-Record live agent runs into your workspace with a single decorator or context manager — no changes to your agent's logic. Traces appear in the **Live Traces** tab and can be evaluated against your test datasets with [`tracer.evaluate_trace()`](TRACING.md#tracerevaluate_trace).
+Record live agent runs into your workspace with a single decorator or context manager - no changes to your agent's logic. Traces appear in the **Live Traces** tab and can be evaluated against your test datasets with [`tracer.evaluate_trace()`](TRACING.md#tracerevaluate_trace).
 
 ```python
 from agentx import AgentX
@@ -164,9 +164,18 @@ with tracer.trace("rag-agent", framework="langchain") as span:
     span.output = llm.invoke(f"Context: {kb_result}\n\nQuery: {query}")
 ```
 
+To time a tool call and capture its failures automatically, wrap the execution itself instead of reporting it after the fact:
+
+```python
+with tracer.trace_tool_call("search_knowledge_base", input=query) as t:
+    t.output = search_knowledge_base(query)
+```
+
+An exception escaping the block records the call as failed (`success=False` plus the error text, which is what Monitor's built-in "Tool failure" check and the dashboard's Tool quality column read) and then propagates unchanged.
+
 ### Framework integrations
 
-Each integration auto-captures LLM calls, tool calls, and token usage — including prompt-caching
+Each integration auto-captures LLM calls, tool calls, and token usage - including prompt-caching
 token counts (Anthropic's cache write/read, OpenAI/LiteLLM's cached tokens, Google GenAI's cached
 content), reported as their own `cache_read_tokens`/`cache_write_tokens` fields alongside the
 regular totals, no extra config needed. Self-host's cost estimate prices these separately from a
@@ -186,11 +195,11 @@ extra:
 | LlamaIndex             | `pip install "agentx-python[llamaindex]"`    | `AgentXLlamaIndexHandler`|
 | AutoGen                | `pip install "agentx-python[autogen]"`       | `AgentXAutoGenObserver`  |
 
-Or plain Python — wrap any function with `@tracer.trace(...)` and it just works, no framework required.
+Or plain Python - wrap any function with `@tracer.trace(...)` and it just works, no framework required.
 
-Running specialist agents in parallel with a `ThreadPoolExecutor`? Wrap each worker body in `tracer.use_span(span)` so their steps land on the parent trace instead of becoming independent traces — see [TRACING.md](TRACING.md) for the full pattern.
+Running specialist agents in parallel with a `ThreadPoolExecutor`? Wrap each worker body in `tracer.use_span(span)` so their steps land on the parent trace instead of becoming independent traces - see [TRACING.md](TRACING.md) for the full pattern.
 
-See **[TRACING.md](TRACING.md)** for the complete guide — session grouping, error handling, async support, and the full API reference.
+See **[TRACING.md](TRACING.md)** for the complete guide - session grouping, error handling, async support, and the full API reference.
 
 ---
 
@@ -240,13 +249,32 @@ evaluator = client.monitor.online_evaluators.builder(
 client.monitor.online_evaluators.ratings(evaluator.id, window="7d")
 ```
 
+An online evaluator can also judge **whole conversations** instead of single traces: pass `scope="session"` and the engine scores each multi-turn session once it's been idle for `idle_seconds`, re-scoring if the conversation resumes. And to close the loop with reality, `client.outcomes.report(...)` records what actually happened after the fact (a reopened ticket, a human confirmation) against a trace, feeding the dashboard's Judge Calibration view, which measures how often AgentX's automated verdicts agree with real outcomes. Both are self-host features.
+
+```python
+client.monitor.online_evaluators.builder(
+    name="Conversation resolution",
+    evaluation_settings_id=settings.id,
+    scope="session",     # judge the whole session, not each trace
+    idle_seconds=120,    # score once the conversation has been quiet this long
+    alert_threshold=5,
+).publish()
+
+client.outcomes.report(
+    trace_id=trace_id,
+    outcome="reopened",
+    is_negative=True,
+    reason="Customer reopened the ticket within 3 days",
+)
+```
+
 See **[TRACING.md](TRACING.md)** for the complete Monitor guide.
 
 ---
 
 ## Self-host
 
-Prefer to run Trace/Evaluate/Monitor locally instead of the hosted dashboard — no account, bring your own LLM keys? This SDK ships a launcher for [AgentX-trace-eval](https://github.com/AgentX-ai/AgentX-trace-eval), a separate, portable governance engine:
+Prefer to run Trace/Evaluate/Monitor locally instead of the hosted dashboard - no account, bring your own LLM keys? This SDK ships a launcher for [AgentX-trace-eval](https://github.com/AgentX-ai/AgentX-trace-eval), a separate, portable governance engine:
 
 ```bash
 agentx-trace-eval --dev
@@ -259,22 +287,22 @@ export AGENTX_API_BASE_URL=http://localhost:4700/api/v1
 export AGENTX_API_KEY=<printed by agentx-trace-eval on first run>
 ```
 
-`agentx-trace-eval` isn't this SDK's own code — the engine itself is a separate, compiled binary, downloaded on demand rather than bundled into this package, so installing `agentx-python` doesn't get any heavier for the (much more common) case of just talking to the hosted AgentX API. See that repo's README for what's included, and `AGENTX_INSTALL_DIR`/`AGENTX_TRACE_EVAL_VERSION`/`AGENTX_TRACE_EVAL_SKIP_WEB` env vars to control where/what it installs.
+`agentx-trace-eval` isn't this SDK's own code - the engine itself is a separate, compiled binary, downloaded on demand rather than bundled into this package, so installing `agentx-python` doesn't get any heavier for the (much more common) case of just talking to the hosted AgentX API. See that repo's README for what's included, and `AGENTX_INSTALL_DIR`/`AGENTX_TRACE_EVAL_VERSION`/`AGENTX_TRACE_EVAL_SKIP_WEB` env vars to control where/what it installs.
 
 ---
 
 ## Agents & conversations
 
-Beyond evaluation, tracing, and monitoring, this SDK is also a client for AgentX's own hosted agents — build, chat with, and orchestrate them directly.
+Beyond evaluation, tracing, and monitoring, this SDK is also a client for AgentX's own hosted agents - build, chat with, and orchestrate them directly.
 
 ```python
 agent = client.list_agents()[0]
 conversation = agent.new_conversation()
 
-# Blocking — returns the full response once it's ready
+# Blocking - returns the full response once it's ready
 print(conversation.chat("What can you help me with?"))
 
-# Streaming — yields ChatResponse objects as the model produces them
+# Streaming - yields ChatResponse objects as the model produces them
 for chunk in conversation.chat_stream("Hello!"):
     if chunk.text:
         print(chunk.text, end="")
@@ -297,10 +325,10 @@ for chunk in workforce.chat_stream(conversation.id, "How can you help me with th
 
 ## Links
 
-- **Dashboard** — [app.agentx.so](https://app.agentx.so)
-- **Website** — [agentx.so](https://www.agentx.so/)
-- **PyPI** — [agentx-python](https://pypi.org/project/agentx-python/)
-- **Tracing docs** — [TRACING.md](TRACING.md)
-- **Evaluations docs** — [EVALUATIONS.md](EVALUATIONS.md)
-- **Monitor docs** — [docs.agentx.so/sdk/monitor](https://docs.agentx.so/sdk/monitor)
-- **Self-host** — [AgentX-trace-eval](https://github.com/AgentX-ai/AgentX-trace-eval)
+- **Dashboard** - [app.agentx.so](https://app.agentx.so)
+- **Website** - [agentx.so](https://www.agentx.so/)
+- **PyPI** - [agentx-python](https://pypi.org/project/agentx-python/)
+- **Tracing docs** - [TRACING.md](TRACING.md)
+- **Evaluations docs** - [EVALUATIONS.md](EVALUATIONS.md)
+- **Monitor docs** - [docs.agentx.so/sdk/monitor](https://docs.agentx.so/sdk/monitor)
+- **Self-host** - [AgentX-trace-eval](https://github.com/AgentX-ai/AgentX-trace-eval)

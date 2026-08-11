@@ -83,7 +83,7 @@ class AgentXCrewObserver:
             # _merge_child_run here: _build_steps_from_timings/_build_steps_evenly_divided both
             # build it from the exact same per-task loop as execution_steps (no separate timing of
             # its own), so passing both would double-emit each task as two child spans. No
-            # `return` here (this whole method body runs inside the try's `finally`) — an
+            # `return` here (this whole method body runs inside the try's `finally`) - an
             # explicit return/break/continue in a finally block silently swallows any exception
             # propagating from crew.kickoff() above.
             with self._tracer.trace(self._name, metadata=self._metadata, session_id=self._session_id) as span:
@@ -102,16 +102,16 @@ class AgentXCrewObserver:
         Register temporary, additive listeners on CrewAI's event bus to
         capture each task's real start/end wall-clock time, keyed by
         ``task_id`` (correct even when CrewAI runs tasks concurrently via
-        ``async_execution=True`` — unlike attributing the most-recently-
+        ``async_execution=True`` - unlike attributing the most-recently-
         started task, which would misattribute end times under overlap).
 
         Returns ``(task_timings, unregister)``. ``task_timings`` stays empty
         (and ``unregister`` is a no-op) on CrewAI versions that predate the
-        ``crewai.events`` module — callers should fall back to the
+        ``crewai.events`` module - callers should fall back to the
         evenly-divided approximation in that case.
 
         Uses ``crewai_event_bus.on()``/``.off()`` directly rather than
-        ``scoped_handlers()`` — the latter temporarily disables *every*
+        ``scoped_handlers()`` - the latter temporarily disables *every*
         other registered listener (including the user's own and CrewAI's
         built-in ones) for the duration of the `with` block, which isn't
         what we want for a handler meant to run alongside them.
@@ -174,7 +174,7 @@ class AgentXCrewObserver:
 
         for i, timing in enumerate(ordered):
             # Best-effort positional correlation to tasks_output for the raw
-            # output text — CrewOutput.tasks_output carries no task id to
+            # output text - CrewOutput.tasks_output carries no task id to
             # match on directly. Accurate for the default sequential
             # process, where output order matches start order; for
             # hierarchical/concurrent crews a task could pair with the wrong
@@ -236,7 +236,7 @@ class AgentXCrewObserver:
         """Return a context-manager span for manual kickoff wrapping.
 
         Pass ``sync=True`` to send synchronously so ``span.trace_id`` is populated once the
-        block exits — e.g. to attach the trace to an evaluation result. See ``Tracer.trace()``.
+        block exits - e.g. to attach the trace to an evaluation result. See ``Tracer.trace()``.
         """
         from agentx.tracing.tracer import _TraceSpan
 

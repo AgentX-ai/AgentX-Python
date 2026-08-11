@@ -80,27 +80,27 @@ class _TraceSpan:
         self._framework = framework
         self._model = model
         self._session_id = session_id
-        # Disambiguator for when `name` alone isn't enough — pass an already-known agent id (e.g.
+        # Disambiguator for when `name` alone isn't enough - pass an already-known agent id (e.g.
         # from a prior GET /agents lookup) to pin this trace to that exact agent. None (the
         # default) resolves from `name` alone server-side, one stable agent per distinct name.
         self._agent_id = agent_id
         # When True, __exit__ sends synchronously (blocking) instead of enqueueing, so trace_id
-        # is populated by the time the `with` block exits — see Tracer.trace()'s sync param.
+        # is populated by the time the `with` block exits - see Tracer.trace()'s sync param.
         self._sync = sync
         self._trace_id: Optional[str] = None
 
-        # Real span hierarchy — every span always gets an id and links to its real parent (if
+        # Real span hierarchy - every span always gets an id and links to its real parent (if
         # any) and a shared session_id, the same model AgentX's OTel ingestion path uses. A
         # nested `with tracer.trace(...)` block, or any auto-instrumented call made while this
         # span is active (a patched Anthropic/OpenAI/Google GenAI/LiteLLM client, or a framework
-        # integration like AgentXCallbackHandler), becomes its own linked child-span row — see
+        # integration like AgentXCallbackHandler), becomes its own linked child-span row - see
         # __enter__/_merge_child_run/child_span.
         self._span_id = uuid4().hex
         self._parent_span_id: Optional[str] = None
-        # Numbers auto-named "LLM Call N"/"Retrieval N" child spans — see _merge_child_run.
+        # Numbers auto-named "LLM Call N"/"Retrieval N" child spans - see _merge_child_run.
         self._child_span_count = 0
         # Monitor: check this trace against patterns immediately on ingest, no dashboard profile
-        # required. pattern_ids (if given) fully defines what's checked — only those patterns run,
+        # required. pattern_ids (if given) fully defines what's checked - only those patterns run,
         # the built-in checks are skipped. See Tracer.trace()'s monitor/pattern_ids params.
         self._monitor = monitor
         self._pattern_ids = pattern_ids
@@ -114,15 +114,15 @@ class _TraceSpan:
 
         self._captured_model: Optional[str] = None
         # Adopted from a merged child run (e.g. AgentXCallbackHandler) when this span itself
-        # wasn't opened with an explicit framework= — see _merge_child_run below.
+        # wasn't opened with an explicit framework= - see _merge_child_run below.
         self._captured_framework: Optional[str] = None
         self._input_tokens: int = 0
         self._output_tokens: int = 0
-        # Subsets of _input_tokens (not additional tokens) — a prompt-caching write/read, when the
+        # Subsets of _input_tokens (not additional tokens) - a prompt-caching write/read, when the
         # provider reports one. See _record_llm_call/child_span for where these get populated.
         self._cache_read_tokens: int = 0
         self._cache_write_tokens: int = 0
-        # Guards _merge_child_run — with Tracer.use_span(), multiple threads
+        # Guards _merge_child_run - with Tracer.use_span(), multiple threads
         # (e.g. a ThreadPoolExecutor) can merge into this span concurrently.
         self._merge_lock = threading.Lock()
 
@@ -177,13 +177,13 @@ class _TraceSpan:
 
     @property
     def span_id(self) -> str:
-        """This span's id — usable to parent a further span via child_span() or an explicit
+        """This span's id - usable to parent a further span via child_span() or an explicit
         session_id/parent chain."""
         return self._span_id
 
     @property
     def trace_id(self) -> Optional[str]:
-        """The ingested trace's id — only populated once this span has exited AND it was opened
+        """The ingested trace's id - only populated once this span has exited AND it was opened
         with ``tracer.trace(..., sync=True)``. ``None`` for the default (async/enqueued) mode,
         since there's nothing to wait on for a same-call id."""
         return self._trace_id
@@ -208,7 +208,7 @@ class _TraceSpan:
         cache_read_tokens: Optional[int] = None,
         cache_write_tokens: Optional[int] = None,
     ) -> None:
-        """Record one LLM-call child span (e.g. one patched Anthropic call) under this span —
+        """Record one LLM-call child span (e.g. one patched Anthropic call) under this span -
         name left unset so _merge_child_run auto-numbers it "LLM Call N"."""
         self._merge_child_run(
             execution_steps=[{
@@ -252,11 +252,11 @@ class _TraceSpan:
     ) -> "_TraceSpan":
         """
         Send one real child-span row parented to this span, with explicit timing (the caller's
-        own recorded start/end, not wall-clock time.time() at call time) — the
+        own recorded start/end, not wall-clock time.time() at call time) - the
         AgentXCallbackHandler / _merge_child_run counterpart for integrations that already track
         their own real per-step identity and timing (LangChain's run_id/parent_run_id,
         LlamaIndex's parent_id, the OpenAI Agents SDK's own span objects) and want to parent a new
-        child under a specific span they're holding a reference to — not just whatever's on top of
+        child under a specific span they're holding a reference to - not just whatever's on top of
         the tracer's thread-local active-span stack.
 
         Returns the child span (its ``.span_id`` can parent a further-nested grandchild via
@@ -286,7 +286,7 @@ class _TraceSpan:
             else None
         )
         # Wire dict built directly (not via Tracer._send()) so this bypasses that method's
-        # pending-tool-call drain — see Tracer._dispatch's docstring for why a child send must not
+        # pending-tool-call drain - see Tracer._dispatch's docstring for why a child send must not
         # consume queue entries meant for a sibling or the outer span.
         wire: Dict[str, Any] = {"name": name}
         if input is not None:
@@ -338,12 +338,12 @@ class _TraceSpan:
     ) -> None:
         """
         Explode a whole auto-instrumented sub-run (e.g. one top-level LangChain
-        chain/agent/retriever invocation) into real child-span rows — one per step, tool call,
-        and retrieval — parented to this span, instead of it becoming its own independent trace.
+        chain/agent/retriever invocation) into real child-span rows - one per step, tool call,
+        and retrieval - parented to this span, instead of it becoming its own independent trace.
         Also adopts a reasonable input/output/model/token summary onto this span itself, so it
         stays useful even though its own detail now lives entirely in the child rows below it.
         tool_calls entries here carry no start/end timing (only latency_ms, see callers e.g.
-        langchain.py) — their child span falls back to offset-0 positioning in the tree panel;
+        langchain.py) - their child span falls back to offset-0 positioning in the tree panel;
         execution_steps (LLM calls) always carry real timing and position correctly.
         """
         with self._merge_lock:
@@ -364,7 +364,7 @@ class _TraceSpan:
                 )
             for tc in tool_calls or []:
                 # Some callers' tool_calls dicts (e.g. langchain.py's, which sets these on the
-                # same dict for exactly this reason — see its on_tool_end) already carry real
+                # same dict for exactly this reason - see its on_tool_end) already carry real
                 # start_time/end_time; prefer those over latency_ms alone when both know duration
                 # since they also let this child span position correctly in the tree panel
                 # instead of defaulting to offset 0.
@@ -380,7 +380,7 @@ class _TraceSpan:
                 # wire payload on __exit__ (see tool_calls=self.tool_calls or None below). The
                 # child span above is only for the trace detail view's span tree; the engine's
                 # built-in "Tool failure" Monitor check reads *this* flat list specifically,
-                # looking for a `success: false` entry — a child span row has no such field, so
+                # looking for a `success: false` entry - a child span row has no such field, so
                 # without this a failed tool call recorded via a framework integration (e.g.
                 # langchain.py's on_tool_error) would silently never trip that check.
                 self.tool_calls.append({
@@ -454,7 +454,7 @@ class _TraceSpan:
     def _wrap_sync(self, fn: F) -> F:
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
-            # A fresh span per call (not `self` reused across every call the decorator wraps) —
+            # A fresh span per call (not `self` reused across every call the decorator wraps) -
             # `self` here is only ever the one template object tracer.trace(...) returned at
             # decoration time, so reusing it directly would give every invocation the same
             # span_id/timing. Built via tracer.trace(...) (not the constructor directly) so it
@@ -481,7 +481,7 @@ class _TraceSpan:
     def _wrap_async(self, fn: F) -> F:
         @functools.wraps(fn)
         async def wrapper(*args, **kwargs):
-            # See _wrap_sync's comment — same "fresh span per call" reasoning applies here.
+            # See _wrap_sync's comment - same "fresh span per call" reasoning applies here.
             span = self._tracer.trace(
                 self.name, metadata=self._metadata, framework=self._framework, model=self._model,
                 session_id=self._session_id,
@@ -502,7 +502,7 @@ class _TraceSpan:
 
 
 class _RetrievalRecorder:
-    """Handle yielded by ``Tracer.trace_retrieval()`` — set ``doc_count``/``output`` inside the block."""
+    """Handle yielded by ``Tracer.trace_retrieval()`` - set ``doc_count``/``output`` inside the block."""
 
     def __init__(self) -> None:
         self.doc_count: Optional[int] = None
@@ -510,29 +510,33 @@ class _RetrievalRecorder:
 
 
 class _ToolCallRecorder:
-    """Handle yielded by ``Tracer.trace_tool_call()`` — set ``output`` inside the block."""
+    """Handle yielded by ``Tracer.trace_tool_call()`` - set ``output`` inside the block.
+    ``success``/``error`` may be set manually; an exception escaping the block sets them
+    automatically (success False, error str(exc)) before propagating."""
 
     def __init__(self) -> None:
         self.output: Any = None
+        self.success: Optional[bool] = None
+        self.error: Optional[str] = None
 
 
 class Tracer:
     """
     Production tracer attached to ``AgentX.tracer``.
 
-    Usage — decorator::
+    Usage - decorator::
 
         @agentx.tracer.trace("my-agent")
         def run(query: str) -> str:
             ...
 
-    Usage — context manager::
+    Usage - context manager::
 
         with agentx.tracer.trace("my-agent", input={"query": q}) as span:
             result = call_agent(q)
             span.output = result
 
-    Usage — async::
+    Usage - async::
 
         @agentx.tracer.trace("my-agent")
         async def run(query: str) -> str:
@@ -545,7 +549,7 @@ class Tracer:
         self._local = threading.local()
 
     # ------------------------------------------------------------------
-    # Active-span stack (per thread) — lets auto-instrumented integrations
+    # Active-span stack (per thread) - lets auto-instrumented integrations
     # (e.g. patch_anthropic_client) detect they're running inside a
     # `with tracer.trace(...)` block and attach to it as an LLM-call step
     # instead of sending their own independent trace.
@@ -581,7 +585,7 @@ class Tracer:
         duration of this block, on *this* thread. The active-span stack is
         thread-local, so work submitted to a ``ThreadPoolExecutor`` or run on
         any other thread doesn't automatically see a span opened on the
-        calling thread — wrap the worker function body in this to attach it::
+        calling thread - wrap the worker function body in this to attach it::
 
             with tracer.trace("orchestrator") as span:
                 def worker():
@@ -591,7 +595,7 @@ class Tracer:
                 with ThreadPoolExecutor(max_workers=2) as ex:
                     ex.submit(worker).result()
 
-        Safe to call from multiple threads concurrently for the same span —
+        Safe to call from multiple threads concurrently for the same span -
         each thread pushes/pops on its own stack.
         """
         self._push_active_span(span)
@@ -606,30 +610,64 @@ class Tracer:
         *,
         input: Any = None,
         output: Any = None,
+        success: Optional[bool] = None,
+        error: Optional[str] = None,
         latency_ms: Optional[int] = None,
         start_time: Optional[float] = None,
         end_time: Optional[float] = None,
     ) -> None:
         """
         Manually record a tool call that an auto-instrumented framework
-        integration can't see — e.g. a hand-rolled Anthropic/OpenAI tool-use
+        integration can't see - e.g. a hand-rolled Anthropic/OpenAI tool-use
         loop where the tool executes in plain Python between two
         ``messages.create()`` calls. Sent as a real child-span row of the active span (see
         ``current_span``) immediately; queued onto the next trace's plain ``tool_calls`` list if
         there's no active span to attach a child to.
+
+        ``success``/``error`` mark a failed call. ``success=False`` is what the engine's built-in
+        "Tool failure" Monitor check and the dashboard's Tool quality column both read; leaving
+        ``success`` unset means "unknown" and the dashboard falls back to its output-text
+        heuristic instead of assuming the call passed.
         """
         active_span = self.current_span
         if active_span is not None:
             active_span.child_span(
-                name, start_time=start_time, end_time=end_time, duration_ms=latency_ms, input=input, output=output
+                name,
+                start_time=start_time,
+                end_time=end_time,
+                duration_ms=latency_ms,
+                input=input,
+                output=output,
+                error=error,
             )
+            # The child span above is only for the trace detail's span tree - the engine's
+            # built-in "Tool failure" check and the dashboard's Tool quality column read the
+            # ROOT trace's flat tool_calls list, so a summary lands there too. Same dual-write
+            # _merge_child_run already does for framework-integration tool calls, and the reason
+            # a failed trace_tool_call() used to be invisible to both surfaces.
+            summary: Dict[str, Any] = {
+                "name": name,
+                "input": _safe_serialize(input) if input is not None else None,
+                "output": _safe_serialize(output) if output is not None else None,
+                "latency_ms": latency_ms,
+            }
+            if success is not None:
+                summary["success"] = success
+            if error is not None:
+                summary["error"] = error
+            active_span.tool_calls.append(summary)
             return
-        self._pending_tool_calls.append({
+        pending: Dict[str, Any] = {
             "name": name,
             "input": _safe_serialize(input) if input is not None else None,
             "output": _safe_serialize(output) if output is not None else None,
             "latency_ms": latency_ms,
-        })
+        }
+        if success is not None:
+            pending["success"] = success
+        if error is not None:
+            pending["error"] = error
+        self._pending_tool_calls.append(pending)
 
     @contextmanager
     def trace_tool_call(self, name: str, *, input: Any = None) -> Iterator["_ToolCallRecorder"]:
@@ -640,17 +678,29 @@ class Tracer:
             with tracer.trace_tool_call("policy_lookup", input=topic) as t:
                 result = policy_lookup(topic)
                 t.output = result
+
+        An exception escaping the block records the call as failed (``success=False`` plus the
+        error text - what the engine's "Tool failure" check and the dashboard's Tool quality
+        column read) and then propagates unchanged.
         """
         start_t = time.time()
         recorder = _ToolCallRecorder()
         try:
             yield recorder
+        except BaseException as exc:
+            if recorder.success is None:
+                recorder.success = False
+            if recorder.error is None:
+                recorder.error = str(exc)
+            raise
         finally:
             end_t = time.time()
             self.record_tool_call(
                 name,
                 input=input,
                 output=recorder.output,
+                success=recorder.success,
+                error=recorder.error,
                 latency_ms=int((end_t - start_t) * 1000),
                 start_time=start_t,
                 end_time=end_t,
@@ -669,9 +719,9 @@ class Tracer:
     ) -> None:
         """
         Manually record a knowledge-base / vector-store retrieval that an
-        auto-instrumented framework integration can't see on its own — e.g. a
+        auto-instrumented framework integration can't see on its own - e.g. a
         hand-rolled RAG lookup wrapped around a raw Anthropic/OpenAI call or a
-        CrewAI kickoff. Sent as a real child-span row of the active span (see ``current_span``) —
+        CrewAI kickoff. Sent as a real child-span row of the active span (see ``current_span``) -
         requires an enclosing ``with tracer.trace(...)`` block; a no-op (nothing to attach a child
         to) if called outside one.
         """
@@ -728,7 +778,7 @@ class Tracer:
         context manager.
 
         Nested calls link as real parent/child span rows (the same model AgentX's OTel ingestion
-        path uses), grouped by a shared session_id — a multi-step run shows up as a real tree in
+        path uses), grouped by a shared session_id - a multi-step run shows up as a real tree in
         the trace dialog's span panel. Nesting is automatic: any `with tracer.trace(...)` opened
         while another is already active becomes its child, and so does every auto-instrumented
         call made while a span is active (a patched Anthropic/OpenAI/Google GenAI/LiteLLM client,
@@ -738,10 +788,10 @@ class Tracer:
                 reply = call_llm(...)  # becomes its own child-span row
                 span.output = reply
 
-        By default the trace is queued and sent on a background thread — fire-and-forget, never
+        By default the trace is queued and sent on a background thread - fire-and-forget, never
         blocks the caller, but there's no way to learn the resulting trace_id. Pass ``sync=True``
         to send it synchronously instead (blocks until ingested) so ``span.trace_id`` is populated
-        once the ``with`` block exits — e.g. to attach the trace to an evaluation result::
+        once the ``with`` block exits - e.g. to attach the trace to an evaluation result::
 
             with client.tracer.trace("support_agent_call", framework="openai", sync=True) as span:
                 resp = call_llm(...)
@@ -761,10 +811,10 @@ class Tracer:
             with client.tracer.trace("support_agent_call", monitor=True, pattern_ids=[pattern.id]) as span:
                 span.output = call_llm(...)
 
-        ``agent_id`` disambiguates when ``name`` alone isn't enough — pass an already-known agent
+        ``agent_id`` disambiguates when ``name`` alone isn't enough - pass an already-known agent
         id (e.g. one you've seen in the dashboard's Overview tab, or from a direct ``GET /agents``
         call) to pin this trace to that exact agent instead of resolving by name. Omit it (the
-        default) and this resolves from ``name`` alone — one stable agent per distinct name,
+        default) and this resolves from ``name`` alone - one stable agent per distinct name,
         created on first use::
 
             with client.tracer.trace("support-agent", agent_id="ag_123", sync=True) as span:
@@ -861,7 +911,7 @@ class Tracer:
             for tc in run.test_cases:
                 score = _process_case(tc)
                 if score.gate_fired:
-                    # failFast triggered — run already finalized server-side
+                    # failFast triggered - run already finalized server-side
                     result = self.get_ci_run(run.run_id)
                     final = CIRunResult(
                         run_id=run.run_id,
@@ -955,7 +1005,7 @@ class Tracer:
 
         Calls ``POST /ingest/traces/{trace_id}/evaluate`` synchronously and
         returns the scoring result. The trace's recorded input/output are used
-        as-is — the agent is NOT re-run.
+        as-is - the agent is NOT re-run.
 
         Args:
             trace_id:       ID of a trace ingested via ``trace(..., sync=True)``
@@ -1022,25 +1072,20 @@ class Tracer:
 
         pending_tool_calls, self._pending_tool_calls = self._pending_tool_calls, []
         if pending_tool_calls:
-            wire["tool_calls"] = list(wire.get("tool_calls") or []) + [
-                {
-                    "name": t["name"],
-                    "input": t["input"],
-                    "output": t["output"],
-                    "latency_ms": t["latency_ms"],
-                }
-                for t in pending_tool_calls
-            ]
+            # Passed through whole rather than re-projected field by field: record_tool_call may
+            # have attached success/error (the fields the engine's tool-failure check reads), and
+            # a projection that predates them would silently strip exactly the failure evidence.
+            wire["tool_calls"] = list(wire.get("tool_calls") or []) + [dict(t) for t in pending_tool_calls]
 
         return self._dispatch(wire, sync=sync)
 
     def _dispatch(self, wire: Dict[str, Any], *, sync: bool = False) -> Optional[str]:
         """
-        Enqueue (or, if ``sync``, synchronously send) an already wire-shaped payload — the tail
+        Enqueue (or, if ``sync``, synchronously send) an already wire-shaped payload - the tail
         end of ``_send()``, split out so ``_TraceSpan.child_span()`` can post a child-span row
         directly without going through ``_send()``'s pending-tool-call drain above. That drain
         attaches ``tracer.record_tool_call()`` queue entries (only reached when there's no active
-        span to attach a real child span to) to "whatever this tracer sends next" — correct when
+        span to attach a real child span to) to "whatever this tracer sends next" - correct when
         there's exactly one `_send()` per top-level span, but a span with children triggers
         several child sends during its own lifetime, and a pending item recorded for the outer
         span must not get silently attached to an unrelated child span's row instead.

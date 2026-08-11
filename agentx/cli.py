@@ -1,5 +1,5 @@
 """
-`agentx-trace-eval` — thin launcher for AgentX's self-hostable governance engine (Trace,
+`agentx-trace-eval` - thin launcher for AgentX's self-hostable governance engine (Trace,
 Evaluate, Monitor), published separately at github.com/AgentX-ai/AgentX-trace-eval (a Go CLI
 wrapping a Bun-compiled TypeScript engine, not Python). That compiled engine binary is tens of
 megabytes; most `pip install agentx-python` installs are just this SDK talking to the hosted

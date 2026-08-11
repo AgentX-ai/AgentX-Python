@@ -7,7 +7,7 @@ Usage::
 
     processor = AgentXTracingProcessor(agentx.tracer)
 
-    # Register once at startup — affects all agent runs in the process
+    # Register once at startup - affects all agent runs in the process
     from agents import add_trace_processor
     add_trace_processor(processor)
 
@@ -55,7 +55,7 @@ def _extract_text(output: Any) -> Optional[str]:
 
     for item in reversed(output):
         if not isinstance(item, dict):
-            # Could be a pydantic model — try .text or .content
+            # Could be a pydantic model - try .text or .content
             text = getattr(item, "text", None) or getattr(item, "content", None)
             if text and isinstance(text, str):
                 return text
@@ -137,7 +137,7 @@ class AgentXTracingProcessor:
         trace_id = getattr(trace, "trace_id", None) or str(id(trace))
         # Held directly (not relied on via tracer.current_span) since the Agents SDK's own
         # callbacks aren't guaranteed to fire on the same thread/async context throughout a
-        # trace's lifetime — on_span_end below calls child_span() on this exact reference,
+        # trace's lifetime - on_span_end below calls child_span() on this exact reference,
         # sidestepping the thread-local active-span stack entirely.
         root_span = self._tracer.trace(
             getattr(trace, "name", "openai-agent"),
@@ -163,7 +163,7 @@ class AgentXTracingProcessor:
         if state is None:
             return
         # This trace's own detail already went out as child-span rows via child_span() in
-        # on_span_end — this just closes the root with a summary input/output/model/error/tokens,
+        # on_span_end - this just closes the root with a summary input/output/model/error/tokens,
         # the same "adopt into self" role _merge_child_run plays for its own callers.
         root_span = state["root_span"]
         root_span.input = state.get("input")
@@ -190,7 +190,7 @@ class AgentXTracingProcessor:
         state = self._spans[trace_id]
         span_type = getattr(span_data, "type", None)
 
-        # `TracingProcessor` has no dedicated error callback — a span's
+        # `TracingProcessor` has no dedicated error callback - a span's
         # failure lives on `span.error` (a `SpanError | None`) instead.
         # First error wins: one failed span is enough to flag the trace.
         span_error = getattr(span, "error", None)
@@ -217,7 +217,7 @@ class AgentXTracingProcessor:
             if not state["model"] and call_model:
                 state["model"] = call_model
 
-            # Token counts — usage is a dict with "input_tokens" / "output_tokens"
+            # Token counts - usage is a dict with "input_tokens" / "output_tokens"
             usage = getattr(span_data, "usage", None)
             call_input_tokens = usage.get("input_tokens") if isinstance(usage, dict) else None
             call_output_tokens = usage.get("output_tokens") if isinstance(usage, dict) else None
@@ -226,7 +226,7 @@ class AgentXTracingProcessor:
             if call_output_tokens is not None:
                 state["output_tokens"] += int(call_output_tokens)
 
-            # Execution step — a real child span of this trace's root.
+            # Execution step - a real child span of this trace's root.
             if t0 is not None and t1 is not None:
                 state["llm_call_count"] += 1
                 state["root_span"].child_span(
@@ -241,7 +241,7 @@ class AgentXTracingProcessor:
                 )
 
         elif span_type == "response":
-            # Responses API path — extract from the response object
+            # Responses API path - extract from the response object
             response = getattr(span_data, "response", None)
             call_input = None
             call_output = None
@@ -275,7 +275,7 @@ class AgentXTracingProcessor:
                     state["input_tokens"] += int(call_input_tokens)
                 if call_output_tokens is not None:
                     state["output_tokens"] += int(call_output_tokens)
-            # Execution step — a real child span of this trace's root.
+            # Execution step - a real child span of this trace's root.
             if t0 is not None and t1 is not None:
                 state["llm_call_count"] += 1
                 state["root_span"].child_span(
@@ -290,7 +290,7 @@ class AgentXTracingProcessor:
                 )
 
         elif span_type == "function":
-            # Tool / function call — a real child span of this trace's root.
+            # Tool / function call - a real child span of this trace's root.
             latency = _span_latency_ms(span)
             tool_output = str(span_data.output) if span_data.output is not None else None
             state["root_span"].child_span(
