@@ -311,7 +311,7 @@ reaches your agent through that one explicit, dashboard-only write. Your agent's
 `metadata.version` as `<promptName>@v<N>` (shown above) means the dataset's **Compare versions**
 dialog also tells you whether the published rewrite actually scored better, no separate comparison
 view needed. Full details, including the judge-key-free `improve-prompt` Claude Code skill: see
-[self-host's Prompt registry docs](https://docs.agentx.so/self-host#prompt-registry).
+[self-host's Prompt registry docs](https://docs.agentx.so/improve/prompt-management).
 
 ---
 
@@ -672,6 +672,33 @@ report.statistics.rouge_score
 Cases where `expected_results` is empty or the agent returned an error are skipped from the average, so a sparse dataset still produces a meaningful score. If a toggle wasn't on for the dataset, that property returns `None`.
 
 These four metrics also appear per-model (as `average_bleu_score`/`average_rouge_score` alongside `average_vector_similarity`/`average_jaccard_similarity`) when a dataset selects multiple comparison models, in each model's row of `report.sovereignty_index.models`.
+
+### CI gate (self-host)
+
+A finalized run can pass/fail a CI job. `report.gate(...)` checks the run's average rating, prints per-check verdicts into the CI log, and returns a `GateResult` - the caller decides the exit code:
+
+```python
+import sys
+
+report = (
+    client.evaluations
+    .run(dataset_id="evds_…", subject={"kind": "custom_agent", "framework": "raw_python"})
+    .execute(my_agent)   # in CI, this is the PR's version of your agent
+    .finalize()
+)
+
+gate = report.gate(fail_under=7, no_regression=True, caller="github-actions")
+sys.exit(gate.exit_code)   # 0 = merge, 1 = block
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `fail_under` | `float` | none | Fail when the run's average rating is below this floor. Works from the very first run |
+| `no_regression` | `bool` | `False` | Fail when the average dropped more than `tolerance` below the dataset's previous completed run. Needs run history, so point CI at a persistent self-host instance |
+| `tolerance` | `float` | `0.5` | Slack for `no_regression` - judge scores are noisy, and an exact comparison would flake builds on variance rather than regressions |
+| `caller` | `str` | `"sdk"` | Free label shown in the dashboard's CI Gates history ("github-actions", ...) |
+
+At least one of `fail_under` / `no_regression` is required. `GateResult` exposes `.passed`, `.exit_code` (0/1), `.average_rating`, `.baseline_average`, `.baseline_run_id`, and `.checks` (the per-check verdict list). Every `gate()` call is recorded into the dashboard's CI Gates tab by default; use the lower-level `client.evaluations.gate_run(run_id, ..., record=False)` for an unrecorded check. See [self-host's CI docs](https://docs.agentx.so/integrations/self-host-ci) for the GitHub Actions recipe.
 
 ### AI analysis report
 

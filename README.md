@@ -127,7 +127,9 @@ client.evaluations.run(
 ).execute(my_agent_fn)
 ```
 
-See [Prompt registry](EVALUATIONS.md#prompt-registry) in the full guide, or [self-host's docs](https://docs.agentx.so/self-host#prompt-management) for the "Suggest improvement" dashboard flow (self-host only - no hosted-SaaS equivalent yet).
+See [Prompt registry](EVALUATIONS.md#prompt-registry) in the full guide, or [self-host's docs](https://docs.agentx.so/improve/prompt-management) for the "Suggest improvement" dashboard flow (self-host only - no hosted-SaaS equivalent yet).
+
+On self-host, a finalized run can also **gate a CI job**: `report.gate(fail_under=7, no_regression=True)` checks the run's average rating against an absolute floor and/or the dataset's previous run, prints per-check verdicts into the CI log, and returns an exit code - `sys.exit(gate.exit_code)` blocks the merge on regression. Recorded gates appear in the dashboard's CI Gates tab. See [self-host's CI docs](https://docs.agentx.so/integrations/self-host-ci) for the GitHub Actions recipe.
 
 See **[EVALUATIONS.md](EVALUATIONS.md)** for the full guide - dataset builder, framework adapters, similarity metrics, smoke testing, judge configuration, prompt registry, and the complete API reference.
 
@@ -249,7 +251,7 @@ evaluator = client.monitor.online_evaluators.builder(
 client.monitor.online_evaluators.ratings(evaluator.id, window="7d")
 ```
 
-An online evaluator can also judge **whole conversations** instead of single traces: pass `scope="session"` and the engine scores each multi-turn session once it's been idle for `idle_seconds`, re-scoring if the conversation resumes. And to close the loop with reality, `client.outcomes.report(...)` records what actually happened after the fact (a reopened ticket, a human confirmation) against a trace, feeding the dashboard's Judge Calibration view, which measures how often AgentX's automated verdicts agree with real outcomes. Both are self-host features.
+An online evaluator can also judge **whole conversations** instead of single traces: pass `scope="session"` and the engine scores each multi-turn session once it's been idle for `idle_seconds`, re-scoring if the conversation resumes. And to close the loop with reality, two ground-truth streams feed the dashboard's Judge Calibration view (which measures how often AgentX's automated verdicts agree with what actually happened): `client.outcomes.report(...)` for after-the-fact system results (a reopened ticket, a human confirmation), and `client.feedback.report(...)` for end-user votes forwarded from your own app's UI - a "down" raises a "Negative user feedback" signal directly, no sampling or judge call involved. All self-host features.
 
 ```python
 client.monitor.online_evaluators.builder(
@@ -265,6 +267,13 @@ client.outcomes.report(
     outcome="reopened",
     is_negative=True,
     reason="Customer reopened the ticket within 3 days",
+)
+
+client.feedback.report(
+    trace_id=trace_id,
+    rating="down",                            # "up" or "down"
+    comment="It never answered my question",  # optional, the user's own words
+    end_user_id=current_user.id,              # optional, opaque to AgentX
 )
 ```
 

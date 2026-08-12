@@ -265,6 +265,34 @@ class EvaluationsClient:
             "POST", f"/runs/{run_id}/finalize", json={"status": "completed"}
         )
 
+    def gate_run(
+        self,
+        run_id: str,
+        *,
+        fail_under: Optional[float] = None,
+        no_regression: bool = False,
+        tolerance: Optional[float] = None,
+        record: bool = True,
+        caller: Optional[str] = "sdk",
+    ) -> Dict[str, Any]:
+        # CI gate (self-host): pass/fail a finalized run against an absolute rating floor and/or
+        # the dataset's previous completed run. Recorded into gate history by default (the
+        # dashboard's CI page lists these); pass record=False for a preview that leaves no trace.
+        # `caller` is a free label shown in that history ("sdk", "github-actions", ...). See
+        # EvaluationRunContext.gate() for the CI-facing wrapper with printed verdicts.
+        params: Dict[str, Any] = {}
+        if fail_under is not None:
+            params["failUnder"] = fail_under
+        if no_regression:
+            params["noRegression"] = "true"
+        if tolerance is not None:
+            params["tolerance"] = tolerance
+        if record:
+            params["record"] = "true"
+            if caller:
+                params["caller"] = caller
+        return self._request("GET", f"/runs/{run_id}/gate", params=params)
+
     def analyze_run(
         self,
         run_id: str,

@@ -55,6 +55,23 @@ _ANALYSIS_LEVEL_LABELS = {
 _DEFAULT_JUDGE_MODEL = "gpt-5.5"
 
 
+class GateResult:
+    """Wire result of the CI gate (GET /runs/:id/gate) with attribute access for the fields a
+    CI script actually branches on."""
+
+    def __init__(self, data: Dict[str, Any]):
+        self.raw = data
+        self.passed: bool = bool(data.get("passed"))
+        self.average_rating: Optional[float] = data.get("averageRating")
+        self.baseline_average: Optional[float] = data.get("baselineAverage")
+        self.baseline_run_id: Optional[str] = data.get("baselineRunId")
+        self.checks: List[Dict[str, Any]] = data.get("checks", [])
+
+    @property
+    def exit_code(self) -> int:
+        return 0 if self.passed else 1
+
+
 class EvaluationRunContext:
     """
     Fluent builder returned by client.evaluations.run(...).
@@ -210,6 +227,42 @@ class EvaluationRunContext:
                 logger.error("Finalize failed: %s", exc)
         return self
 
+    def gate(
+        self,
+        *,
+        fail_under: Optional[float] = None,
+        no_regression: bool = False,
+        tolerance: Optional[float] = None,
+        caller: str = "sdk",
+    ) -> "GateResult":
+        """CI gate (self-host): pass/fail this finalized run so a CI job can block a merge.
+
+        ``fail_under`` fails the gate when the run's average rating is below the floor;
+        ``no_regression=True`` fails it when the average dropped more than ``tolerance``
+        (default 0.5, judge scores are noisy) below the dataset's previous completed run.
+        At least one check is required. Prints a CI-log-friendly verdict and returns a
+        :class:`GateResult` - the caller decides the exit code::
+
+            report = client.evaluations.run(...).execute(my_agent).finalize()
+            gate = report.gate(fail_under=7, no_regression=True)
+            if not gate.passed:
+                sys.exit(1)
+        """
+        data = self._client.gate_run(
+            self._run.run_id,
+            fail_under=fail_under,
+            no_regression=no_regression,
+            tolerance=tolerance,
+            caller=caller,
+        )
+        result = GateResult(data)
+        print()
+        for check in result.checks:
+            mark = green("✓") if check.get("passed") else red("✗")
+            print(f"  {mark}  [{check.get('check')}] {check.get('detail')}")
+        print(f"  {green('✓  GATE PASSED') if result.passed else red('✗  GATE FAILED')}")
+        return result
+
     # ------------------------------------------------------------------
     # Live rating stats - server-computed (Evaluate.liveStatistics), refreshed
     # from the response of each append_results()/finalize_run() call. Available
@@ -349,6 +402,32 @@ class EvaluationsRunner:
         the ``EvaluationRunContext`` that started it (e.g. from a separate
         script execution)."""
         return self._client.get_analysis_status(run_id)
+
+    def gate_run(
+        self,
+        run_id: str,
+        *,
+        fail_under: Optional[float] = None,
+        no_regression: bool = False,
+        tolerance: Optional[float] = None,
+        record: bool = True,
+        caller: Optional[str] = "sdk",
+    ) -> GateResult:
+        """CI-gate any finalized run by id - the standalone form of
+        ``EvaluationRunContext.gate()``, for gating a run created elsewhere or
+        re-checking one without re-running it (self-host only). Pass
+        ``record=False`` for a check that stays out of the dashboard's CI Gates
+        history."""
+        return GateResult(
+            self._client.gate_run(
+                run_id,
+                fail_under=fail_under,
+                no_regression=no_regression,
+                tolerance=tolerance,
+                record=record,
+                caller=caller,
+            )
+        )
 
     def run(
         self,

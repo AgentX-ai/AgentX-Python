@@ -60,6 +60,12 @@ class AgentX:
         # ground truth behind the dashboard's Judge Calibration card. Self-host only.
         self.outcomes = OutcomesClient(api_key=self.api_key)
 
+        from agentx.feedback import FeedbackClient
+
+        # Forward end-user votes ("up"/"down") on traced responses - a "down" raises a signal
+        # directly, and every vote feeds Judge Calibration alongside outcomes. Self-host only.
+        self.feedback = FeedbackClient(api_key=self.api_key)
+
         _ingest_client = IngestClient(
             api_key=self.api_key,
             sdk_version=VERSION,
