@@ -71,7 +71,7 @@ setup(
     url="https://github.com/AgentX-ai/AgentX-python",
     classifiers=[
         "Programming Language :: Python :: 3",
-        "License :: OSI Approved :: MIT License",
+        "License :: OSI Approved :: Apache Software License",
         "Operating System :: OS Independent",
     ],
     python_requires=">=3.6",

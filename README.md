@@ -2,7 +2,7 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/agentx-python)](https://pypi.org/project/agentx-python/)
 [![Python versions](https://img.shields.io/pypi/pyversions/agentx-python)](https://pypi.org/project/agentx-python/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 The official Python SDK for **[AgentX](https://app.agentx.so/)** - an evaluation, tracing, and monitoring framework for AI agents, plus a client for AgentX's own hosted agents.
 
