@@ -30,7 +30,12 @@ setup(
         # Thin launcher for the self-hostable governance engine (AgentX-ai/AgentX-trace-eval),
         # not this SDK itself, see agentx/cli.py's module docstring for why it lazily downloads
         # rather than bundling that engine in this package.
-        "console_scripts": ["agentx-trace-eval=agentx.cli:main"],
+        "console_scripts": [
+            "agentx-trace-eval=agentx.cli:main",
+            # Moveworks Data API -> AgentX traces sync (see agentx/integrations/moveworks.py) -
+            # a pull importer, since Moveworks agents run in their cloud with no in-process hook.
+            "agentx-moveworks=agentx.integrations.moveworks:cli_main",
+        ],
     },
     install_requires=[
         "urllib3>=1.26.11",
