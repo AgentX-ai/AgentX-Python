@@ -86,8 +86,18 @@ class DatasetBuilder:
         judge_guideline: Optional[str] = None,
         smoke_test_count: Optional[int] = None,
         smoke_test_guidance: Optional[str] = None,
+        expected_tools: Optional[List[str]] = None,
+        trajectory_match_mode: str = "strict",
     ) -> "DatasetBuilder":
         """Add a case. `judge_guideline` is optional grading guidance specific to this question.
+
+        `expected_tools` declares the tool calls a correct run of this case should make. When a
+        result links its trace (return `{"output": ..., "trace_id": span.trace_id}` from the
+        agent function), the engine matches the trace's actual tool-call sequence against it and
+        reports a pass/fail "Trajectory match" scorer row on the result. `trajectory_match_mode`
+        follows agentevals semantics: "strict" (same calls, same order), "unordered" (same calls,
+        any order), "superset" (all expected present, extras allowed), or "subset" (no unexpected
+        calls, missing allowed).
 
         `smoke_test_count`, when set (1-10), asks this question that many extra ways each
         evaluation run, LLM-paraphrased server-side, to catch agents that are brittle to phrasing
@@ -111,6 +121,8 @@ class DatasetBuilder:
             main["smokeTest"] = {"enabled": True, "count": smoke_test_count}
             if smoke_test_guidance:
                 main["smokeTest"]["guidance"] = smoke_test_guidance
+        if expected_tools:
+            main["expectedTrajectory"] = {"tools": expected_tools, "mode": trajectory_match_mode}
         self._payload["questions"].append(
             {
                 "main_question": main,

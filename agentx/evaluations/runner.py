@@ -272,6 +272,11 @@ class EvaluationRunContext:
     # ------------------------------------------------------------------
 
     @property
+    def run_id(self) -> str:
+        """The server-side run id - handy for fetching the run's full results afterwards."""
+        return self._run.run_id
+
+    @property
     def rated_count(self) -> int:
         """Number of submitted results that have received a rating so far."""
         return self._live_stats.rated_count if self._live_stats else 0

@@ -178,8 +178,13 @@ class AgentXAutoGenObserver:
             if input_tokens is not None or out_tokens is not None:
                 total_input_tokens += input_tokens or 0
                 total_output_tokens += out_tokens or 0
+                # Prefer the speaking agent's name (message.source) over a generic counter -
+                # in a multi-agent team the step sequence then reads as the actual
+                # agent-turn trajectory ("planner" -> "coder" -> "reviewer"), which is what
+                # trajectory evaluation cares about.
+                source = getattr(message, "source", None)
                 execution_steps.append({
-                    "name": f"LLM Call {len(execution_steps) + 1}",
+                    "name": str(source) if source else f"LLM Call {len(execution_steps) + 1}",
                     "duration_ms": (end_t - start_t) * 1000,
                     "start_time": start_t,
                     "end_time": end_t,

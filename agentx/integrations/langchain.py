@@ -231,6 +231,39 @@ def _extract_llm_output(response: "LLMResult") -> Optional[str]:
     return None
 
 
+# Nested chain runs that are plumbing, not agent structure - LCEL composition wrappers,
+# prompt/parse steps, and LangGraph's internal channel machinery. Skipped when deciding which
+# chain runs become "node" child spans; their LLM/tool descendants re-parent to the nearest
+# non-noise ancestor (see _emit_span_tree's resolve_parent walk).
+_NOISE_CHAIN_NAMES = frozenset({
+    "RunnableSequence",
+    "RunnableParallel",
+    "RunnableLambda",
+    "RunnableAssign",
+    "RunnablePick",
+    "RunnableBinding",
+    "RunnableWithFallbacks",
+    "RunnableWithMessageHistory",
+    "RunnableBranch",
+    "ChatPromptTemplate",
+    "PromptTemplate",
+    "StrOutputParser",
+    "JsonOutputParser",
+    "ToolsAgentOutputParser",
+    "OpenAIFunctionsAgentOutputParser",
+    "LangGraph",
+    "CompiledStateGraph",
+    "Prompt",
+    "_Exception",
+})
+
+_NOISE_CHAIN_PREFIXES = ("ChannelWrite", "ChannelRead", "Branch<", "RunnableParallel<", "_")
+
+
+def _is_noise_chain(name: str) -> bool:
+    return name in _NOISE_CHAIN_NAMES or name.startswith(_NOISE_CHAIN_PREFIXES)
+
+
 class AgentXCallbackHandler(BaseCallbackHandler):
     """
     LangChain callback handler that captures the top-level chain run and all
@@ -238,6 +271,11 @@ class AgentXCallbackHandler(BaseCallbackHandler):
 
     Compatible with AgentExecutor, LCEL chains, and LangGraph agents
     (``create_agent``, ``create_react_agent``).
+
+    The trace is a real span tree: LangGraph graph nodes (and named non-plumbing sub-chains)
+    become child spans, and each LLM call / tool call / retrieval becomes a span parented under
+    the node that ran it - so the engine's Execution Timeline shows the actual graph trajectory
+    (which nodes ran, in what order, and what each did), not a flat step list.
     """
 
     def __init__(
@@ -331,7 +369,122 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                 "retrieval_steps": pending,
                 "input_tokens": 0,
                 "output_tokens": 0,
+                # Graph structure captured under this top-level run: named nested chain runs
+                # (LangGraph nodes, sub-agents) keyed by run_id, and the FULL nested-chain
+                # parent map (noise chains included) so _emit_span_tree can walk through
+                # skipped plumbing runs to the nearest emitted ancestor.
+                "node_runs": {},
+                "chain_parents": {},
             }
+        else:
+            top = self._find_top_ancestor(parent_run_id)
+            if top is None:
+                return
+            state = self._runs.get(top)
+            if state is None:
+                return
+            name = kwargs.get("name") or (serialized or {}).get("name")
+            # LangGraph stamps its node runs with metadata.langgraph_node - trust that over the
+            # noise heuristic when present (a user's node could legitimately be named
+            # "RunnableLambda"-style by a wrapper).
+            run_meta = kwargs.get("metadata") or {}
+            is_node = bool(name) and (run_meta.get("langgraph_node") == name or not _is_noise_chain(str(name)))
+            with self._state_lock:
+                state["chain_parents"][run_id] = parent_run_id
+                if is_node:
+                    state["node_runs"][run_id] = {
+                        "name": str(name),
+                        "start": time.time(),
+                        "end": None,
+                        "input": _extract_input(inputs),
+                        "output": None,
+                        "error": None,
+                        "parent": parent_run_id,
+                    }
+
+    def _finalize_node(self, run_id: UUID, *, output: Any = None, error: Optional[str] = None) -> None:
+        """Close a nested chain run's node record (if it became one) with end time + result."""
+        top = self._find_top_ancestor(run_id)
+        if top is None:
+            return
+        state = self._runs.get(top)
+        if state is None:
+            return
+        with self._state_lock:
+            node = state.get("node_runs", {}).get(run_id)
+            if node is None:
+                return
+            node["end"] = time.time()
+            if output is not None:
+                node["output"] = output
+            if error is not None:
+                node["error"] = error
+
+    def _emit_span_tree(self, span, state: Dict[str, Any], tool_calls: List[Dict[str, Any]]) -> None:
+        """
+        Emit the recorded run as a hierarchical span tree under ``span``: node runs first (in
+        start order, parented to their nearest emitted ancestor), then every LLM call, tool
+        call, and retrieval parented under the node that ran it. Records whose parent chain is
+        entirely noise (or missing, e.g. pre-run retrievals) land directly under the root span.
+        """
+        emitted: Dict[Any, Any] = {}
+        chain_parents: Dict[Any, Any] = state.get("chain_parents", {})
+        node_runs: Dict[Any, Dict[str, Any]] = state.get("node_runs", {})
+
+        def resolve_parent(parent_id: Any):
+            seen: set = set()
+            current = parent_id
+            while current is not None and current not in seen:
+                seen.add(current)
+                if current in emitted:
+                    return emitted[current]
+                current = chain_parents.get(current)
+            return span
+
+        for run_id, node in sorted(node_runs.items(), key=lambda kv: kv[1]["start"]):
+            parent_span = resolve_parent(node.get("parent"))
+            emitted[run_id] = parent_span.child_span(
+                node["name"],
+                start_time=node["start"],
+                end_time=node.get("end") or node["start"],
+                input=node.get("input"),
+                output=node.get("output"),
+                error=node.get("error"),
+            )
+
+        llm_count = 0
+        for step in state.get("execution_steps", []):
+            llm_count += 1
+            resolve_parent(step.get("parent_run_id")).child_span(
+                step.get("name") or f"LLM Call {llm_count}",
+                start_time=step.get("start_time"),
+                end_time=step.get("end_time"),
+                duration_ms=step.get("duration_ms"),
+                input=step.get("input"),
+                output=step.get("output"),
+                model=step.get("model"),
+                input_tokens=step.get("inputTokenSize"),
+                output_tokens=step.get("outputTokenSize"),
+            )
+        for tc in tool_calls:
+            resolve_parent(tc.get("parent_run_id")).child_span(
+                tc.get("name") or "Tool call",
+                start_time=tc.get("start_time"),
+                end_time=tc.get("end_time"),
+                duration_ms=tc.get("latency_ms"),
+                input=tc.get("input"),
+                output=tc.get("output"),
+                error=None if tc.get("success", True) else str(tc.get("output") or "Tool call failed"),
+            )
+        for step in state.get("retrieval_steps", []):
+            resolve_parent(step.get("parent_run_id")).child_span(
+                step.get("name") or "Retrieval",
+                start_time=step.get("start_time"),
+                end_time=step.get("end_time"),
+                duration_ms=step.get("duration_ms"),
+                input=step.get("query"),
+                output=step.get("output"),
+            )
 
     def on_chain_end(
         self,
@@ -347,9 +500,13 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         # entries behind here would leak forever in a long-lived singleton
         # handler, since nothing else ever cleans up a non-top-level run_id.
         is_top = self._top_level.pop(run_id, None)
-        self._parents.pop(run_id, None)
         if not is_top:
+            # Close the node record before dropping this run's _parents entry - the top-ancestor
+            # walk inside _finalize_node still needs it.
+            self._finalize_node(run_id, output=_extract_output(outputs))
+            self._parents.pop(run_id, None)
             return
+        self._parents.pop(run_id, None)
         state = self._runs.pop(run_id, None)
         if state is None:
             return
@@ -369,16 +526,16 @@ class AgentXCallbackHandler(BaseCallbackHandler):
             # spanning several chain/agent/retriever calls) - fold this
             # top-level run into it instead of sending an independent trace.
             active_span._merge_child_run(
-                execution_steps=state["execution_steps"],
                 tool_calls=tool_calls,
-                retrieval_steps=state["retrieval_steps"],
                 input=state["input"],
                 output=output,
                 model=state.get("model"),
                 framework="langchain",
                 input_tokens=state["input_tokens"] or None,
                 output_tokens=state["output_tokens"] or None,
+                emit_steps=False,
             )
+            self._emit_span_tree(active_span, state, tool_calls)
         else:
             # Standalone usage (no enclosing `with tracer.trace()`): open a real root span for
             # this chain invocation and let _merge_child_run explode its accumulated
@@ -388,16 +545,16 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                 # see llamaindex.py's _send_trace for the identical fix and full rationale.
                 span._start = state["start"]
                 span._merge_child_run(
-                    execution_steps=state["execution_steps"],
                     tool_calls=tool_calls,
-                    retrieval_steps=state["retrieval_steps"],
                     input=state["input"],
                     output=output,
                     model=state.get("model"),
                     framework="langchain",
                     input_tokens=state["input_tokens"] or None,
                     output_tokens=state["output_tokens"] or None,
+                    emit_steps=False,
                 )
+                self._emit_span_tree(span, state, tool_calls)
 
     def on_chain_error(
         self,
@@ -409,9 +566,11 @@ class AgentXCallbackHandler(BaseCallbackHandler):
     ) -> None:
         # See on_chain_end's comment - pop for every chain run, not just top-level.
         is_top = self._top_level.pop(run_id, None)
-        self._parents.pop(run_id, None)
         if not is_top:
+            self._finalize_node(run_id, error=str(error))
+            self._parents.pop(run_id, None)
             return
+        self._parents.pop(run_id, None)
         state = self._runs.pop(run_id, None)
         if state is None:
             return
@@ -420,30 +579,30 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         if active_span is not None:
             active_span.set_error(str(error))
             active_span._merge_child_run(
-                execution_steps=state["execution_steps"],
                 tool_calls=state["tool_calls"],
-                retrieval_steps=state["retrieval_steps"],
                 input=state["input"],
                 model=state.get("model"),
                 framework="langchain",
                 input_tokens=state["input_tokens"] or None,
                 output_tokens=state["output_tokens"] or None,
+                emit_steps=False,
             )
+            self._emit_span_tree(active_span, state, state["tool_calls"])
         else:
             # See on_chain_end's matching branch - same standalone-usage handling.
             with self._tracer.trace(self._name, metadata=self._metadata, session_id=self._session_id) as span:
                 span._start = state["start"]
                 span.set_error(str(error))
                 span._merge_child_run(
-                    execution_steps=state["execution_steps"],
                     tool_calls=state["tool_calls"],
-                    retrieval_steps=state["retrieval_steps"],
                     input=state["input"],
                     model=state.get("model"),
                     framework="langchain",
                     input_tokens=state["input_tokens"] or None,
                     output_tokens=state["output_tokens"] or None,
+                    emit_steps=False,
                 )
+                self._emit_span_tree(span, state, state["tool_calls"])
 
     # ------------------------------------------------------------------
     # LLM lifecycle
@@ -545,6 +704,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                 if start_t is not None and top and top in self._runs:
                     steps = self._runs[top]["execution_steps"]
                     steps.append({
+                        "parent_run_id": parent_run_id,
                         "name": f"LLM Call {len(steps) + 1}",
                         "duration_ms": (end_t - start_t) * 1000,
                         "start_time": start_t,
@@ -592,6 +752,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         start_t = state["start"]
         latency_ms = int((end_t - start_t) * 1000)
         tool_call = {
+            "parent_run_id": parent_run_id,
             "name": state["tool_name"],
             "input": state["tool_input"],
             "output": str(output),
@@ -623,6 +784,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         end_t = time.time()
         start_t = state.get("start", end_t)
         tool_call = {
+            "parent_run_id": parent_run_id,
             "name": state.get("tool_name", "unknown"),
             "input": state.get("tool_input"),
             "output": f"ERROR: {error}",
@@ -669,6 +831,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         query: Optional[str] = state["query"] or None
         doc_count = len(documents) if hasattr(documents, "__len__") else None
         step: Dict[str, Any] = {
+            "parent_run_id": parent_run_id,
             "name": "Retrieval 1",  # renumbered below
             "duration_ms": (end_t - start_t) * 1000,
             "start_time": start_t,

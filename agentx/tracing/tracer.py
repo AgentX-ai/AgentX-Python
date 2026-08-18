@@ -338,6 +338,7 @@ class _TraceSpan:
         output_tokens: Optional[int] = None,
         cache_read_tokens: Optional[int] = None,
         cache_write_tokens: Optional[int] = None,
+        emit_steps: bool = True,
     ) -> None:
         """
         Explode a whole auto-instrumented sub-run (e.g. one top-level LangChain
@@ -348,9 +349,15 @@ class _TraceSpan:
         tool_calls entries here carry no start/end timing (only latency_ms, see callers e.g.
         langchain.py) - their child span falls back to offset-0 positioning in the tree panel;
         execution_steps (LLM calls) always carry real timing and position correctly.
+
+        ``emit_steps=False`` skips the flat child-span emission but keeps everything else (the
+        flat tool_calls mirror for the Monitor tool-failure check, and the summary adoption) -
+        for callers that emit their own HIERARCHICAL span tree instead (langchain.py's
+        _emit_span_tree parents steps under the graph node that ran them, rather than flat
+        under this span).
         """
         with self._merge_lock:
-            for step in execution_steps or []:
+            for step in [] if not emit_steps else (execution_steps or []):
                 self._child_span_count += 1
                 self.child_span(
                     step.get("name") or f"LLM Call {self._child_span_count}",
@@ -371,14 +378,16 @@ class _TraceSpan:
                 # start_time/end_time; prefer those over latency_ms alone when both know duration
                 # since they also let this child span position correctly in the tree panel
                 # instead of defaulting to offset 0.
-                self.child_span(
-                    tc.get("name") or "Tool call",
-                    start_time=tc.get("start_time"),
-                    end_time=tc.get("end_time"),
-                    duration_ms=tc.get("latency_ms"),
-                    input=tc.get("input"),
-                    output=tc.get("output"),
-                )
+                if emit_steps:
+                    self.child_span(
+                        tc.get("name") or "Tool call",
+                        start_time=tc.get("start_time"),
+                        end_time=tc.get("end_time"),
+                        duration_ms=tc.get("latency_ms"),
+                        input=tc.get("input"),
+                        output=tc.get("output"),
+                        error=None if tc.get("success", True) else str(tc.get("output") or "Tool call failed"),
+                    )
                 # Also mirror onto this span's own flat tool_calls list, sent in this span's own
                 # wire payload on __exit__ (see tool_calls=self.tool_calls or None below). The
                 # child span above is only for the trace detail view's span tree; the engine's
@@ -393,7 +402,7 @@ class _TraceSpan:
                     "latency_ms": tc.get("latency_ms"),
                     "success": tc.get("success", True),
                 })
-            for step in retrieval_steps or []:
+            for step in [] if not emit_steps else (retrieval_steps or []):
                 self._child_span_count += 1
                 self.child_span(
                     step.get("name") or f"Retrieval {self._child_span_count}",
