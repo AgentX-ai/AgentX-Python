@@ -99,9 +99,12 @@ class _TraceSpan:
         self._parent_span_id: Optional[str] = None
         # Numbers auto-named "LLM Call N"/"Retrieval N" child spans - see _merge_child_run.
         self._child_span_count = 0
-        # Monitor: check this trace against patterns immediately on ingest, no dashboard profile
-        # required. pattern_ids (if given) fully defines what's checked - only those patterns run,
-        # the built-in checks are skipped. See Tracer.trace()'s monitor/pattern_ids params.
+        # Monitor: True checks this trace against patterns immediately on ingest, no dashboard
+        # profile required; False explicitly OPTS OUT of every ingest-time check (patterns,
+        # built-ins, online/custom evaluators, topics) - what eval-run traces send, since the
+        # run's own evaluator already judges each case. None (default) leaves the server's
+        # standard behavior. pattern_ids (if given) fully defines what's checked. See
+        # Tracer.trace()'s monitor/pattern_ids params.
         self._monitor = monitor
         self._pattern_ids = pattern_ids
 
@@ -152,7 +155,7 @@ class _TraceSpan:
 
         self._trace_id = self._tracer._send(
             sync=self._sync,
-            monitor=self._monitor or None,
+            monitor=self._monitor,
             pattern_ids=self._pattern_ids,
             name=self.name,
             agent_id=self._agent_id,
@@ -769,7 +772,7 @@ class Tracer:
         model: Optional[str] = None,
         session_id: Optional[str] = None,
         sync: bool = False,
-        monitor: bool = False,
+        monitor: Optional[bool] = None,
         pattern_ids: Optional[List[str]] = None,
         agent_id: Optional[str] = None,
     ) -> _TraceSpan:
@@ -799,7 +802,9 @@ class Tracer:
             return {"output": resp, "trace_id": span.trace_id}
 
         Pass ``monitor=True`` to check this trace against Monitor patterns immediately, with no
-        dashboard profile required. ``pattern_ids`` (ids from ``client.monitor.patterns.builder(
+        dashboard profile required. Pass ``monitor=False`` to explicitly skip EVERY ingest-time
+        check (patterns, built-ins, online/custom evaluators, topics) - use this for traces
+        created inside an evaluation run, which the run's own evaluator already judges. ``pattern_ids`` (ids from ``client.monitor.patterns.builder(
         ...).publish()``) restricts detection to exactly those patterns; omit it to run the full
         default sweep (built-in checks plus every enabled workspace pattern)::
 
