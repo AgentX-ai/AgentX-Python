@@ -252,6 +252,7 @@ class _TraceSpan:
         cache_write_tokens: Optional[int] = None,
         error: Optional[str] = None,
         tool_calls: Optional[List[Dict[str, Any]]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> "_TraceSpan":
         """
         Send one real child-span row parented to this span, with explicit timing (the caller's
@@ -306,6 +307,8 @@ class _TraceSpan:
             wire["model"] = model
         if child.tool_calls:
             wire["tool_calls"] = child.tool_calls
+        if metadata:
+            wire["metadata"] = _safe_serialize(metadata)
         if child._session_id:
             wire["session_id"] = child._session_id
         wire["span_id"] = child._span_id
@@ -740,8 +743,18 @@ class Tracer:
         active_span = self.current_span
         if active_span is None:
             return
+        # The kind marker is what tells the engine (retrieval-context extraction for RAG
+        # judges) and the dashboard timeline that this span is a retrieval regardless of its
+        # name - the name-based "Retrieval N" heuristic remains only as a fallback for older
+        # traces, so custom names like "kb_search" work everywhere.
         active_span.child_span(
-            name, start_time=start_time, end_time=end_time, duration_ms=duration_ms, input=query, output=output
+            name,
+            start_time=start_time,
+            end_time=end_time,
+            duration_ms=duration_ms,
+            input=query,
+            output=output,
+            metadata={"kind": "retrieval"},
         )
 
     @contextmanager

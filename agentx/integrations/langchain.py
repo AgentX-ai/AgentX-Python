@@ -489,6 +489,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                 duration_ms=step.get("duration_ms"),
                 input=step.get("query"),
                 output=step.get("output"),
+                metadata={"kind": "retrieval"},
             )
 
     def on_chain_end(
