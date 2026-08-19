@@ -189,6 +189,46 @@ class MoveworksSyncReport:
         return base + ")"
 
 
+def judge_sessions_via_engine(ingest: IngestClient, session_ids: List[str]) -> "tuple[int, int, int]":
+    """
+    Judge each session with every enabled session-scoped evaluator via the engine's on-demand
+    judge route (``ifStale=true``: an up-to-date verdict from the sweep or a previous run is left
+    alone). Shared by every pull importer (Moveworks, Databricks). Returns (judged, skipped,
+    failed) counts.
+    """
+    # Same base/key the ingest client already resolved - the judge routes live under
+    # /agent-monitoring on the same engine.
+    base = ingest._base_url
+    http = ingest._session
+    try:
+        response = http.get(f"{base}/agent-monitoring/online-evaluators", timeout=30)
+        response.raise_for_status()
+        evaluators = [
+            e for e in response.json().get("evaluators", [])
+            if e.get("enabled") and e.get("scope") == "session"
+        ]
+    except requests.RequestException:
+        return 0, 0, len(session_ids)
+    judged = skipped = failed = 0
+    for session_id in session_ids:
+        for evaluator in evaluators:
+            try:
+                result = http.post(
+                    f"{base}/agent-monitoring/sessions/{session_id}/judge/{evaluator['_id']}",
+                    params={"ifStale": "true"},
+                    timeout=120,
+                )
+                if result.status_code == 200 and result.json().get("skipped"):
+                    skipped += 1
+                elif result.ok:
+                    judged += 1
+                else:
+                    failed += 1
+            except requests.RequestException:
+                failed += 1
+    return judged, skipped, failed
+
+
 class MoveworksImporter:
     """
     Pulls Moveworks Data API records and replays them into AgentX as traces.
@@ -386,36 +426,10 @@ class MoveworksImporter:
         run) is left alone instead of judged again.
         """
         report = report or MoveworksSyncReport()
-        # Same base/key the ingest client already resolved - the judge routes live under
-        # /agent-monitoring on the same engine.
-        base = self._ingest._base_url
-        http = self._ingest._session
-        try:
-            response = http.get(f"{base}/agent-monitoring/online-evaluators", timeout=30)
-            response.raise_for_status()
-            evaluators = [
-                e for e in response.json().get("evaluators", [])
-                if e.get("enabled") and e.get("scope") == "session"
-            ]
-        except requests.RequestException:
-            report.sessions_judge_failed += len(session_ids)
-            return report
-        for session_id in session_ids:
-            for evaluator in evaluators:
-                try:
-                    result = http.post(
-                        f"{base}/agent-monitoring/sessions/{session_id}/judge/{evaluator['_id']}",
-                        params={"ifStale": "true"},
-                        timeout=120,
-                    )
-                    if result.status_code == 200 and result.json().get("skipped"):
-                        report.sessions_judge_skipped += 1
-                    elif result.ok:
-                        report.sessions_judged += 1
-                    else:
-                        report.sessions_judge_failed += 1
-                except requests.RequestException:
-                    report.sessions_judge_failed += 1
+        judged, skipped, failed = judge_sessions_via_engine(self._ingest, session_ids)
+        report.sessions_judged += judged
+        report.sessions_judge_skipped += skipped
+        report.sessions_judge_failed += failed
         return report
 
 

@@ -35,6 +35,9 @@ setup(
             # Moveworks Data API -> AgentX traces sync (see agentx/integrations/moveworks.py) -
             # a pull importer, since Moveworks agents run in their cloud with no in-process hook.
             "agentx-moveworks=agentx.integrations.moveworks:cli_main",
+            # MLflow/Databricks trace sync (see agentx/integrations/databricks.py) - pull importer
+            # for agents whose serving endpoints can't set OTLP egress env vars.
+            "agentx-databricks=agentx.integrations.databricks:cli_main",
         ],
     },
     install_requires=[
@@ -54,6 +57,7 @@ setup(
         "litellm": ["litellm>=1.0.0"],
         "llamaindex": ["llama-index-core>=0.10.0"],
         "autogen": ["autogen-agentchat>=0.4.0", "autogen-core>=0.4.0"],
+        "databricks": ["mlflow>=3.6.0"],
         "all": [
             "langchain-core>=0.1.0",
             "crewai>=0.80.0",
