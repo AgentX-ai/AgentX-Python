@@ -414,6 +414,7 @@ class _TraceSpan:
                     duration_ms=step.get("duration_ms"),
                     input=step.get("query"),
                     output=step.get("output"),
+                    metadata={"kind": "retrieval"},
                 )
 
             if self.input is None and input is not None:
@@ -561,6 +562,7 @@ class Tracer:
     def __init__(self, ingest_client: IngestClient) -> None:
         self._client = ingest_client
         self._pending_tool_calls: List[Dict[str, Any]] = []
+        self._pending_retrievals: List[Dict[str, Any]] = []
         self._local = threading.local()
 
     # ------------------------------------------------------------------
@@ -736,12 +738,27 @@ class Tracer:
         Manually record a knowledge-base / vector-store retrieval that an
         auto-instrumented framework integration can't see on its own - e.g. a
         hand-rolled RAG lookup wrapped around a raw Anthropic/OpenAI call or a
-        CrewAI kickoff. Sent as a real child-span row of the active span (see ``current_span``) -
-        requires an enclosing ``with tracer.trace(...)`` block; a no-op (nothing to attach a child
-        to) if called outside one.
+        CrewAI kickoff. Sent as a real child-span row of the active span (see ``current_span``);
+        with no active span it queues and merges into the very next trace this tracer sends
+        (same behavior as ``record_tool_call``, covering the patched-client flow where the
+        retrieval runs just before a standalone ``messages.create()`` /
+        ``chat.completions.create()`` call).
         """
         active_span = self.current_span
         if active_span is None:
+            latency_ms = (
+                int(duration_ms)
+                if duration_ms is not None
+                else int((end_time - start_time) * 1000)
+                if start_time is not None and end_time is not None
+                else None
+            )
+            self._pending_retrievals.append({
+                "name": name,
+                "query": _safe_serialize(query) if query is not None else None,
+                "output": _safe_serialize(output) if output is not None else None,
+                "duration_ms": latency_ms,
+            })
             return
         # The kind marker is what tells the engine (retrieval-context extraction for RAG
         # judges) and the dashboard timeline that this span is a retrieval regardless of its
@@ -1103,6 +1120,17 @@ class Tracer:
             # have attached success/error (the fields the engine's tool-failure check reads), and
             # a projection that predates them would silently strip exactly the failure evidence.
             wire["tool_calls"] = list(wire.get("tool_calls") or []) + [dict(t) for t in pending_tool_calls]
+
+        # record_retrieval entries queued with no active span ride the root's
+        # performance_summary.retrieval_steps - the same shape older flat traces used, which the
+        # engine's retrieval-context extraction and the dashboard's references panel both read.
+        pending_retrievals, self._pending_retrievals = self._pending_retrievals, []
+        if pending_retrievals:
+            summary = dict(wire.get("performance_summary") or {})
+            summary["retrieval_steps"] = list(summary.get("retrieval_steps") or []) + [
+                dict(r) for r in pending_retrievals
+            ]
+            wire["performance_summary"] = summary
 
         return self._dispatch(wire, sync=sync)
 
