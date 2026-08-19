@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional, Tuple
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
-from agentx.integrations._traced_call import finish_llm_call
+from agentx.integrations._traced_call import capture_tool_definitions, finish_llm_call
 
 try:
     from litellm.integrations.custom_logger import CustomLogger
@@ -98,6 +98,10 @@ class AgentXLiteLLMLogger(CustomLogger):
     def _finish(self, kwargs: Dict[str, Any], response_obj: Any, start_time: Any, end_time: Any, error: Optional[str]) -> None:
         model = kwargs.get("model")
         input_repr = _safe_serialize(kwargs.get("messages"))
+        # LiteLLM surfaces the request's tools under optional_params (and sometimes top-level).
+        tool_definitions = capture_tool_definitions(
+            kwargs.get("tools") or (kwargs.get("optional_params") or {}).get("tools")
+        )
         output = None
         input_tokens = None
         output_tokens = None
@@ -118,6 +122,7 @@ class AgentXLiteLLMLogger(CustomLogger):
             output=output,
             model=model,
             input_tokens=input_tokens,
+            tool_definitions=tool_definitions,
             output_tokens=output_tokens,
             cache_read_tokens=cache_read_tokens,
             error=error,

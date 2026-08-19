@@ -22,7 +22,7 @@ import time
 from typing import Any, Dict, Optional, Tuple
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
-from agentx.integrations._traced_call import call_and_trace, finish_llm_call
+from agentx.integrations._traced_call import capture_tool_definitions, call_and_trace, finish_llm_call
 
 
 def _extract_output_text(response: Any) -> Optional[str]:
@@ -136,6 +136,7 @@ def _patch_create(
             kwargs.get("system"),
         )
         model = kwargs.get("model")
+        tool_definitions = capture_tool_definitions(kwargs.get("tools"))
 
         input_repr = _safe_serialize(input_messages)
 
@@ -171,6 +172,7 @@ def _patch_create(
                 cache_read_tokens=cache_read_tokens,
                 cache_write_tokens=cache_write_tokens,
                 error=error,
+                tool_definitions=tool_definitions,
             )
 
         return call_and_trace(original, args, kwargs, on_finish)
@@ -199,6 +201,7 @@ def _patch_stream(
         ctx = original_stream(*args, **kwargs)
         input_repr = _safe_serialize(_prepend_system(kwargs.get("messages"), kwargs.get("system")))
         model = kwargs.get("model")
+        tool_definitions = capture_tool_definitions(kwargs.get("tools"))
 
         def build_and_send(end_t: float, error: Optional[str], final_message: Optional[Any]) -> None:
             output = None
@@ -230,6 +233,7 @@ def _patch_stream(
                 cache_read_tokens=cache_read_tokens,
                 cache_write_tokens=cache_write_tokens,
                 error=error,
+                tool_definitions=tool_definitions,
             )
 
         class _TracedStream:

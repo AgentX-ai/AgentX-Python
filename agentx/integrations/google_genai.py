@@ -20,7 +20,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
-from agentx.integrations._traced_call import call_and_trace, finish_llm_call
+from agentx.integrations._traced_call import capture_tool_definitions, call_and_trace, finish_llm_call
 
 
 def patch_genai_client(
@@ -90,6 +90,31 @@ def _extract_response_text(response: Any) -> Optional[str]:
     return None
 
 
+
+def _genai_tool_definitions(config: Any) -> Optional[list]:
+    """
+    Flatten a GenAI request's config.tools (each a Tool holding function_declarations) into the
+    flat [{name, description, parameters}, ...] list the engine's unregistered-tool listing
+    reads from trace metadata. Plain dicts and SDK objects both handled.
+    """
+    tools = getattr(config, "tools", None) if config is not None and not isinstance(config, dict) else (config or {}).get("tools") if isinstance(config, dict) else None
+    if not tools:
+        return None
+    flat = []
+    for tool in tools:
+        decls = getattr(tool, "function_declarations", None) if not isinstance(tool, dict) else tool.get("function_declarations")
+        for decl in decls or []:
+            if isinstance(decl, dict):
+                flat.append(decl)
+            else:
+                flat.append({
+                    "name": getattr(decl, "name", None),
+                    "description": getattr(decl, "description", None),
+                    "parameters": getattr(decl, "parameters", None),
+                })
+    return capture_tool_definitions(flat)
+
+
 def _patch_generate_content(
     models: Any,
     tracer: Tracer,
@@ -106,6 +131,7 @@ def _patch_generate_content(
         model = kwargs.get("model") or (args[0] if args else None)
         contents = kwargs.get("contents") or (args[1] if len(args) > 1 else None)
         input_repr = contents if isinstance(contents, str) else _safe_serialize(contents)
+        tool_definitions = _genai_tool_definitions(kwargs.get("config"))
 
         def on_finish(response: Optional[Any], error: Optional[str]) -> None:
             end_t = time.time()
@@ -137,6 +163,7 @@ def _patch_generate_content(
                 output_tokens=output_tokens,
                 cache_read_tokens=cache_read_tokens,
                 error=error,
+                tool_definitions=tool_definitions,
             )
 
         return call_and_trace(original, args, kwargs, on_finish)
@@ -180,6 +207,7 @@ def _patch_sync_generate_content_stream(
     def patched_stream(*args, **kwargs):
         start_t = time.time()
         model, input_repr = _stream_input_and_model(args, kwargs)
+        tool_definitions = _genai_tool_definitions(kwargs.get("config"))
         accumulated_text: List[str] = []
         last_usage_metadata = None
         error: Optional[str] = None
@@ -222,6 +250,7 @@ def _patch_sync_generate_content_stream(
                 output_tokens=output_tokens,
                 cache_read_tokens=cache_read_tokens,
                 error=error,
+                tool_definitions=tool_definitions,
             )
 
     patched_stream._agentx_patched = True
@@ -247,6 +276,7 @@ def _patch_async_generate_content_stream(
         # drives it.
         start_t = time.time()
         model, input_repr = _stream_input_and_model(args, kwargs)
+        tool_definitions = _genai_tool_definitions(kwargs.get("config"))
         inner = await original_stream(*args, **kwargs)
 
         async def traced_agen():
@@ -290,6 +320,7 @@ def _patch_async_generate_content_stream(
                     output_tokens=output_tokens,
                     cache_read_tokens=cache_read_tokens,
                     error=error,
+                    tool_definitions=tool_definitions,
                 )
 
         return traced_agen()

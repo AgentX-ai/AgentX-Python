@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 from typing import Any, Callable, Dict, Optional
 
-from agentx.tracing.tracer import Tracer
+from agentx.tracing.tracer import Tracer, _safe_serialize
 
 
 def call_and_trace(
@@ -62,6 +63,32 @@ async def _await_and_finish(
     return response
 
 
+# The engine's unregistered-tool surfacing (Tools & MCPs -> Unregistered) reads a trace's
+# metadata "tools" key to show the REAL definition instead of one inferred from observed
+# arguments (see AgentX-trace-eval's toolSchemas.ts draftFromMetadata). Raw-client patches see
+# the request's tools=[...] right in kwargs, so capture it - capped so a huge toolbox never
+# blows up the trace's metadata budget.
+_MAX_TOOL_DEFINITIONS = 20
+_MAX_TOOL_DEFINITIONS_BYTES = 12_000
+
+
+def capture_tool_definitions(tools: Any) -> Optional[list]:
+    """Return a metadata-ready copy of a request's ``tools=[...]`` list, or None."""
+    if not isinstance(tools, list) or not tools:
+        return None
+    # A plain JSON round-trip preserves nested schema objects exactly (default=str catches the
+    # odd SDK object inside); _safe_serialize would repr-stringify nested dicts, turning a
+    # parameters schema into an unusable string.
+    try:
+        text = json.dumps(tools[:_MAX_TOOL_DEFINITIONS], default=str)
+        if len(text) > _MAX_TOOL_DEFINITIONS_BYTES:
+            return None
+        serialized = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    return serialized if isinstance(serialized, list) else None
+
+
 def finish_llm_call(
     tracer: Tracer,
     *,
@@ -79,6 +106,7 @@ def finish_llm_call(
     error: Optional[str],
     cache_read_tokens: Optional[int] = None,
     cache_write_tokens: Optional[int] = None,
+    tool_definitions: Optional[list] = None,
 ) -> None:
     """
     Close out one raw-client LLM call - shared by the ``on_finish``/exit
@@ -96,8 +124,16 @@ def finish_llm_call(
     """
     latency_ms = int((end_t - start_t) * 1000)
 
+    if tool_definitions:
+        metadata = {**(metadata or {}), "tools": tool_definitions}
+
     active_span = tracer.current_span
     if active_span is not None:
+        # The definitions describe the whole call's toolbox - attach them to the enclosing
+        # span's metadata (first capture wins) so the ROOT trace carries them for the
+        # unregistered-tool listing, same as the standalone-trace path below.
+        if tool_definitions and not (active_span._metadata or {}).get("tools"):
+            active_span._metadata = {**(active_span._metadata or {}), "tools": tool_definitions}
         if error is not None:
             active_span.set_error(error)
         active_span._record_llm_call(

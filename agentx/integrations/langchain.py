@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Union
 from uuid import UUID
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
+from agentx.integrations._traced_call import capture_tool_definitions
 
 try:
     from langchain_core.callbacks.base import BaseCallbackHandler
@@ -375,6 +376,10 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                 # skipped plumbing runs to the nearest emitted ancestor.
                 "node_runs": {},
                 "chain_parents": {},
+                # The request's tools=[...] as seen on the first LLM call's invocation params -
+                # attached to the root trace's metadata so the engine's unregistered-tool
+                # listing can surface the REAL definition (not one inferred from arguments).
+                "tool_definitions": None,
             }
         else:
             top = self._find_top_ancestor(parent_run_id)
@@ -522,6 +527,8 @@ class AgentXCallbackHandler(BaseCallbackHandler):
 
         active_span = self._tracer.current_span
         if active_span is not None:
+            if state.get("tool_definitions") and not (active_span._metadata or {}).get("tools"):
+                active_span._metadata = {**(active_span._metadata or {}), "tools": state["tool_definitions"]}
             # Part of a `with tracer.trace(...)` block (e.g. an orchestrator
             # spanning several chain/agent/retriever calls) - fold this
             # top-level run into it instead of sending an independent trace.
@@ -540,7 +547,15 @@ class AgentXCallbackHandler(BaseCallbackHandler):
             # Standalone usage (no enclosing `with tracer.trace()`): open a real root span for
             # this chain invocation and let _merge_child_run explode its accumulated
             # execution_steps/tool_calls/retrieval_steps into real child-span rows.
-            with self._tracer.trace(self._name, metadata=self._metadata, session_id=self._session_id) as span:
+            with self._tracer.trace(
+                self._name,
+                metadata=(
+                    {**(self._metadata or {}), "tools": state["tool_definitions"]}
+                    if state.get("tool_definitions")
+                    else self._metadata
+                ),
+                session_id=self._session_id,
+            ) as span:
                 # __enter__ just set _start to "now" - overridden to the chain's real start time,
                 # see llamaindex.py's _send_trace for the identical fix and full rationale.
                 span._start = state["start"]
@@ -577,6 +592,8 @@ class AgentXCallbackHandler(BaseCallbackHandler):
 
         active_span = self._tracer.current_span
         if active_span is not None:
+            if state.get("tool_definitions") and not (active_span._metadata or {}).get("tools"):
+                active_span._metadata = {**(active_span._metadata or {}), "tools": state["tool_definitions"]}
             active_span.set_error(str(error))
             active_span._merge_child_run(
                 tool_calls=state["tool_calls"],
@@ -590,7 +607,15 @@ class AgentXCallbackHandler(BaseCallbackHandler):
             self._emit_span_tree(active_span, state, state["tool_calls"])
         else:
             # See on_chain_end's matching branch - same standalone-usage handling.
-            with self._tracer.trace(self._name, metadata=self._metadata, session_id=self._session_id) as span:
+            with self._tracer.trace(
+                self._name,
+                metadata=(
+                    {**(self._metadata or {}), "tools": state["tool_definitions"]}
+                    if state.get("tool_definitions")
+                    else self._metadata
+                ),
+                session_id=self._session_id,
+            ) as span:
                 span._start = state["start"]
                 span.set_error(str(error))
                 span._merge_child_run(
@@ -629,6 +654,11 @@ class AgentXCallbackHandler(BaseCallbackHandler):
             or serialized.get("name")
         )
         model = str(model) if model and model not in ("None", "none") else None
+        top_for_tools = self._find_top_ancestor(parent_run_id)
+        if top_for_tools and top_for_tools in self._runs and not self._runs[top_for_tools].get("tool_definitions"):
+            captured = capture_tool_definitions(kwargs.get("invocation_params", {}).get("tools"))
+            if captured:
+                self._runs[top_for_tools]["tool_definitions"] = captured
         self._runs[run_id] = {
             "llm_start": time.time(),
             "model": model,
