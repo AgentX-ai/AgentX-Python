@@ -346,6 +346,11 @@ class EvaluationResult(BaseModel):
     # the dashboard's "Message Trace Details -> Execution Timeline" render the full execution
     # trace for this case, not just the lightweight observable_trace events above.
     trace_id: Optional[str] = Field(default=None, alias="traceId")
+    # What the agent actually retrieved for THIS case (a string, or list of chunk strings) - the
+    # {context} the RAG metric pack's judges grade faithfulness/relevancy against. Overrides the
+    # question's static retrievalContext; when absent, the engine falls back to the linked
+    # trace's recorded retrieval spans (trace_id above), then the case's pinned context.
+    retrieval_context: Optional[Any] = Field(default=None, alias="retrievalContext")
     # Smoke test: set by execute() from the originating EvaluationCase, not something you need to
     # set yourself when returning a plain str/dict from your callable.
     is_smoke_test_variant: Optional[bool] = Field(default=None, alias="isSmokeTestVariant")

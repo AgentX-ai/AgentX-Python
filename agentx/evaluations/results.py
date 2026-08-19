@@ -37,6 +37,7 @@ def normalize_result(
     output: Optional[dict] = None
     trace = None
     trace_id: Optional[str] = None
+    retrieval_context = None
     metadata: Optional[dict] = None
     error: Optional[ResultError] = None
     input_tokens: Optional[int] = None
@@ -55,6 +56,7 @@ def normalize_result(
         trace = build_trace(raw.get("trace") or raw.get("observable_trace"))
         trace_id_raw = raw.get("trace_id") or raw.get("traceId")
         trace_id = str(trace_id_raw) if trace_id_raw else None
+        retrieval_context = raw.get("retrieval_context") or raw.get("retrievalContext")
         meta_raw = raw.get("metadata")
         if isinstance(meta_raw, dict):
             metadata = redact_dict(meta_raw)
@@ -108,6 +110,7 @@ def normalize_result(
         ),
         metadata=metadata,
         traceId=trace_id,
+        retrievalContext=retrieval_context,
         isSmokeTestVariant=case.is_smoke_test_variant,
         smokeTestVariantText=case.smoke_test_variant_text,
     )

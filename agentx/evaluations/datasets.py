@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING, Union
 
 from agentx.evaluations.models import Dataset
 
@@ -88,6 +88,7 @@ class DatasetBuilder:
         smoke_test_guidance: Optional[str] = None,
         expected_tools: Optional[List[str]] = None,
         trajectory_match_mode: str = "strict",
+        expected_retrieval_context: Optional[Union[str, List[str]]] = None,
     ) -> "DatasetBuilder":
         """Add a case. `judge_guideline` is optional grading guidance specific to this question.
 
@@ -98,6 +99,13 @@ class DatasetBuilder:
         follows agentevals semantics: "strict" (same calls, same order), "unordered" (same calls,
         any order), "superset" (all expected present, extras allowed), or "subset" (no unexpected
         calls, missing allowed).
+
+        `expected_retrieval_context` (string or list of chunk strings) declares what a correct
+        retriever should have fetched for this case. When the run's result carries actual
+        retrieved context (a `retrieval_context` return value, or a linked trace with retrieval
+        spans), the engine compares the two with token-level Jaccard similarity and reports a
+        deterministic "Context match (jaccard)" scorer row (0-1) - a cheap retriever regression
+        check with no LLM judge call.
 
         `smoke_test_count`, when set (1-10), asks this question that many extra ways each
         evaluation run, LLM-paraphrased server-side, to catch agents that are brittle to phrasing
@@ -123,6 +131,8 @@ class DatasetBuilder:
                 main["smokeTest"]["guidance"] = smoke_test_guidance
         if expected_tools:
             main["expectedTrajectory"] = {"tools": expected_tools, "mode": trajectory_match_mode}
+        if expected_retrieval_context:
+            main["expectedRetrievalContext"] = expected_retrieval_context
         self._payload["questions"].append(
             {
                 "main_question": main,
