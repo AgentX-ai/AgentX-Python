@@ -32,9 +32,23 @@ _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 _MAX_RETRIES = 3
 _RETRY_BACKOFF = [1.0, 2.0, 4.0]
 
+# The self-host analyze route judges every result before it responds, so the client has to
+# wait out the whole job on one connection. Matches EvaluationRunContext.analyze()'s own
+# default timeout.
+_SELF_HOST_ANALYZE_TIMEOUT = 1800
+
 
 class AgentXEvaluationsError(Exception):
-    pass
+    """An evaluations API call failed.
+
+    ``status_code`` carries the HTTP status when the failure came from a response rather
+    than from the transport, so callers can branch on it instead of matching on the message
+    text. It is ``None`` for connection errors and for retry exhaustion.
+    """
+
+    def __init__(self, message: str, status_code: Optional[int] = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class AgentXAuthError(AgentXEvaluationsError):
@@ -69,6 +83,8 @@ class EvaluationsClient:
         if not _api_base.endswith("/custom-agent-evaluations"):
             _api_base = f"{_api_base}/custom-agent-evaluations"
         self._base_url = _api_base
+        # None until an analysis call tells us which engine this is; see _api_root.
+        self._analysis_on_dashboard_router: Optional[bool] = None
         self._session = requests.Session()
         self._session.headers.update(
             {
@@ -103,10 +119,29 @@ class EvaluationsClient:
         """Same as _with_workspace(), for GET requests that take workspaceId as a query param."""
         return {"workspaceId": self._workspace_id} if self._workspace_id else None
 
-    def _request(self, method: str, path: str, timeout: int = 30, **kwargs) -> Any:
-        url = f"{self._base_url}{path}"
+    def _request(
+        self,
+        method: str,
+        path: str,
+        timeout: int = 30,
+        base: Optional[str] = None,
+        retry: bool = True,
+        **kwargs,
+    ) -> Any:
+        """Call the evaluations API.
+
+        ``base`` overrides the ``/custom-agent-evaluations`` prefix for the handful of
+        routes that live on a different router (see ``_api_root``).
+
+        ``retry=False`` disables the backoff loop entirely. Use it for any request that is
+        both slow and billable: the loop retries on ``requests.RequestException``, which
+        includes read timeouts, so a synchronous endpoint that outlives its timeout would
+        otherwise be re-invoked — and paid for — up to four times.
+        """
+        url = f"{base or self._base_url}{path}"
+        schedule = [0.0] + (_RETRY_BACKOFF if retry else [])
         last_exc: Optional[Exception] = None
-        for attempt, wait in enumerate([0.0] + _RETRY_BACKOFF):
+        for attempt, wait in enumerate(schedule):
             if wait:
                 time.sleep(wait)
             try:
@@ -120,14 +155,22 @@ class EvaluationsClient:
                 raise AgentXAuthError("Invalid or missing API key")
             if resp.status_code == 422:
                 raise AgentXValidationError(resp.text)
-            if resp.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES - 1:
+            if (
+                resp.status_code in _RETRYABLE_STATUS
+                and retry
+                and attempt < _MAX_RETRIES - 1
+            ):
                 logger.debug(
                     "Retryable status %d (attempt %d)", resp.status_code, attempt + 1
                 )
-                last_exc = AgentXEvaluationsError(f"HTTP {resp.status_code}")
+                last_exc = AgentXEvaluationsError(
+                    f"HTTP {resp.status_code}", status_code=resp.status_code
+                )
                 continue
             if not resp.ok:
-                raise AgentXEvaluationsError(f"HTTP {resp.status_code}: {resp.text}")
+                raise AgentXEvaluationsError(
+                    f"HTTP {resp.status_code}: {resp.text}", status_code=resp.status_code
+                )
             try:
                 return resp.json()
             except Exception:
@@ -303,6 +346,10 @@ class EvaluationsClient:
         # Starts the durable analysis job and returns immediately (e.g. {"jobId": ..., "status":
         # "pending"}); poll get_analysis_status() until it reaches a terminal status, then call
         # get_report(). mode/quality_mode/judges mirror the dashboard's AnalyzeEvaluationRequest.
+        #
+        # On self-host the fallback route runs the analysis synchronously and returns only when
+        # it is done, so the caller's poll loop sees a terminal status on its first check. The
+        # request is therefore given the full analysis timeout and, critically, no retries.
         payload: Dict[str, Any] = {}
         if mode is not None:
             payload["mode"] = mode
@@ -310,22 +357,131 @@ class EvaluationsClient:
             payload["qualityMode"] = quality_mode
         if judges is not None:
             payload["judges"] = [{"model": m} for m in judges]
-        return self._request("POST", f"/runs/{run_id}/analyze", json=payload, timeout=30)
+
+        if not self._analysis_on_dashboard_router:
+            try:
+                return self._request(
+                    "POST", f"/runs/{run_id}/analyze", json=payload, timeout=30
+                )
+            except AgentXEvaluationsError as exc:
+                if not self._note_missing_analysis_route(exc, "analyze"):
+                    raise
+
+        return self._request(
+            "POST",
+            f"/evaluate/analyze/{run_id}",
+            base=self._api_root,
+            json=payload,
+            timeout=_SELF_HOST_ANALYZE_TIMEOUT,
+            retry=False,
+        )
 
     def get_analysis_status(self, run_id: str) -> AnalysisStatus:
-        data = self._request("GET", f"/runs/{run_id}/analyze-status")
+        if not self._analysis_on_dashboard_router:
+            try:
+                return AnalysisStatus(
+                    **self._request("GET", f"/runs/{run_id}/analyze-status")
+                )
+            except AgentXEvaluationsError as exc:
+                if not self._note_missing_analysis_route(exc, "analyze-status"):
+                    raise
+
+        data = self._request(
+            "GET", f"/evaluate/analyze/{run_id}/status", base=self._api_root
+        )
         return AnalysisStatus(**data)
 
     def get_run(self, run_id: str) -> Dict[str, Any]:
         return self._request("GET", f"/runs/{run_id}")
 
     def get_report(self, run_id: str) -> Report:
-        data = self._request("GET", f"/runs/{run_id}/report")
-        return Report(**data)
+        if not self._analysis_on_dashboard_router:
+            try:
+                return Report(**self._request("GET", f"/runs/{run_id}/report"))
+            except AgentXEvaluationsError as exc:
+                if not self._note_missing_analysis_route(exc, "report"):
+                    raise
+
+        return self._report_from_dashboard(run_id)
 
     def get_missing_results(self, run_id: str) -> List[Dict[str, Any]]:
         data = self._request("GET", f"/runs/{run_id}/missing-results")
         return data if isinstance(data, list) else data.get("missing", [])
+
+    # ------------------------------------------------------------------
+    # Self-host analysis fallback
+    #
+    # The self-host engine (AgentX-trace-eval) mounts two routers: the SDK's
+    # /custom-agent-evaluations, and /evaluate for the dashboard. Its
+    # /custom-agent-evaluations router implements the run lifecycle - runs, results,
+    # finalize, gate - but not /analyze, /analyze-status or /report, which exist only on
+    # /evaluate. Hosted AgentX serves all of them from the SDK's own router.
+    #
+    # So the three analysis calls try the SDK route first and fall back to the dashboard
+    # route on a 404, which means hosted behaviour is byte-for-byte unchanged: it never
+    # 404s, so it never falls back. The outcome is cached on the client so the probe costs
+    # one request per process, not one per call.
+    # ------------------------------------------------------------------
+
+    @property
+    def _api_root(self) -> str:
+        """The API base with the ``/custom-agent-evaluations`` suffix removed."""
+        suffix = "/custom-agent-evaluations"
+        if self._base_url.endswith(suffix):
+            return self._base_url[: -len(suffix)]
+        return self._base_url
+
+    def _note_missing_analysis_route(
+        self, exc: AgentXEvaluationsError, route: str
+    ) -> bool:
+        """Return True if ``exc`` is the 404 that means "this engine is self-host".
+
+        Only a 404 qualifies. Anything else - auth, validation, a 500, a dead connection -
+        is a real failure on a route that does exist, and must propagate rather than be
+        retried against a different endpoint that would mask it.
+        """
+        if exc.status_code != 404:
+            return False
+        if self._analysis_on_dashboard_router is None:
+            logger.info(
+                "%s is not served from %s; using the dashboard router at %s "
+                "(self-host engine)",
+                route,
+                self._base_url,
+                self._api_root,
+            )
+        self._analysis_on_dashboard_router = True
+        return True
+
+    def _report_from_dashboard(self, run_id: str) -> Report:
+        """Assemble a Report from the dashboard's evaluation record.
+
+        Self-host has no /report route; it returns the analysis nested inside the
+        evaluation itself, under ``analysis.analysis`` with its statistics one level up.
+        The field names already match the Report models, so this is a reshape, not a
+        translation.
+        """
+        record = self._request("GET", f"/evaluate/{run_id}", base=self._api_root)
+        envelope = record.get("analysis") or {}
+        body = envelope.get("analysis") or {}
+
+        if not envelope:
+            raise AgentXEvaluationsError(
+                f"Run {run_id} has no analysis to report. Nothing has analyzed it yet, "
+                "or the analysis failed - call analyze_run() first."
+            )
+
+        dataset_id = record.get("datasetId")
+        if isinstance(dataset_id, dict):  # populated reference, not a bare id
+            dataset_id = dataset_id.get("_id") or dataset_id.get("id")
+
+        return Report(
+            runId=run_id,
+            datasetId=dataset_id or "",
+            status=envelope.get("status") or "completed",
+            statistics=envelope.get("statistics"),
+            **body,
+        )
 
 
 # ---------------------------------------------------------------------------
