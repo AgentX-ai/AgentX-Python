@@ -362,11 +362,18 @@ class EvaluationRunContext:
         try:
             report = self._client.get_report(self._run.run_id)
         except Exception as exc:
+            # Deliberately not status="completed". A placeholder that claims completion is
+            # indistinguishable from a real report of an evaluation that scored nothing -
+            # print_report renders empty statistics and no recommendations either way - so
+            # the one signal that something went wrong used to be a logger.warning that is
+            # invisible unless the caller configured logging. Say it on stdout, and let the
+            # status carry the truth for anything reading the object.
+            print(f"  {red('✗')}  Could not fetch the report: {dim(str(exc))}")
             logger.warning("Could not fetch report: %s", exc)
             report = Report(
                 runId=self._run.run_id,
                 datasetId=self._dataset.id,
-                status="completed",
+                status="unavailable",
             )
 
         self._report = report
