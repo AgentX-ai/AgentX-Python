@@ -623,3 +623,37 @@ def test_record_tool_call_with_no_active_span_still_queues():
     wires = enqueued_wires(tracer)
     assert len(wires) == 1
     assert wires[0]["tool_calls"][0]["name"] == "orphan_call"
+
+
+def test_add_tool_call_carries_failure_onto_the_wire():
+    """span.add_tool_call() is the in-`with`-block way to report a call after the fact, so it has
+    to be able to say the call failed — `success: false` on the root's flat tool_calls list is
+    exactly what the engine's built-in "Tool failure" check and the dashboard's Tool quality
+    column read (trajectory.ts's `tc.success !== false`, ingest.ts's chainOfActions)."""
+    tracer = make_tracer()
+    with tracer.trace("agent") as span:
+        span.add_tool_call(
+            "lookup_thing", input="x", output="error: timeout",
+            success=False, error="timeout", latency_ms=50,
+        )
+
+    wires = enqueued_wires(tracer)
+    assert len(wires) == 1
+    tc = wires[0]["tool_calls"][0]
+    assert tc["name"] == "lookup_thing"
+    assert tc["success"] is False
+    assert tc["error"] == "timeout"
+    assert tc["latency_ms"] == 50
+
+
+def test_add_tool_call_without_success_omits_the_field():
+    """Unset means "unknown", not "passed" — same as record_tool_call. Emitting success=True (or
+    a null) here would tell the dashboard's Tool quality column the call definitively passed and
+    suppress its output-text heuristic, so the key stays off the dict entirely."""
+    tracer = make_tracer()
+    with tracer.trace("agent") as span:
+        span.add_tool_call("lookup_thing", input="x", output="y", latency_ms=5)
+
+    tc = enqueued_wires(tracer)[0]["tool_calls"][0]
+    assert "success" not in tc
+    assert "error" not in tc
