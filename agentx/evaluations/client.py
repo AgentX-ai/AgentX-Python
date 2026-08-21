@@ -404,10 +404,6 @@ class EvaluationsClient:
 
         return self._report_from_dashboard(run_id)
 
-    def get_missing_results(self, run_id: str) -> List[Dict[str, Any]]:
-        data = self._request("GET", f"/runs/{run_id}/missing-results")
-        return data if isinstance(data, list) else data.get("missing", [])
-
     # ------------------------------------------------------------------
     # Self-host analysis fallback
     #
