@@ -173,6 +173,17 @@ class MoveworksSyncReport:
         self.sessions_judged = 0
         self.sessions_judge_skipped = 0
         self.sessions_judge_failed = 0
+        # --evaluate-against: per-trace offline grading of the imported interactions.
+        self.traces_evaluated = 0
+        self.trace_eval_skipped_deduped = 0
+        self.trace_eval_failed = 0
+        self.trace_eval_ratings: List[float] = []
+
+    @property
+    def trace_eval_average(self) -> Optional[float]:
+        if not self.trace_eval_ratings:
+            return None
+        return sum(self.trace_eval_ratings) / len(self.trace_eval_ratings)
 
     def __repr__(self) -> str:  # also what the CLI prints
         base = (
@@ -180,6 +191,14 @@ class MoveworksSyncReport:
             f"ingested={self.ingested}, failed={self.failed}, "
             f"plugin_calls_attached={self.plugin_calls_attached}, skipped_no_time={self.skipped_no_time}"
         )
+        if self.traces_evaluated or self.trace_eval_failed or self.trace_eval_skipped_deduped:
+            avg = self.trace_eval_average
+            base += (
+                f", traces_evaluated={self.traces_evaluated}"
+                + (f" (avg {avg:.1f}/10)" if avg is not None else "")
+                + f", eval_skipped_deduped={self.trace_eval_skipped_deduped}"
+                + f", eval_failed={self.trace_eval_failed}"
+            )
         if self.sessions_judged or self.sessions_judge_skipped or self.sessions_judge_failed:
             base += (
                 f", sessions_judged={self.sessions_judged}, "
@@ -369,6 +388,7 @@ class MoveworksImporter:
         *,
         monitor: bool = False,
         judge_sessions: bool = False,
+        evaluate_against: Optional[str] = None,
         dry_run: bool = False,
         on_payload: Optional[Any] = None,
     ) -> MoveworksSyncReport:
@@ -376,12 +396,19 @@ class MoveworksImporter:
         Import every interaction in ``[since, until)``. Safe to re-run over the same window - the
         engine deduplicates on the deterministic ``span_id`` (and skips re-judging deduped spans).
 
-        ``monitor=True`` sets ``monitor: true`` on every trace - the engine's explicit opt-in that
-        runs pattern/built-in checks (PII, empty response, tool failure, active patterns) on each
-        imported trace. ``judge_sessions=True`` additionally asks the engine to judge every
+        Pattern/built-in checks and trace-scoped online evaluators run on every imported trace
+        by default (the engine's normal ingest-time posture); ``monitor=True`` is kept for
+        explicitness/compat. ``judge_sessions=True`` additionally asks the engine to judge every
         imported session with each enabled session-scoped evaluator after the sync; the request
         carries ``ifStale=true`` so a session already scored (e.g. by the engine's own 24h sweep)
-        is never judged twice. Returns a summary report.
+        is never judged twice.
+
+        ``evaluate_against=<dataset_or_config_id>`` is the offline-eval path for an agent that
+        can't be invoked from outside: each imported interaction's recorded input/output is
+        graded against that grading config's criteria (one judge call per NEW interaction -
+        spans the engine already had are skipped via its dedupe, so re-syncing a window never
+        re-bills). Ratings land as evaluation results linked to each trace, and the report
+        carries the average. Returns a summary report.
         """
         report = MoveworksSyncReport()
         conversations = self._conversation_index(since, until)
@@ -407,10 +434,23 @@ class MoveworksImporter:
                 on_payload(wire)
             if dry_run:
                 continue
-            if self._ingest.send_trace_sync(wire) is not None:
-                report.ingested += 1
-            else:
+            detail = self._ingest.send_trace_sync_detailed(wire)
+            if detail is None:
                 report.failed += 1
+                continue
+            report.ingested += 1
+            if evaluate_against:
+                if detail.get("deduped"):
+                    report.trace_eval_skipped_deduped += 1
+                    continue
+                try:
+                    verdict = self._ingest.evaluate_trace(detail["trace_id"], evaluate_against)
+                    report.traces_evaluated += 1
+                    if isinstance(verdict.get("rating"), (int, float)):
+                        report.trace_eval_ratings.append(float(verdict["rating"]))
+                except Exception as exc:
+                    report.trace_eval_failed += 1
+                    print(f"evaluate_against failed for trace {detail.get('trace_id')}: {exc}", file=sys.stderr)
 
         report.session_ids = session_ids
         if judge_sessions and not dry_run:
@@ -479,7 +519,14 @@ def cli_main(argv: Optional[List[str]] = None) -> None:
     sync.add_argument(
         "--monitor",
         action="store_true",
-        help="Run pattern/built-in checks (PII, empty response, tool failure, active patterns) on each imported trace",
+        help="Kept for compat - pattern/built-in checks and trace-scoped online evaluators already run "
+        "on every imported trace by default",
+    )
+    sync.add_argument(
+        "--evaluate-against",
+        metavar="DATASET_ID",
+        help="Offline eval during sync: grade each NEW imported interaction's recorded input/output "
+        "against this grading config (one judge call per interaction; re-synced spans are skipped)",
     )
     sync.add_argument(
         "--judge-sessions",
@@ -522,6 +569,7 @@ def cli_main(argv: Optional[List[str]] = None) -> None:
         until,
         monitor=args.monitor,
         judge_sessions=args.judge_sessions,
+        evaluate_against=args.evaluate_against,
         dry_run=args.dry_run,
         on_payload=on_payload,
     )

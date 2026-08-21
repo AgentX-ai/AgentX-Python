@@ -122,6 +122,28 @@ class IngestClient:
         except Exception:
             return None
 
+    def send_trace_sync_detailed(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """``send_trace_sync`` returning the full response body instead of just the id - the
+        engine includes ``deduped: true`` for a span it had already ingested, which importers
+        (agentx-moveworks) use to skip re-evaluating on window re-syncs. Never raises."""
+        if self._workspace_id:
+            payload = {**payload, "workspaceId": self._workspace_id}
+        try:
+            resp = self._session.post(self._endpoint, json=payload, timeout=10)
+        except requests.RequestException as exc:
+            self._warn_delivery(f"{exc.__class__.__name__}: {exc}")
+            logger.debug("agentx ingest sync send error: %s", exc)
+            return None
+        if not resp.ok:
+            self._warn_delivery(f"HTTP {resp.status_code}", status=resp.status_code)
+            logger.debug("agentx ingest sync HTTP %d: %s", resp.status_code, resp.text[:200])
+            return None
+        try:
+            body = resp.json()
+            return body if isinstance(body, dict) and body.get("trace_id") else None
+        except Exception:
+            return None
+
     def evaluate_trace(
         self,
         trace_id: str,
