@@ -192,9 +192,6 @@ def _drivers(client: AgentX) -> Dict[str, Callable[[], Any]]:
         "client.evaluations.get_analysis_status(run_id)": lambda: client.evaluations.get_analysis_status(ID),
         "client.evaluations._client.get_report(run_id)": lambda: client.evaluations._client.get_report(ID),
         "client.evaluations._client.get_run(run_id)": lambda: client.evaluations._client.get_run(ID),
-        "client.evaluations._client.get_missing_results(run_id)": lambda: client.evaluations._client.get_missing_results(
-            ID
-        ),
         "run.gate(...) / client.evaluations.gate_run(run_id, ...)": lambda: (
             run_context["ctx"].gate(fail_under=7),
             client.evaluations.gate_run(ID, fail_under=7),
