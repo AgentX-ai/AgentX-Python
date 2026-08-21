@@ -201,13 +201,21 @@ class EvaluationRunContext:
                 logger.error("Failed to submit batch %s: %s", batch_id[:8], exc)
 
     def _fetch_submitted_keys(self) -> Set[str]:
-        try:
-            missing = self._client.get_missing_results(self._run.run_id)
-            # missing-results returns cases NOT yet submitted - we want the inverse
-            # but if the endpoint isn't live yet, just return empty set
-            return set()
-        except Exception:
-            return set()
+        """Idempotency keys ``execute()`` should skip. Always empty today.
+
+        This is the seam a cross-process resume would fill: ask the server which cases
+        of ``run_id`` already have results, and skip re-running them. It stays empty
+        because there is no way to reach an already-populated run - ``evaluations.run()``
+        POSTs a fresh run id every time and is the only way to build this context, so a
+        run arriving at ``execute()`` has no results yet by construction. Resume would
+        first need a re-attach entry point - an ``evaluations.resume(run_id)`` that does
+        not exist yet - before an answer here could ever be non-empty.
+
+        It used to ask GET /runs/{runId}/missing-results, throw the reply away, and
+        return this same empty set: a round trip per run that changed nothing, and a
+        guaranteed 404 on the self-host engine, which does not implement that route.
+        """
+        return set()
 
     # ------------------------------------------------------------------
     # Step 2: finalize
