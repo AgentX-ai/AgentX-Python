@@ -84,6 +84,10 @@ class MonitorClient:
         self.signals = MonitorSignalClient(self)
         self.profile = MonitorProfileClient(self)
         self.online_evaluators = MonitorOnlineEvaluatorClient(self)
+        from agentx.monitor.sessions import MonitorSessionClient
+        from agentx.monitor.agents import MonitorAgentClient
+        self.sessions = MonitorSessionClient(self)
+        self.agents = MonitorAgentClient(self)
 
     # ------------------------------------------------------------------
     # Low-level HTTP
@@ -97,8 +101,17 @@ class MonitorClient:
     def _workspace_params(self) -> Optional[dict]:
         return {"workspaceId": self._workspace_id} if self._workspace_id else None
 
-    def _request(self, method: str, path: str, timeout: int = 30, **kwargs) -> Any:
-        url = f"{self._base_url}{path}"
+    def _api_root(self) -> str:
+        """The API base with the ``/monitor`` suffix removed - for the handful of self-host
+        routes that live on the engine's other routers (ingest sessions, agent-monitoring
+        calibration/tuning/portability), same precedent EvaluationsClient._api_root sets."""
+        suffix = "/monitor"
+        if self._base_url.endswith(suffix):
+            return self._base_url[: -len(suffix)]
+        return self._base_url
+
+    def _request(self, method: str, path: str, timeout: int = 30, base: Optional[str] = None, **kwargs) -> Any:
+        url = f"{base or self._base_url}{path}"
         last_exc: Optional[Exception] = None
         for attempt, wait in enumerate([0.0] + _RETRY_BACKOFF):
             if wait:
@@ -227,6 +240,80 @@ class MonitorClient:
         )
         profile = data.get("profile")
         return MonitorProfile(**profile) if profile else None
+
+    # ------------------------------------------------------------------
+    # Agents (the engine's SDK-facing /agents router - self-host)
+    # ------------------------------------------------------------------
+
+    def list_agents(self) -> List[dict]:
+        data = self._request("GET", "/agents", base=self._api_root())
+        return data.get("agents", []) if isinstance(data, dict) else data
+
+    def create_agent(self, name: str) -> dict:
+        data = self._request("POST", "/agents", base=self._api_root(), json={"name": name})
+        return data.get("agent", data) if isinstance(data, dict) else data
+
+    # ------------------------------------------------------------------
+    # Sessions (self-host)
+    # ------------------------------------------------------------------
+
+    def run_session_coherence_check(self, session_id: str) -> dict:
+        """One judge call over the assembled session - the dashboard's "Check coherence"
+        button. Raises AgentXMonitorError if the engine has no judge key configured."""
+        data = self._request(
+            "POST", f"/agent-monitoring/sessions/{session_id}/coherence-check",
+            base=self._api_root(), timeout=180,
+        )
+        return data.get("score", data) if isinstance(data, dict) else data
+
+    def list_session_spans(self, session_id: str) -> List[dict]:
+        data = self._request("GET", f"/ingest/sessions/{session_id}/spans", base=self._api_root())
+        return data.get("spans", []) if isinstance(data, dict) else data
+
+    # ------------------------------------------------------------------
+    # Model portability (self-host): replay a trace's input against other models
+    # ------------------------------------------------------------------
+
+    def run_model_portability(self, trace_id: str, model_ids: List[str]) -> dict:
+        """Replay the trace's captured input against ``model_ids`` and judge each output -
+        the dashboard trace detail's "Compare models" action. One LLM call per candidate
+        plus judging, so expect tens of seconds."""
+        return self._request(
+            "POST", f"/agent-monitoring/traces/{trace_id}/portability",
+            base=self._api_root(), json={"modelIds": model_ids}, timeout=300,
+        )
+
+    # ------------------------------------------------------------------
+    # Judge tuning (self-host): calibrate an online evaluator against recorded
+    # ground truth, then rewrite/validate/publish its criteria
+    # ------------------------------------------------------------------
+
+    def get_online_evaluator_calibration(self, evaluator_id: str, window: str = "7d") -> dict:
+        return self._request(
+            "GET", f"/agent-monitoring/online-evaluators/{evaluator_id}/calibration",
+            base=self._api_root(), params={"window": window},
+        )
+
+    def propose_online_evaluator_tuning(self, evaluator_id: str, window: str = "7d") -> dict:
+        data = self._request(
+            "POST", f"/agent-monitoring/online-evaluators/{evaluator_id}/tune",
+            base=self._api_root(), json={"window": window}, timeout=300,
+        )
+        return data.get("proposal", data) if isinstance(data, dict) else data
+
+    def validate_online_evaluator_tuning(
+        self, evaluator_id: str, criteria: dict, window: str = "7d"
+    ) -> dict:
+        return self._request(
+            "POST", f"/agent-monitoring/online-evaluators/{evaluator_id}/tune/validate",
+            base=self._api_root(), json={**criteria, "window": window}, timeout=600,
+        )
+
+    def publish_online_evaluator_tuning(self, evaluator_id: str, criteria: dict) -> dict:
+        return self._request(
+            "POST", f"/agent-monitoring/online-evaluators/{evaluator_id}/tune/publish",
+            base=self._api_root(), json=criteria, timeout=60,
+        )
 
     def update_profile(self, agent_id: str, payload: dict) -> MonitorProfile:
         data = self._request(

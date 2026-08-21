@@ -121,6 +121,27 @@ class MonitorOnlineEvaluatorClient:
     def delete(self, evaluator_id: str) -> None:
         self._client.delete_online_evaluator(evaluator_id)
 
+    def calibration(self, evaluator_id: str, window: str = "7d") -> dict:
+        """How often this evaluator's verdicts agreed with recorded ground truth (outcomes,
+        user feedback, human re-scores) in the window - including the disagreement cases a
+        tune() proposal would rewrite from."""
+        return self._client.get_online_evaluator_calibration(evaluator_id, window)
+
+    def tune(self, evaluator_id: str, window: str = "7d") -> dict:
+        """Judge-written rewrite of this evaluator's own criteria, grounded in calibration
+        disagreements. Returns the proposal (criteria + reasoning + changes); publishes nothing."""
+        return self._client.propose_online_evaluator_tuning(evaluator_id, window)
+
+    def validate_tuning(self, evaluator_id: str, criteria: dict, window: str = "7d") -> dict:
+        """Exact re-judging: candidate criteria re-judge the cases the current criteria got
+        wrong plus a control set they got right, measured against recorded reality. `criteria`
+        is {acceptanceCriteria, rejectionCriteria, evaluationCriteria} from tune()."""
+        return self._client.validate_online_evaluator_tuning(evaluator_id, criteria, window)
+
+    def publish_tuning(self, evaluator_id: str, criteria: dict) -> dict:
+        """Publish tuned criteria onto the evaluator's config (the human-approval step)."""
+        return self._client.publish_online_evaluator_tuning(evaluator_id, criteria)
+
     def ratings(self, evaluator_id: str, window: str = "7d") -> List[OnlineEvaluatorRatingPoint]:
         """Bucketed average-rating-over-time for this evaluator. ``window`` is one of
         ``"24h"``, ``"7d"``, ``"30d"``."""

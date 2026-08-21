@@ -32,6 +32,7 @@ class EvaluationSettingsBuilder:
         rouge_score: bool = False,
         similarity_model: Optional[str] = None,
         sovereignty_models: Optional[List[str]] = None,
+        code_scorers: Optional[List[Dict[str, Any]]] = None,
     ):
         self._client = client
         self._payload: Dict[str, Any] = {
@@ -68,6 +69,11 @@ class EvaluationSettingsBuilder:
                 "enabled": True,
                 "models": list(sovereignty_models),
             }
+        # Sandboxed JS scorers run per result alongside the judge - each entry is
+        # {"name": ..., "enabled": True, "code": "..."} where the code is a JS function body
+        # receiving (input, output, expected, toolCalls) and returning {score, reasoning}.
+        if code_scorers:
+            self._payload["codeScorers"] = list(code_scorers)
 
     def publish(self) -> EvaluationSettings:
         logger.info("Publishing evaluation settings '%s'", self._payload["name"])
@@ -96,6 +102,7 @@ class EvaluationSettingsClient:
         rouge_score: bool = False,
         similarity_model: Optional[str] = None,
         sovereignty_models: Optional[List[str]] = None,
+        code_scorers: Optional[List[Dict[str, Any]]] = None,
     ) -> EvaluationSettingsBuilder:
         return EvaluationSettingsBuilder(
             self._client,
@@ -113,6 +120,7 @@ class EvaluationSettingsClient:
             rouge_score=rouge_score,
             similarity_model=similarity_model,
             sovereignty_models=sovereignty_models,
+            code_scorers=code_scorers,
         )
 
     def get(self, evaluation_settings_id: str) -> EvaluationSettings:

@@ -15,6 +15,10 @@ class AgentXAuthError(AgentXError):
     """Invalid or missing API key."""
 
 
+class AgentXConnectionError(AgentXError):
+    """The AgentX API (or self-host engine) could not be reached at the configured base_url."""
+
+
 class AgentXAPIError(AgentXError):
     """Unexpected API error."""
 

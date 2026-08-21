@@ -66,6 +66,12 @@ class IngestClient:
             }
         )
 
+        # First delivery failure per client logs at WARNING (visible under default logging) -
+        # the tracer is fire-and-forget by design, so a wrong base_url or rejected key would
+        # otherwise fail silently forever with an empty dashboard as the only symptom. Repeat
+        # failures stay at DEBUG to avoid log spam. client.ping() is the fail-fast startup check.
+        self._delivery_warning_emitted = False
+
         self._queue: queue.Queue[Optional[Dict[str, Any]]] = queue.Queue(maxsize=_QUEUE_MAX)
         self._worker = threading.Thread(target=self._drain, daemon=True, name="agentx-ingest")
         self._worker.start()
@@ -104,9 +110,11 @@ class IngestClient:
         try:
             resp = self._session.post(self._endpoint, json=payload, timeout=10)
         except requests.RequestException as exc:
+            self._warn_delivery(f"{exc.__class__.__name__}: {exc}")
             logger.debug("agentx ingest sync send error: %s", exc)
             return None
         if not resp.ok:
+            self._warn_delivery(f"HTTP {resp.status_code}", status=resp.status_code)
             logger.debug("agentx ingest sync HTTP %d: %s", resp.status_code, resp.text[:200])
             return None
         try:
@@ -310,6 +318,29 @@ class IngestClient:
     # Internal
     # ------------------------------------------------------------------
 
+    def _warn_delivery(self, detail: str, status: Optional[int] = None) -> None:
+        if self._delivery_warning_emitted:
+            return
+        self._delivery_warning_emitted = True
+        if status in (401, 403):
+            hint = (
+                "the API key was rejected - check api_key / AGENTX_API_KEY (for self-host, copy "
+                "the 'Default project API key' from the engine's startup log)"
+            )
+        else:
+            hint = (
+                "check base_url / AGENTX_API_BASE_URL (for self-host it should look like "
+                "http://localhost:4700/api/v1)"
+            )
+        logger.warning(
+            "AgentX traces are NOT being delivered to %s (%s) - %s. "
+            "Call client.ping() at startup to fail fast on misconfiguration. "
+            "Further delivery failures will log at DEBUG only.",
+            self._endpoint,
+            detail,
+            hint,
+        )
+
     def _drain(self) -> None:
         while True:
             payload = self._queue.get()
@@ -338,8 +369,10 @@ class IngestClient:
                 last_exc = Exception(f"HTTP {resp.status_code}")
                 continue
             if not resp.ok:
+                self._warn_delivery(f"HTTP {resp.status_code}", status=resp.status_code)
                 logger.debug("agentx ingest HTTP %d: %s", resp.status_code, resp.text[:200])
                 return
             return
 
+        self._warn_delivery(str(last_exc))
         logger.debug("agentx ingest failed after retries: %s", last_exc)

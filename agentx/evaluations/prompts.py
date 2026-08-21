@@ -51,5 +51,24 @@ class PromptClient:
         second lookup method."""
         return self._client.get_prompt(name, version=version)
 
+    def examples(self, prompt_id: str, window: Optional[str] = None) -> dict:
+        """The merged evidence (worst eval-run results + low-rated online-evaluator traffic)
+        a propose() call will rewrite from - version-scoped to the prompt's current version."""
+        return self._client.get_prompt_examples(prompt_id, window=window)
+
+    def propose(self, prompt_id: str) -> dict:
+        """Ask the judge for a rewrite grounded in examples(). Returns the proposal
+        (revisedText/reasoning/sourceBreakdown) without publishing anything."""
+        return self._client.propose_prompt(prompt_id)
+
+    def publish_version(
+        self, prompt_id: str, *, text: str, source: str = "proposed",
+        reasoning: Optional[str] = None, based_on_version: Optional[int] = None,
+    ) -> dict:
+        """Publish a new version (the human-approval step of the propose flow)."""
+        return self._client.publish_prompt_version(
+            prompt_id, text=text, source=source, reasoning=reasoning, based_on_version=based_on_version
+        )
+
     def list(self) -> List[Prompt]:
         return self._client.list_prompts()

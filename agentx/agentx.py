@@ -111,6 +111,50 @@ class AgentX:
                 f"Failed to list workforces: {response.status_code} - {response.reason}"
             )
 
+    def ping(self) -> dict:
+        """Verify the client can actually reach AgentX and that the API key is accepted.
+
+        The constructor is deliberately lazy (no network call - standard SDK behavior, so
+        offline construction and tests work), and trace delivery is fire-and-forget, so a
+        wrong ``base_url`` or ``api_key`` otherwise surfaces only as a one-time warning in
+        logs while traces silently go nowhere. Call this once at startup of a long-running
+        service to fail fast instead::
+
+            client = AgentX.from_env()
+            client.ping()  # raises immediately on a bad URL or key
+
+        Raises :class:`agentx.exceptions.AgentXConnectionError` when the URL is unreachable,
+        :class:`agentx.exceptions.AgentXAuthError` when the key is rejected, and
+        :class:`agentx.exceptions.AgentXAPIError` on any other non-OK response. Returns
+        ``{"ok": True, "base_url": ...}`` on success.
+        """
+        from agentx.exceptions import AgentXAPIError, AgentXAuthError, AgentXConnectionError
+
+        base = api_base()
+        # /monitor/patterns: the cheapest key-authenticated endpoint that exists on both the
+        # hosted API and the self-host engine's SDK-facing router.
+        url = f"{base}/monitor/patterns"
+        try:
+            response = requests.get(url, headers=get_headers(self.api_key), timeout=10)
+        except requests.RequestException as exc:
+            raise AgentXConnectionError(
+                f"Cannot reach AgentX at {base} ({exc.__class__.__name__}: {exc}). "
+                "Check base_url / AGENTX_API_BASE_URL - for self-host it should look like "
+                "http://localhost:4700/api/v1."
+            ) from exc
+        if response.status_code in (401, 403):
+            raise AgentXAuthError(
+                f"AgentX at {base} rejected the API key (HTTP {response.status_code}). "
+                "Check api_key / AGENTX_API_KEY - for self-host, copy the 'Default project "
+                "API key' from the engine's startup log."
+            )
+        if not response.ok:
+            raise AgentXAPIError(
+                f"AgentX at {base} responded HTTP {response.status_code} to the health probe.",
+                status_code=response.status_code,
+            )
+        return {"ok": True, "base_url": base}
+
     def get_profile(self):
         """Get the current user's profile information."""
         url = f"{api_base()}/access/getProfile"

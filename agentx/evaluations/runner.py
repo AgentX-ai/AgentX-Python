@@ -271,6 +271,13 @@ class EvaluationRunContext:
     # UI reads, computed once in the API.
     # ------------------------------------------------------------------
 
+    def results(self) -> list:
+        """Per-result rows for this run (rating, justification, code scorer rows, trace ids,
+        latency/tokens, similarity metrics) - what the dashboard's run detail table shows,
+        fetched fresh from the engine."""
+        detail = self._client.get_run(self.run_id)
+        return detail.get("results", []) if isinstance(detail, dict) else []
+
     @property
     def run_id(self) -> str:
         """The server-side run id - handy for fetching the run's full results afterwards."""
@@ -401,6 +408,7 @@ class EvaluationsRunner:
         self.datasets = client.datasets
         self.settings = client.settings
         self.prompts = client.prompts
+        self.tool_schemas = client.tool_schemas
 
     def list_models(self, provider: Optional[str] = None) -> List[ModelInfo]:
         """List the LLM models AgentX supports - the same set selectable for
@@ -408,6 +416,20 @@ class EvaluationsRunner:
         to filter. Useful for discovering valid model identifiers to compare
         against."""
         return self._client.list_models(provider)
+
+    def list_gates(self) -> list:
+        """Recorded CI gate verdicts, newest first (the dashboard's CI Gates history)."""
+        return self._client.list_gates()
+
+    def simulate_conversation(self, **kwargs) -> dict:
+        """Persona-driven multi-turn simulation against a prompt - see
+        EvaluationsClient.simulate_conversation for parameters."""
+        return self._client.simulate_conversation(**kwargs)
+
+    def get_run(self, run_id: str) -> dict:
+        """Run summary + per-result rows by id, without needing the EvaluationRunContext that
+        created it (e.g. from a separate process)."""
+        return self._client.get_run(run_id)
 
     def get_analysis_status(self, run_id: str) -> AnalysisStatus:
         """Check on an in-progress ``.analyze()`` job by run id, without needing

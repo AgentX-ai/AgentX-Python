@@ -102,6 +102,8 @@ class EvaluationsClient:
         self.datasets = DatasetClient(self)
         self.settings = EvaluationSettingsClient(self)
         self.prompts = PromptClient(self)
+        from agentx.evaluations.tool_schemas import ToolSchemaClient
+        self.tool_schemas = ToolSchemaClient(self)
 
     # ------------------------------------------------------------------
     # Low-level HTTP
@@ -136,7 +138,7 @@ class EvaluationsClient:
         ``retry=False`` disables the backoff loop entirely. Use it for any request that is
         both slow and billable: the loop retries on ``requests.RequestException``, which
         includes read timeouts, so a synchronous endpoint that outlives its timeout would
-        otherwise be re-invoked — and paid for — up to four times.
+        otherwise be re-invoked, and paid for, up to four times.
         """
         url = f"{base or self._base_url}{path}"
         schedule = [0.0] + (_RETRY_BACKOFF if retry else [])
@@ -481,6 +483,109 @@ class EvaluationsClient:
             status=envelope.get("status") or "completed",
             statistics=envelope.get("statistics"),
             **body,
+        )
+
+    # ------------------------------------------------------------------
+    # Prompt improvement loop (examples -> propose -> publish). These ride the engine's
+    # /evaluate dialect via _api_root(), same precedent get_report/_analysis already use for
+    # routes that live on the dashboard router (self-host only).
+    # ------------------------------------------------------------------
+
+    def get_prompt_examples(self, prompt_id: str, window: Optional[str] = None) -> dict:
+        params = {"window": window} if window else None
+        return self._request(
+            "GET", f"/evaluate/prompts/{prompt_id}/examples", base=self._api_root, params=params
+        )
+
+    def propose_prompt(self, prompt_id: str) -> dict:
+        # One real judge call - no retry (see _request's retry note).
+        return self._request(
+            "POST", f"/evaluate/prompts/{prompt_id}/propose", base=self._api_root, timeout=180, retry=False
+        )
+
+    def publish_prompt_version(
+        self, prompt_id: str, *, text: str, source: str = "proposed",
+        reasoning: Optional[str] = None, based_on_version: Optional[int] = None,
+    ) -> dict:
+        payload: dict = {"text": text, "source": source}
+        if reasoning is not None:
+            payload["reasoning"] = reasoning
+        if based_on_version is not None:
+            payload["basedOnVersion"] = based_on_version
+        return self._request(
+            "POST", f"/evaluate/prompts/{prompt_id}/versions", base=self._api_root, json=payload
+        )
+
+    # ------------------------------------------------------------------
+    # Tool schema registry (same version-scoped propose/publish loop as prompts)
+    # ------------------------------------------------------------------
+
+    def list_tool_schemas(self) -> List[dict]:
+        data = self._request("GET", "/evaluate/tool-schemas", base=self._api_root)
+        return data.get("toolSchemas", []) if isinstance(data, dict) else data
+
+    def create_tool_schema(self, *, name: str, definition: str, description: Optional[str] = None) -> dict:
+        payload: dict = {"name": name, "definition": definition}
+        if description is not None:
+            payload["description"] = description
+        return self._request("POST", "/evaluate/tool-schemas", base=self._api_root, json=payload)
+
+    def get_tool_schema_examples(self, tool_schema_id: str, window: Optional[str] = None) -> dict:
+        params = {"window": window} if window else None
+        return self._request(
+            "GET", f"/evaluate/tool-schemas/{tool_schema_id}/examples", base=self._api_root, params=params
+        )
+
+    def propose_tool_schema(self, tool_schema_id: str, window: Optional[str] = None) -> dict:
+        payload = {"window": window} if window else {}
+        return self._request(
+            "POST", f"/evaluate/tool-schemas/{tool_schema_id}/propose",
+            base=self._api_root, json=payload, timeout=180, retry=False,
+        )
+
+    def publish_tool_schema_version(
+        self, tool_schema_id: str, *, definition: str, source: str = "proposed",
+        reasoning: Optional[str] = None, based_on_version: Optional[int] = None,
+    ) -> dict:
+        payload: dict = {"definition": definition, "source": source}
+        if reasoning is not None:
+            payload["reasoning"] = reasoning
+        if based_on_version is not None:
+            payload["basedOnVersion"] = based_on_version
+        return self._request(
+            "POST", f"/evaluate/tool-schemas/{tool_schema_id}/versions", base=self._api_root, json=payload
+        )
+
+    # ------------------------------------------------------------------
+    # CI gate history + conversation simulation (self-host)
+    # ------------------------------------------------------------------
+
+    def list_gates(self) -> List[dict]:
+        """Recorded CI gate verdicts, newest first - the dashboard's CI Gates history."""
+        data = self._request("GET", "/evaluate/ci/gates", base=self._api_root)
+        return data.get("gates", []) if isinstance(data, dict) else data
+
+    def simulate_conversation(
+        self, *, model: str, system_prompt: str, persona: str, goal: str,
+        max_turns: int = 5, tools: Optional[List[dict]] = None, agent_name: Optional[str] = None,
+    ) -> dict:
+        """Run a persona-driven multi-turn simulation against a prompt (the Playground's
+        "Simulate conversation"). Blocking and judge-billed: one LLM call per simulated turn
+        plus the closing judgment, so expect it to take tens of seconds."""
+        payload: dict = {
+            "model": model,
+            "messages": [{"role": "system", "content": system_prompt}],
+            "persona": persona,
+            "goal": goal,
+            "maxTurns": max_turns,
+        }
+        if tools:
+            payload["tools"] = tools
+        if agent_name:
+            payload["agentName"] = agent_name
+        return self._request(
+            "POST", "/evaluate/playground/simulate", base=self._api_root, json=payload,
+            timeout=600, retry=False,
         )
 
 
