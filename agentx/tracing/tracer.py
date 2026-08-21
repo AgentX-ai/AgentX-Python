@@ -444,15 +444,30 @@ class _TraceSpan:
         *,
         input: Any = None,
         output: Any = None,
+        success: Optional[bool] = None,
+        error: Optional[str] = None,
         latency_ms: Optional[int] = None,
     ) -> None:
-        """Record a tool call made during this span."""
-        self.tool_calls.append({
+        """
+        Record a tool call made during this span.
+
+        ``success``/``error`` mark a failed call, same semantics as
+        :meth:`Tracer.record_tool_call`. ``success=False`` is what the engine's built-in "Tool
+        failure" Monitor check and the dashboard's Tool quality column both read; leaving
+        ``success`` unset means "unknown" (the key is omitted entirely) and the dashboard falls
+        back to its output-text heuristic instead of assuming the call passed.
+        """
+        entry: Dict[str, Any] = {
             "name": name,
             "input": _safe_serialize(input) if input is not None else None,
             "output": _safe_serialize(output) if output is not None else None,
             "latency_ms": latency_ms,
-        })
+        }
+        if success is not None:
+            entry["success"] = success
+        if error is not None:
+            entry["error"] = error
+        self.tool_calls.append(entry)
 
     def set_error(self, message: str) -> None:
         """Mark this span as failed with the given error message."""

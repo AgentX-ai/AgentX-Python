@@ -108,7 +108,7 @@ with tracer.trace("agent-name", framework="langchain") as span:
 |---|---|
 | `span.input = value` | Override the captured input |
 | `span.output = value` | Set the output (required in context manager mode) |
-| `span.add_tool_call(name, *, input, output, latency_ms)` | Record a tool call made during the span |
+| `span.add_tool_call(name, *, input, output, success, error, latency_ms)` | Record a tool call made during the span; `success=False` marks it failed |
 | `span.set_error(message)` | Mark the span as failed with the given error message |
 
 ---
@@ -236,9 +236,22 @@ with tracer.trace("rag-agent", framework="langchain") as span:
 
 Tool calls are displayed in the expanded trace view in the AgentX UI with per-call latency.
 
+Pass `success=False` (plus an optional `error`) for a call that failed - that's what Monitor's
+built-in "Tool failure" check and the dashboard's Tool quality column read:
+
+```python
+    span.add_tool_call(
+        "lookup_order", input=order_id, output="error: upstream timeout",
+        success=False, error="upstream timeout", latency_ms=3000,
+    )
+```
+
+Leaving `success` unset means "unknown", not "passed" - the dashboard falls back to its
+output-text heuristic for those.
+
 ### Capturing tool failures: `tracer.trace_tool_call()`
 
-`add_tool_call()` reports a call after the fact; `tracer.trace_tool_call()` wraps the execution itself, timing it and capturing failures automatically:
+`add_tool_call()` reports a call after the fact, with the outcome you pass it; `tracer.trace_tool_call()` wraps the execution itself, timing it and capturing failures automatically:
 
 ```python
 with tracer.trace("support-agent") as span:
@@ -250,7 +263,7 @@ with tracer.trace("support-agent") as span:
     span.output = answer
 ```
 
-An exception escaping the block records the call with `success=False` plus the error text, then propagates unchanged so your own error handling still runs. That `success: false` is what Monitor's built-in "Tool failure" check and the dashboard's Tool quality column read, so a flaky tool shows up in triage without any extra wiring. To set the outcome yourself instead (an API that returned a well-formed error payload, say), use `tracer.record_tool_call(name, input=..., output=..., success=False, error="...")`.
+An exception escaping the block records the call with `success=False` plus the error text, then propagates unchanged so your own error handling still runs. That `success: false` is what Monitor's built-in "Tool failure" check and the dashboard's Tool quality column read, so a flaky tool shows up in triage without any extra wiring. To set the outcome yourself instead (an API that returned a well-formed error payload, say), use `tracer.record_tool_call(name, input=..., output=..., success=False, error="...")`, or `span.add_tool_call(...)` with the same `success`/`error` arguments when you already have a span in hand.
 
 ---
 
