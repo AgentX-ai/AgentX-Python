@@ -18,7 +18,8 @@ from agentx.monitor.models import (
 
 logger = logging.getLogger(__name__)
 
-from agentx.util import _DEFAULT_API_BASE as _UTIL_API_BASE
+from agentx.exceptions import EndpointNotAvailable
+from agentx.util import _DEFAULT_API_BASE as _UTIL_API_BASE, endpoint_missing
 
 SDK_NAME = "agentx-python"
 
@@ -37,6 +38,18 @@ class AgentXAuthError(AgentXMonitorError):
 
 class AgentXValidationError(AgentXMonitorError):
     pass
+
+
+class MonitorEndpointNotAvailable(AgentXMonitorError, EndpointNotAvailable):
+    """A 404 with no handler behind it - see agentx.exceptions.EndpointNotAvailable.
+
+    Inherits from both so code already catching AgentXMonitorError is unaffected, and code
+    that wants to tell "this deployment cannot do that" from "that request was wrong" can.
+    """
+
+    def __init__(self, call: str | None, method: str, url: str) -> None:
+        EndpointNotAvailable.__init__(self, call, method, url)
+        self.status_code = 404
 
 
 class MonitorClient:
@@ -97,7 +110,9 @@ class MonitorClient:
     def _workspace_params(self) -> Optional[dict]:
         return {"workspaceId": self._workspace_id} if self._workspace_id else None
 
-    def _request(self, method: str, path: str, timeout: int = 30, **kwargs) -> Any:
+    def _request(
+        self, method: str, path: str, timeout: int = 30, call: Optional[str] = None, **kwargs
+    ) -> Any:
         url = f"{self._base_url}{path}"
         last_exc: Optional[Exception] = None
         for attempt, wait in enumerate([0.0] + _RETRY_BACKOFF):
@@ -120,6 +135,8 @@ class MonitorClient:
                 )
                 last_exc = AgentXMonitorError(f"HTTP {resp.status_code}")
                 continue
+            if endpoint_missing(resp):
+                raise MonitorEndpointNotAvailable(call, method.upper(), url)
             if not resp.ok:
                 raise AgentXMonitorError(f"HTTP {resp.status_code}: {resp.text}")
             try:

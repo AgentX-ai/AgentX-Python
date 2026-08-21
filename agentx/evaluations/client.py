@@ -23,7 +23,8 @@ from agentx.evaluations.models import (
 
 logger = logging.getLogger(__name__)
 
-from agentx.util import _DEFAULT_API_BASE as _UTIL_API_BASE
+from agentx.exceptions import EndpointNotAvailable
+from agentx.util import _DEFAULT_API_BASE as _UTIL_API_BASE, endpoint_missing
 
 _DEFAULT_BASE_URL = f"{_UTIL_API_BASE}/custom-agent-evaluations"
 SDK_NAME = "agentx-python"
@@ -57,6 +58,18 @@ class AgentXAuthError(AgentXEvaluationsError):
 
 class AgentXValidationError(AgentXEvaluationsError):
     pass
+
+
+class EvaluationsEndpointNotAvailable(AgentXEvaluationsError, EndpointNotAvailable):
+    """A 404 with no handler behind it - see agentx.exceptions.EndpointNotAvailable.
+
+    Inherits from both so code already catching AgentXEvaluationsError is unaffected, and code
+    that wants to tell "this deployment cannot do that" from "that request was wrong" can.
+    """
+
+    def __init__(self, call: str | None, method: str, url: str) -> None:
+        EndpointNotAvailable.__init__(self, call, method, url)
+        self.status_code = 404
 
 
 class EvaluationsClient:
@@ -126,6 +139,7 @@ class EvaluationsClient:
         timeout: int = 30,
         base: Optional[str] = None,
         retry: bool = True,
+        call: Optional[str] = None,
         **kwargs,
     ) -> Any:
         """Call the evaluations API.
@@ -167,6 +181,8 @@ class EvaluationsClient:
                     f"HTTP {resp.status_code}", status_code=resp.status_code
                 )
                 continue
+            if endpoint_missing(resp):
+                raise EvaluationsEndpointNotAvailable(call, method.upper(), url)
             if not resp.ok:
                 raise AgentXEvaluationsError(
                     f"HTTP {resp.status_code}: {resp.text}", status_code=resp.status_code
@@ -186,7 +202,7 @@ class EvaluationsClient:
         the Sovereignty & Portability Index. Pass ``provider`` (e.g. "Google")
         to filter."""
         params = {"provider": provider} if provider else None
-        data = self._request("GET", "/models", params=params)
+        data = self._request("GET", "/models", params=params, call="list_models()")
         items = data if isinstance(data, list) else data.get("models", [])
         return [ModelInfo(**m) for m in items]
 

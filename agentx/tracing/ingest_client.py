@@ -9,8 +9,8 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from agentx.util import _DEFAULT_API_BASE as _UTIL_API_BASE
-from agentx.exceptions import AgentXAPIError, CINotEnabled, DatasetNotFound
+from agentx.util import _DEFAULT_API_BASE as _UTIL_API_BASE, endpoint_missing
+from agentx.exceptions import AgentXAPIError, CINotEnabled, DatasetNotFound, EndpointNotAvailable
 from agentx.tracing.ci_types import (
     CIRun,
     CIRunResult,
@@ -138,7 +138,7 @@ class IngestClient:
             payload["workspaceId"] = self._workspace_id
 
         resp = self._session.post(url, json=payload, timeout=60)
-        resp.raise_for_status()
+        self._raise_for_ci_status(resp, "evaluate_trace()")
         return resp.json()
 
     # ------------------------------------------------------------------
@@ -168,7 +168,7 @@ class IngestClient:
 
         url = f"{self._base_url}/ingest/ci-runs"
         resp = self._session.post(url, json=payload, timeout=30)
-        self._raise_for_ci_status(resp)
+        self._raise_for_ci_status(resp, "create_ci_run()")
 
         data = resp.json()
         return CIRun(
@@ -200,7 +200,7 @@ class IngestClient:
 
         url = f"{self._base_url}/ingest/ci-runs/{run_id}/results"
         resp = self._session.post(url, json=payload, timeout=60)
-        self._raise_for_ci_status(resp)
+        self._raise_for_ci_status(resp, "submit_result()")
 
         data = resp.json()
         return CIQuestionScore(
@@ -215,14 +215,14 @@ class IngestClient:
         """Finalize the run and return the gate result."""
         url = f"{self._base_url}/ingest/ci-runs/{run_id}/finalize"
         resp = self._session.post(url, json={}, timeout=60)
-        self._raise_for_ci_status(resp)
+        self._raise_for_ci_status(resp, "finalize_ci_run()")
         return self._parse_ci_result(resp.json())
 
     def get_ci_run(self, run_id: str) -> CIRunStatus:
         """Poll the status of a CI run."""
         url = f"{self._base_url}/ingest/ci-runs/{run_id}"
         resp = self._session.get(url, timeout=15)
-        self._raise_for_ci_status(resp)
+        self._raise_for_ci_status(resp, "get_ci_run()")
         data = resp.json()
         return CIRunStatus(
             run_id=data["run_id"],
@@ -249,7 +249,7 @@ class IngestClient:
             params["workspaceId"] = resolved_workspace
         url = f"{self._base_url}/ingest/datasets/{dataset_id}/test-cases"
         resp = self._session.get(url, params=params, timeout=15)
-        self._raise_for_ci_status(resp)
+        self._raise_for_ci_status(resp, "get_dataset_test_cases()")
         return resp.json()
 
     # ------------------------------------------------------------------
@@ -291,7 +291,7 @@ class IngestClient:
         )
 
     @staticmethod
-    def _raise_for_ci_status(resp: requests.Response) -> None:
+    def _raise_for_ci_status(resp: requests.Response, call: str = "This call") -> None:
         if resp.ok:
             return
         try:
@@ -300,6 +300,11 @@ class IngestClient:
         except Exception:
             message = resp.text[:200]
 
+        # Every 404 here used to become DatasetNotFound, including the ones that mean the route
+        # does not exist on this deployment. Against a self-host engine - which serves none of the
+        # CI-run surface - that told callers their dataset was gone seconds after they created it.
+        if endpoint_missing(resp):
+            raise EndpointNotAvailable(call, resp.request.method or "?", resp.url)
         if resp.status_code == 404:
             raise DatasetNotFound(message)
         if resp.status_code == 400 and "ci" in message.lower():
