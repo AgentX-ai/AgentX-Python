@@ -296,6 +296,17 @@ export AGENTX_API_BASE_URL=http://localhost:4700/api/v1
 export AGENTX_API_KEY=<printed by agentx-trace-eval on first run>
 ```
 
+Trace, Evaluate and Monitor all work against it, including the self-host-only parts (`client.evaluations.prompts`, `client.monitor.online_evaluators`, `client.outcomes`, `client.feedback`, and `run.gate(...)` for CI). A few calls have no route there and raise `EndpointNotAvailable` naming the call and the URL rather than a bare 404: `client.evaluations.list_models()`, `client.tracer.evaluate_trace()`, and the CI-run surface behind `client.tracer.run_eval()`. Gate a self-host CI job with `report.gate(fail_under=..., no_regression=True)` instead.
+
+```python
+from agentx import EndpointNotAvailable
+
+try:
+    client.tracer.run_eval(dataset_id, my_agent)
+except EndpointNotAvailable as exc:
+    print(f"{exc.call} needs the hosted API; use report.gate(...) on self-host")
+```
+
 `agentx-trace-eval` isn't this SDK's own code - the engine itself is a separate, compiled binary, downloaded on demand rather than bundled into this package, so installing `agentx-python` doesn't get any heavier for the (much more common) case of just talking to the hosted AgentX API. See that repo's README for what's included, and `AGENTX_INSTALL_DIR`/`AGENTX_TRACE_EVAL_VERSION`/`AGENTX_TRACE_EVAL_SKIP_WEB` env vars to control where/what it installs.
 
 ---
