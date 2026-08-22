@@ -199,6 +199,17 @@ class MonitorClient:
         return [OnlineEvaluatorEvent(**e) for e in data.get("events", [])]
 
     # ------------------------------------------------------------------
+    # KPI endpoint
+    # ------------------------------------------------------------------
+
+    def kpis(self, window: str = "7d") -> dict:
+        """Production health metrics over a window ("24h", "7d", or "30d") - the same numbers
+        the dashboard's Overview KPI strip shows: totalRuns, healthRate, failureRate,
+        downvoteRate (share of end-user votes that were "down"), toolFailureRate, p95LatencyMs,
+        plus deltas vs the prior window and the run-outcome breakdown."""
+        return self._request("GET", "/kpis", params={"window": window})
+
+    # ------------------------------------------------------------------
     # Signal endpoints
     # ------------------------------------------------------------------
 

@@ -74,3 +74,19 @@ class FeedbackClient:
             raise AgentXFeedbackError(f"Failed to report feedback ({resp.status_code}): {detail}")
         logger.info("Reported %s feedback on trace %s", rating, trace_id)
         return resp.json().get("feedback", {})
+
+    def list(self, trace_id: str) -> list:
+        """All votes recorded on one trace, oldest first (``GET /feedback/trace/:traceId``) -
+        the same rows the dashboard's trace dialog shows as up/down chips."""
+        resp = requests.get(
+            f"{api_base()}/feedback/trace/{trace_id}",
+            headers=get_headers(self._api_key),
+            timeout=10,
+        )
+        if resp.status_code >= 400:
+            try:
+                detail = resp.json().get("error", resp.reason)
+            except ValueError:
+                detail = resp.reason
+            raise AgentXFeedbackError(f"Failed to list feedback ({resp.status_code}): {detail}")
+        return resp.json().get("feedback", [])
