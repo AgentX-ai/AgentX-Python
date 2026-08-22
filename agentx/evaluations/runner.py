@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
 from typing import Any, Callable, Dict, List, Optional, Set, Union
@@ -36,6 +37,17 @@ from agentx.evaluations._term import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _eval_quiet() -> bool:
+    """AGENTX_EVAL_QUIET=1 silences the interactive progress UI (spinners, per-case lines) for
+    CI logs - results, gate verdicts, and errors still print. Read per call so tests can toggle."""
+    return os.getenv("AGENTX_EVAL_QUIET", "").lower() in ("1", "true", "yes")
+
+
+def _say(*args, **kwargs) -> None:
+    if not _eval_quiet():
+        print(*args, **kwargs)
 
 AdapterLike = Union[
     Callable[[EvaluationCase], Any],
@@ -126,18 +138,18 @@ class EvaluationRunContext:
         )
         n_smoke = sum(1 for c in cases if c.is_smoke_test_variant)
 
-        print(cyan(sep))
-        print(f"  {bold('AgentX Evaluation')}  {dim(' - ')}  {name}")
-        print(cyan(sep))
-        print(f"  {dim('Run   :')} {dim(self._run.run_id)}")
+        _say(cyan(sep))
+        _say(f"  {bold('AgentX Evaluation')}  {dim(' - ')}  {name}")
+        _say(cyan(sep))
+        _say(f"  {dim('Run   :')} {dim(self._run.run_id)}")
         if display:
-            print(f"  {dim('Agent :')} {display}  {dim(f'({framework} / {runtime})')}")
-        print()
+            _say(f"  {dim('Agent :')} {display}  {dim(f'({framework} / {runtime})')}")
+        _say()
         exec_line = f"{bold('Executing')}  {n_q} question{'s' if n_q != 1 else ''} × {n_r} run{'s' if n_r != 1 else ''}"
         if n_smoke:
             variant_word = "variant" if n_smoke == 1 else "variants"
             exec_line += f"  {dim(f'(+{n_smoke} smoke-test {variant_word})')}"
-        print(exec_line)
+        _say(exec_line)
 
         # Resume: skip already-submitted keys
         already_done = self._fetch_submitted_keys()
@@ -185,7 +197,7 @@ class EvaluationRunContext:
                 resp = self._client.append_results(self._run.run_id, batch_id, batch)
                 if resp.live_statistics is not None:
                     self._live_stats = resp.live_statistics
-                print(
+                _say(
                     f"  {green('✓')}  Scored {resp.accepted} result{'s' if resp.accepted != 1 else ''}"
                 )
                 logger.info(
@@ -196,7 +208,7 @@ class EvaluationRunContext:
                     resp.failed_validation,
                 )
             except Exception as exc:
-                print(f"  {red('✗')}  Scoring failed: {dim(str(exc))}")
+                _say(f"  {red('✗')}  Scoring failed: {dim(str(exc))}")
                 logger.error("Failed to submit batch %s: %s", batch_id[:8], exc)
 
     def _fetch_submitted_keys(self) -> Set[str]:
@@ -213,16 +225,16 @@ class EvaluationRunContext:
     # ------------------------------------------------------------------
 
     def finalize(self) -> "EvaluationRunContext":
-        print()
+        _say()
         with Spinner("Finalizing - submitting results"):
             try:
                 data = self._client.finalize_run(self._run.run_id)
                 if isinstance(data, dict) and data.get("liveStatistics") is not None:
                     self._live_stats = LiveStatistics(**data["liveStatistics"])
-                print(f"  {green('✓')}  Finalized")
+                _say(f"  {green('✓')}  Finalized")
                 logger.info("Run %s finalized", self._run.run_id)
             except Exception as exc:
-                print(f"  {red('✗')}  Finalize failed: {dim(str(exc))}")
+                _say(f"  {red('✗')}  Finalize failed: {dim(str(exc))}")
                 logger.error("Finalize failed: %s", exc)
         return self
 
@@ -255,11 +267,11 @@ class EvaluationRunContext:
             caller=caller,
         )
         result = GateResult(data)
-        print()
+        _say()
         for check in result.checks:
             mark = green("✓") if check.get("passed") else red("✗")
-            print(f"  {mark}  [{check.get('check')}] {check.get('detail')}")
-        print(f"  {green('✓  GATE PASSED') if result.passed else red('✗  GATE FAILED')}")
+            _say(f"  {mark}  [{check.get('check')}] {check.get('detail')}")
+        _say(f"  {green('✓  GATE PASSED') if result.passed else red('✗  GATE FAILED')}")
         return result
 
     # ------------------------------------------------------------------
@@ -273,9 +285,13 @@ class EvaluationRunContext:
     def results(self) -> list:
         """Per-result rows for this run (rating, justification, code scorer rows, trace ids,
         latency/tokens, similarity metrics) - what the dashboard's run detail table shows,
-        fetched fresh from the engine."""
+        fetched fresh from the engine. Returns typed ``RunResultRow`` objects (snake_case
+        attributes; ``.raw`` is the wire dict; dict-style access warns for one cycle - P1.5)."""
+        from agentx.evaluations.models import RunResultRow
+
         detail = self._client.get_run(self.run_id)
-        return detail.get("results", []) if isinstance(detail, dict) else []
+        rows = detail.get("results", []) if isinstance(detail, dict) else []
+        return [RunResultRow.from_wire(r) for r in rows]
 
     @property
     def run_id(self) -> str:
@@ -335,7 +351,7 @@ class EvaluationRunContext:
             raise ValueError("judges must contain 1-3 model ids")
         resolved_judges = judges if judges is not None else [_DEFAULT_JUDGE_MODEL]
 
-        print()
+        _say()
         with Spinner("Analyzing - AI is reviewing your results") as spinner:
             try:
                 self._client.analyze_run(
@@ -355,14 +371,14 @@ class EvaluationRunContext:
                     status = self._client.get_analysis_status(self._run.run_id)
 
                 if not status.is_terminal:
-                    print(f"  {yellow('!')}  Still running after {int(timeout)}s, check the dashboard for status")
+                    _say(f"  {yellow('!')}  Still running after {int(timeout)}s, check the dashboard for status")
                 elif status.status == "failed":
                     reason = status.failure_reason.message if status.failure_reason else "unknown error"
-                    print(f"  {red('✗')}  Analyze failed: {dim(reason)}")
+                    _say(f"  {red('✗')}  Analyze failed: {dim(reason)}")
                 else:
-                    print(f"  {green('✓')}  Analysis complete")
+                    _say(f"  {green('✓')}  Analysis complete")
             except Exception as exc:
-                print(f"  {red('✗')}  Analyze failed: {dim(str(exc))}")
+                _say(f"  {red('✗')}  Analyze failed: {dim(str(exc))}")
                 logger.warning("Analyze request failed: %s", exc)
 
         try:
@@ -374,7 +390,7 @@ class EvaluationRunContext:
             # the one signal that something went wrong used to be a logger.warning that is
             # invisible unless the caller configured logging. Say it on stdout, and let the
             # status carry the truth for anything reading the object.
-            print(f"  {red('✗')}  Could not fetch the report: {dim(str(exc))}")
+            _say(f"  {red('✗')}  Could not fetch the report: {dim(str(exc))}")
             logger.warning("Could not fetch report: %s", exc)
             report = Report(
                 runId=self._run.run_id,
@@ -383,7 +399,7 @@ class EvaluationRunContext:
             )
 
         self._report = report
-        print()
+        _say()
         print_report(report)
         return report
 
@@ -615,4 +631,4 @@ def _print_progress(
     line = f"  {tag}  {counter} {label}  {query_preview}"
     if suffix:
         line += f"  {suffix}"
-    print(line)
+    _say(line)

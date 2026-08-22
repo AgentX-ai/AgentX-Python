@@ -60,6 +60,16 @@ class AgentX:
         # ground truth behind the dashboard's Judge Calibration card. Self-host only.
         self.outcomes = OutcomesClient(api_key=self.api_key)
 
+        from agentx.projects import ProjectsClient
+
+        # Project CRUD (self-host): isolated tenants with their own API keys (P1.1).
+        self.projects = ProjectsClient(api_key=self.api_key)
+
+        from agentx.traces import TracesClient
+
+        # The read side of tracing: trace-by-id detail and paginated listing (P1.2).
+        self.traces = TracesClient(api_key=self.api_key)
+
         from agentx.feedback import FeedbackClient
 
         # Forward end-user votes ("up"/"down") on traced responses - a "down" raises a signal
