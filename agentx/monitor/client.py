@@ -213,6 +213,17 @@ class MonitorClient:
         plus deltas vs the prior window and the run-outcome breakdown."""
         return self._request("GET", "/kpis", params={"window": window})
 
+    def calibration(self, window: str = "7d") -> dict:
+        """Project-level judge calibration over a window ("24h", "7d", or "30d"): how often
+        AgentX's own verdicts agreed with real-world ground truth reported later (ops outcomes
+        via ``client.outcomes`` and end-user downvotes). Returns the dashboard's Judge
+        Calibration numbers: compared count, agreement, falsePositiveRate, falseNegativeRate.
+        Per-evaluator calibration lives on ``client.monitor.online_evaluators.calibration``."""
+        return self._request(
+            "GET", "/agent-monitoring/calibration",
+            base=self._api_root(), params={"window": window},
+        )
+
     # ------------------------------------------------------------------
     # Signal endpoints
     # ------------------------------------------------------------------

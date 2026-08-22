@@ -70,6 +70,12 @@ class AgentX:
         # The read side of tracing: trace-by-id detail and paginated listing (P1.2).
         self.traces = TracesClient(api_key=self.api_key)
 
+        from agentx.export import ExportClient
+
+        # Bulk NDJSON egress for backup/migration (P2.1): manifest, per-entity streaming, and
+        # directory dumps. Self-host only.
+        self.export = ExportClient(api_key=self.api_key)
+
         from agentx.feedback import FeedbackClient
 
         # Forward end-user votes ("up"/"down") on traced responses - a "down" raises a signal
