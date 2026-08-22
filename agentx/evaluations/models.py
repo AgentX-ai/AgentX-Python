@@ -400,6 +400,65 @@ class BatchAppendResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Typed run-result rows (P1.5)
+# ---------------------------------------------------------------------------
+
+
+class RunResultRow(BaseModel):
+    """One row of a finished run's results - typed and snake_case, replacing the raw wire dicts
+    ``run.results()`` used to return. ``.raw`` keeps the full wire dict for anything not yet
+    modeled. Dict-style access (``row["rating"]``, ``row.get(...)``) still works for one
+    deprecation cycle and warns; prefer the attributes."""
+
+    rating: Optional[float] = None
+    justification: Optional[str] = None
+    question_text: Optional[str] = Field(default=None, alias="questionText")
+    response: Optional[str] = None
+    trace_id: Optional[str] = Field(default=None, alias="traceId")
+    latency_ms: Optional[float] = Field(default=None, alias="latencyMs")
+    input_tokens: Optional[int] = Field(default=None, alias="inputTokens")
+    output_tokens: Optional[int] = Field(default=None, alias="outputTokens")
+    cosine_similarity: Optional[float] = Field(default=None, alias="cosineSimilarity")
+    jaccard_similarity: Optional[float] = Field(default=None, alias="jaccardSimilarity")
+    bleu_score: Optional[float] = Field(default=None, alias="bleuScore")
+    rouge_score: Optional[float] = Field(default=None, alias="rougeScore")
+    code_scorer_results: Optional[List[Dict[str, Any]]] = Field(default=None, alias="codeScorerResults")
+    raw: Dict[str, Any] = Field(default_factory=dict)
+
+    class Config:
+        populate_by_name = True
+        extra = "ignore"
+
+    @classmethod
+    def from_wire(cls, wire: Dict[str, Any]) -> "RunResultRow":
+        row = cls.model_validate(wire)
+        row.raw = wire
+        return row
+
+    def __getitem__(self, key: str) -> Any:
+        import warnings
+
+        warnings.warn(
+            "Dict-style access on run results is deprecated - use typed attributes "
+            '(row.rating, row.jaccard_similarity) or row.raw["..."] for unmodeled fields.',
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.raw[key]
+
+    def get(self, key: str, default: Any = None) -> Any:
+        import warnings
+
+        warnings.warn(
+            "Dict-style access on run results is deprecated - use typed attributes "
+            'or row.raw.get("...") for unmodeled fields.',
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.raw.get(key, default)
+
+
+# ---------------------------------------------------------------------------
 # Analysis / report
 # ---------------------------------------------------------------------------
 

@@ -35,6 +35,7 @@ class DatasetBuilder:
         rouge_score: bool = False,
         similarity_model: Optional[str] = None,
         sovereignty_models: Optional[List[str]] = None,
+        code_scorers: Optional[List[Dict[str, Any]]] = None,
     ):
         self._client = client
         self._payload: Dict[str, Any] = {
@@ -63,6 +64,21 @@ class DatasetBuilder:
             self._payload["vectorSimilarity"] = vs
         if jaccard_similarity:
             self._payload["jaccardSimilarity"] = {"enabled": True}
+        # Offline code scorers, versioned in the repo next to the dataset they guard (P1.4):
+        # each entry is {"name", "code"} (a JS function body invoked as
+        # score({input, output, expected, toolCalls})), optional "enabled" (default True).
+        if code_scorers:
+            import uuid as _uuid
+
+            self._payload["codeScorers"] = [
+                {
+                    "id": scorer.get("id") or _uuid.uuid4().hex[:12],
+                    "name": scorer["name"],
+                    "code": scorer["code"],
+                    "enabled": scorer.get("enabled", True),
+                }
+                for scorer in code_scorers
+            ]
         if bleu_score:
             self._payload["bleuScore"] = {"enabled": True}
         if rouge_score:

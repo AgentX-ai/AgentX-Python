@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import sys
+import os
 import threading
 import time
 
@@ -61,8 +62,12 @@ class Spinner:
         self._message = message
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # AGENTX_EVAL_QUIET=1: no spinner thread at all - CI logs stay clean.
+        self._quiet = os.getenv("AGENTX_EVAL_QUIET", "").lower() in ("1", "true", "yes")
 
     def __enter__(self) -> "Spinner":
+        if self._quiet:
+            return self
         if not _IS_TTY:
             print(f"  {self._message}...", flush=True)
             return self
@@ -78,7 +83,7 @@ class Spinner:
             print(f"  {message}...", flush=True)
 
     def __exit__(self, *_) -> None:
-        if not _IS_TTY:
+        if self._quiet or not _IS_TTY:
             return
         self._stop.set()
         if self._thread:

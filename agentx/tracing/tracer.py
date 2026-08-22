@@ -153,6 +153,15 @@ class _TraceSpan:
         if exc_val is not None and self._error is None:
             self._error = str(exc_val)
 
+        if self._sync and self._parent_span_id is None:
+            # sync=True means the WHOLE tree is delivered before this block returns: child
+            # spans (tool calls, LLM calls) were enqueued asynchronously during the block, so
+            # drain them before the root's own synchronous send. Without this, read-after-trace
+            # intermittently misses children (root lands, children still in flight) - the exact
+            # race the enterprise assessment reproduced (P0.1). Bounded by the same 5s budget
+            # flush() uses; child-only spans keep their async fire-and-forget behavior.
+            self._tracer.flush(timeout=5.0)
+
         self._trace_id = self._tracer._send(
             sync=self._sync,
             monitor=self._monitor,
@@ -833,7 +842,10 @@ class Tracer:
         By default the trace is queued and sent on a background thread - fire-and-forget, never
         blocks the caller, but there's no way to learn the resulting trace_id. Pass ``sync=True``
         to send it synchronously instead (blocks until ingested) so ``span.trace_id`` is populated
-        once the ``with`` block exits - e.g. to attach the trace to an evaluation result::
+        once the ``with`` block exits. On a root span, ``sync=True`` covers the WHOLE tree: any
+        child spans recorded inside the block (tool calls, LLM calls) are drained before the
+        root is sent, so a read immediately after the block sees every span, not just the root.
+        Use it e.g. to attach the trace to an evaluation result::
 
             with client.tracer.trace("support_agent_call", framework="openai", sync=True) as span:
                 resp = call_llm(...)

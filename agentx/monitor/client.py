@@ -82,6 +82,10 @@ class MonitorClient:
 
         self.patterns = MonitorPatternClient(self)
         self.signals = MonitorSignalClient(self)
+        from agentx.monitor.scorers import ScorersClient
+        # Scorers-catalog administration as code: template enable/disable, code/external scorer
+        # CRUD and dry runs - full parity with the dashboard's Scorers page (P1.3).
+        self.scorers = ScorersClient(api_key=api_key)
         self.profile = MonitorProfileClient(self)
         self.online_evaluators = MonitorOnlineEvaluatorClient(self)
         from agentx.monitor.sessions import MonitorSessionClient
