@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 class MonitorProfileClient:
     """Thin wrapper surfaced as ``client.monitor.profile``: get/update a single agent's Monitor
-    coverage and detection settings (coverage mode, sample rate, retention, redaction, approval
+    coverage and detection settings (coverage mode, sample rate, retention, approval
     policy, and threshold_overrides, e.g. the built-in "Latency regression" pattern's threshold).
 
     Unlike patterns/signals, a profile is scoped to one agent per call, since that mirrors how
@@ -41,13 +41,12 @@ class MonitorProfileClient:
         dataset_id: Optional[str] = None,
         threshold_overrides: Optional[Dict[str, Any]] = None,
         retention_days: Optional[int] = None,
-        redaction_mode: Optional[str] = None,
         approval_policy: Optional[Dict[str, str]] = None,
     ) -> MonitorProfile:
         """Update (and enable, if not already) this agent's Monitor profile. Only fields passed
         here are changed; everything else on the existing profile is left as is.
 
-        Self-host only: ``coverage_mode``/``sample_rate``/``retention_days``/``redaction_mode``,
+        Self-host only: ``coverage_mode``/``sample_rate``/``retention_days``,
         and ``threshold_overrides["latencyMs"]`` are project-level defaults now (see
         ``MonitorProfile``'s docstring) - set them via the dashboard's Platform Settings screen
         instead, passing them here is accepted but has no effect. ``enabled``/
@@ -67,7 +66,6 @@ class MonitorProfileClient:
             "datasetId": dataset_id,
             "thresholdOverrides": threshold_overrides,
             "retentionDays": retention_days,
-            "redactionMode": redaction_mode,
             "approvalPolicy": approval_policy,
         }
         payload = {k: v for k, v in payload.items() if v is not None}

@@ -122,7 +122,7 @@ class MonitorProfile(BaseModel):
     ``None`` from ``get()`` means this agent has never been configured and is running on
     platform defaults (e.g. the built-in latency threshold defaults to 20000ms).
 
-    Self-host only: ``coverage_mode``/``sample_rate``/``retention_days``/``redaction_mode``, and
+    Self-host only: ``coverage_mode``/``sample_rate``/``retention_days``, and
     ``threshold_overrides["latencyMs"]`` are project-level defaults now (set once for every agent
     via the dashboard's Platform Settings screen), not real per-agent settings - this model and
     ``update()`` still accept/return them for wire compatibility, but a self-host engine no longer
@@ -141,7 +141,6 @@ class MonitorProfile(BaseModel):
     channels: List[str] = Field(default_factory=list)
     threshold_overrides: Optional[Dict[str, Any]] = Field(default=None, alias="thresholdOverrides")
     retention_days: int = Field(default=30, alias="retentionDays")
-    redaction_mode: str = Field(default="standard", alias="redactionMode")
     approval_policy: Optional[Dict[str, str]] = Field(default=None, alias="approvalPolicy")
     created_at: Optional[str] = Field(default=None, alias="createdAt")
     updated_at: Optional[str] = Field(default=None, alias="updatedAt")
