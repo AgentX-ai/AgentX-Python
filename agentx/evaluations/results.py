@@ -10,7 +10,6 @@ from agentx.evaluations.models import (
     ResultTimings,
 )
 from agentx.evaluations.tracing import build_trace
-from agentx.evaluations.redaction import redact_dict
 
 
 def _to_int(value: Any) -> Optional[int]:
@@ -59,7 +58,7 @@ def normalize_result(
         retrieval_context = raw.get("retrieval_context") or raw.get("retrievalContext")
         meta_raw = raw.get("metadata")
         if isinstance(meta_raw, dict):
-            metadata = redact_dict(meta_raw)
+            metadata = meta_raw
 
         # Extract token counts - top-level keys take priority, fall back to metadata
         input_tokens = _to_int(raw.get("input_tokens"))

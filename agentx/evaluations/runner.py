@@ -21,7 +21,6 @@ from agentx.evaluations.models import (
     ModelInfo,
     Report,
 )
-from agentx.evaluations.redaction import redact_dict
 from agentx.evaluations.reporting import print_report
 from agentx.evaluations.results import normalize_result, normalize_error
 from agentx.evaluations._term import (
