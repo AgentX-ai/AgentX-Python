@@ -88,6 +88,11 @@ class MonitorClient:
         # Handed this client's own resolved API root, never the process-global default, so a
         # second AgentX() with a different base_url can't re-point it (deep-dive bug #1).
         self.scorers = ScorersClient(api_key=api_key, base_url=self._api_root())
+        from agentx.monitor.judge_scorers import JudgeScorersClient
+        # The unified LLM Judge Scorer (rubric + offline/online profiles in one entity) - the
+        # surface that matches the product; evaluations.settings and online_evaluators below
+        # remain as its profile-level views.
+        self.judge_scorers = JudgeScorersClient(api_key=api_key, base_url=self._api_root())
         self.profile = MonitorProfileClient(self)
         self.online_evaluators = MonitorOnlineEvaluatorClient(self)
         from agentx.monitor.sessions import MonitorSessionClient

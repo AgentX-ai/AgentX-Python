@@ -81,7 +81,12 @@ class EvaluationSettingsBuilder:
 
 
 class EvaluationSettingsClient:
-    """Thin wrapper surfaced as client.evaluations.settings."""
+    """Thin wrapper surfaced as ``client.evaluations.settings``.
+
+    Note: an evaluation-settings record is the judge rubric + OFFLINE profile of an
+    **LLM Judge Scorer** - the unified entity at ``client.monitor.judge_scorers``, which also
+    carries the optional online (live-traffic) profile. This client keeps working unchanged;
+    prefer ``judge_scorers`` for new code so both profiles live in one place."""
 
     def __init__(self, client: "EvaluationsClient"):
         self._client = client

@@ -17,7 +17,12 @@ class MonitorOnlineEvaluatorBuilder:
     ``evaluation_settings_id`` must reference an existing Evaluator config (criteria, judge
     prompt, judge model), the same config datasets/Evaluate runs use, see
     ``client.evaluations.settings.builder(...)``.
-    """
+
+    Note: an online evaluator is the ONLINE profile of an **LLM Judge Scorer** - the unified
+    entity at ``client.monitor.judge_scorers``. Strictly one profile per config since the
+    unification: binding a config that is already another evaluator's profile transparently
+    binds a fresh copy of it instead (the response's ``evaluationSettingsId`` is the copy).
+    This surface keeps working unchanged; prefer ``judge_scorers`` for new code."""
 
     def __init__(
         self,
