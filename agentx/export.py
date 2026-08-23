@@ -36,13 +36,15 @@ class ExportClient:
     (``pg_dump`` / SQLite file copy). There is deliberately no blind row-import endpoint.
     """
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         self._api_key = api_key
+        # Captured once at construction (deep-dive round 3, bug #1).
+        self._base_url = (base_url or api_base()).rstrip("/")
 
     def manifest(self) -> List[Dict[str, Any]]:
         """The exportable entities with live row counts: ``[{entity, rows, path}, ...]``."""
         resp = requests.get(
-            f"{api_base()}/export", headers=get_headers(self._api_key), timeout=30
+            f"{self._base_url}/export", headers=get_headers(self._api_key), timeout=30
         )
         if resp.status_code >= 400:
             raise AgentXExportError(f"Export manifest failed ({resp.status_code}): {resp.text[:200]}")
@@ -54,7 +56,7 @@ class ExportClient:
         timestamp column, e.g. ``createdAt`` for traces, ``lastSeenAt`` for signals)."""
         params = {"since": since} if since else None
         resp = requests.get(
-            f"{api_base()}/export/{entity}",
+            f"{self._base_url}/export/{entity}",
             headers=get_headers(self._api_key),
             params=params,
             stream=True,

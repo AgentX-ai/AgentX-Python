@@ -24,12 +24,14 @@ class TracesClient:
     span-tree read.
     """
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         self._api_key = api_key
+        # Captured once at construction (deep-dive round 3, bug #1).
+        self._base_url = (base_url or api_base()).rstrip("/")
 
     def _request(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
         resp = requests.get(
-            f"{api_base()}{path}",
+            f"{self._base_url}{path}",
             headers=get_headers(self._api_key),
             params=params or {},
             timeout=15,

@@ -33,13 +33,15 @@ class ScorersClient:
     wire.
     """
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         self._api_key = api_key
+        # Captured once at construction (deep-dive round 3, bug #1).
+        self._base_url = (base_url or api_base()).rstrip("/")
 
     def _request(self, method: str, path: str, json: Any = None, params: Any = None) -> Any:
         resp = requests.request(
             method,
-            f"{api_base()}/agent-monitoring{path}",
+            f"{self._base_url}/agent-monitoring{path}",
             headers={**get_headers(self._api_key), "Content-Type": "application/json"},
             json=json,
             params=params,

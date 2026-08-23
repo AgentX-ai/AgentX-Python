@@ -26,8 +26,10 @@ class OutcomesClient:
     tracker's webhook, a CRM workflow), and this method is the SDK's way to be that caller.
     """
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         self._api_key = api_key
+        # Captured once at construction (deep-dive round 3, bug #1).
+        self._base_url = (base_url or api_base()).rstrip("/")
 
     def report(
         self,
@@ -69,7 +71,7 @@ class OutcomesClient:
             payload["reportedBy"] = reported_by
 
         resp = requests.post(
-            f"{api_base()}/outcomes",
+            f"{self._base_url}/outcomes",
             headers={**get_headers(self._api_key), "Content-Type": "application/json"},
             json=payload,
             timeout=10,

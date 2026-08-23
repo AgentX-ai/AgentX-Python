@@ -72,6 +72,11 @@ class IngestClient:
         # failures stay at DEBUG to avoid log spam. client.ping() is the fail-fast startup check.
         self._delivery_warning_emitted = False
 
+        # Dropped-trace accounting (deep-dive round 3, bug #5): fire-and-forget may drop traces
+        # (queue overflow, retries exhausted while the engine is down), but it must never drop
+        # them SILENTLY. First drop warns, then every 50th, with the cumulative count.
+        self._dropped = 0
+
         self._queue: queue.Queue[Optional[Dict[str, Any]]] = queue.Queue(maxsize=_QUEUE_MAX)
         self._worker = threading.Thread(target=self._drain, daemon=True, name="agentx-ingest")
         self._worker.start()
@@ -90,11 +95,44 @@ class IngestClient:
         try:
             self._queue.put_nowait(payload)
         except queue.Full:
-            logger.debug("agentx ingest queue full - trace dropped")
+            self._record_drop("queue full")
 
-    def flush(self, timeout: float = 5.0) -> None:
-        """Block until all queued traces have been sent (or timeout elapses)."""
-        self._queue.join()
+    def flush(self, timeout: float = 5.0) -> bool:
+        """Block until all queued traces have been sent, or until ``timeout`` seconds elapse.
+
+        Returns ``True`` when the queue fully drained, ``False`` on deadline - undelivered
+        traces stay queued and keep sending in the background. The old implementation called
+        ``queue.join()``, which has no deadline at all: with the engine down, each queued item
+        burned the full retry backoff and a ``flush(timeout=3)`` measurably blocked for over
+        two minutes (deep-dive round 3, bug #5). The timeout is now a real wall-clock bound.
+        """
+        deadline = time.time() + timeout
+        with self._queue.all_tasks_done:
+            while self._queue.unfinished_tasks:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    logger.warning(
+                        "agentx flush(%.1fs) timed out with %d trace(s) still undelivered - "
+                        "they remain queued and keep sending in the background",
+                        timeout,
+                        self._queue.unfinished_tasks,
+                    )
+                    return False
+                self._queue.all_tasks_done.wait(remaining)
+        return True
+
+    def _record_drop(self, reason: str) -> None:
+        self._dropped += 1
+        if self._dropped == 1 or self._dropped % 50 == 0:
+            logger.warning(
+                "agentx dropped a trace (%s) - %d dropped total this process. "
+                "Tracing is fire-and-forget: traces that cannot be delivered are not persisted "
+                "locally. Use client.ping() at startup to fail fast on a bad endpoint.",
+                reason,
+                self._dropped,
+            )
+        else:
+            logger.debug("agentx dropped a trace (%s), %d total", reason, self._dropped)
 
     def send_trace_sync(self, payload: Dict[str, Any]) -> Optional[str]:
         """
@@ -372,7 +410,9 @@ class IngestClient:
             try:
                 self._send(payload)
             except Exception as exc:
-                logger.debug("agentx ingest send error: %s", exc)
+                # Anything _send didn't classify still cost us this payload - count it as a
+                # drop rather than whispering at DEBUG (bug #5's silent half).
+                self._record_drop(f"unexpected error: {exc}")
             finally:
                 self._queue.task_done()
 
@@ -397,4 +437,4 @@ class IngestClient:
             return
 
         self._warn_delivery(str(last_exc))
-        logger.debug("agentx ingest failed after retries: %s", last_exc)
+        self._record_drop(f"retries exhausted: {last_exc}")

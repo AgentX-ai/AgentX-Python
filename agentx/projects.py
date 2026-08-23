@@ -25,13 +25,16 @@ class ProjectsClient:
     users; this client covers the default self-host (auth-disabled) mode.
     """
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         self._api_key = api_key
+        # Captured once at construction so two clients with different bases can coexist
+        # (deep-dive round 3, bug #1) - never read from process-global state per call.
+        self._base_url = (base_url or api_base()).rstrip("/")
 
     def _request(self, method: str, path: str, json: Any = None) -> Any:
         resp = requests.request(
             method,
-            f"{api_base()}{path}",
+            f"{self._base_url}{path}",
             headers={**get_headers(self._api_key), "Content-Type": "application/json"},
             json=json,
             timeout=15,
