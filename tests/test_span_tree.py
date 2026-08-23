@@ -623,3 +623,57 @@ def test_record_tool_call_with_no_active_span_still_queues():
     wires = enqueued_wires(tracer)
     assert len(wires) == 1
     assert wires[0]["tool_calls"][0]["name"] == "orphan_call"
+
+
+def test_record_tool_call_serializes_the_payload_once_for_both_writes():
+    """
+    record_tool_call dual-writes the same tool payload: a child-span row for the trace tree, and
+    a flat entry on the root's tool_calls list for the engine's tool-failure check. Both must
+    carry the identical serialized payload - it used to be produced by two separate
+    _safe_serialize walks of the same object, on the caller's thread, for no gain.
+    """
+    class Doc:
+        def __init__(self, i):
+            self.id = i
+            self.text = "clause " * 20
+
+    tool_input = {"query": "refunds", "filters": {"region": "EU"}}
+    tool_output = {"docs": [Doc(i) for i in range(40)], "total": 40}
+
+    tracer = make_tracer()
+    with tracer.trace("agent") as span:
+        tracer.record_tool_call(
+            "policy_lookup", input=tool_input, output=tool_output, success=True, latency_ms=7
+        )
+        flat = list(span.tool_calls)
+
+    child = enqueued_wires(tracer)[0]
+    assert child["name"] == "policy_lookup"
+    assert len(flat) == 1
+
+    # Same payload in both places...
+    assert child["input"] == flat[0]["input"]
+    assert child["output"] == flat[0]["output"]
+    # ...and still genuinely serialized: no raw objects survive into the wire.
+    assert child["input"] == {"query": "refunds", "filters": {"region": "EU"}}
+    assert isinstance(child["output"], dict)
+    assert child["output"]["total"] == 40
+    assert len(child["output"]["docs"]) == 30  # _safe_serialize's list cap still applies
+    assert all(isinstance(d, dict) and "text" in d for d in child["output"]["docs"])
+    assert flat[0]["success"] is True
+
+
+def test_record_tool_call_without_active_span_serializes_the_payload():
+    """The pending-queue path shares the same single serialization - it must still serialize."""
+    class Obj:
+        def __init__(self):
+            self.field = "value"
+
+    tracer = make_tracer()
+    tracer.record_tool_call("orphan", input=Obj(), output=[Obj(), Obj()], latency_ms=3)
+    with tracer.trace("later"):
+        pass
+
+    tool_calls = enqueued_wires(tracer)[0]["tool_calls"]
+    assert tool_calls[0]["input"] == {"field": "value"}
+    assert tool_calls[0]["output"] == [{"field": "value"}, {"field": "value"}]

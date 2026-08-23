@@ -570,8 +570,38 @@ on an in-memory queue; a background daemon thread does all the HTTP. Measured on
 | `@tracer.trace` decorated call | ~135 µs |
 | Span carrying a 20-message history + 4 KB output | ~100 µs |
 | Span carrying 50 RAG documents in and out | ~350 µs |
+| `span.add_tool_call()` | ~30 µs |
+| `tracer.record_tool_call()` | ~60 µs |
+| `tracer.trace_tool_call()` block | ~65 µs |
+| `tracer.record_retrieval()` | ~55 µs |
+
+Cost tracks payload size, since serialising `input`/`output` is nearly all of it - each is walked
+once, capped at depth 3 and 30 items per level.
 
 Against an LLM call measured in seconds, that is well under a thousandth of the request.
+
+**Each recorded step is its own trace row.** In-code instrumentation is cheap per call, but every
+`record_tool_call()` / `trace_tool_call()` / `record_retrieval()` / `child_span()` inside a span
+emits its own row, and the sender delivers one row per HTTP request - there is no batching:
+
+| One traced request | Rows sent |
+|---|---|
+| Root span only | 1 |
+| + 3 tool calls, 1 retrieval | 5 |
+| + 10 tool calls, 2 retrievals | 13 |
+| + 30 tool calls, 5 retrievals | 36 |
+
+The single sender thread delivers roughly `1 / round-trip-time` rows per second - about 33/s at a
+30 ms RTT. A 10-tool agent request costs ~12 rows, so sustained traffic past a few requests per
+second will outrun the sender, and the queue drops the newest traces once it is full. Each row is
+its own `POST /ingest/traces`, so if you are near the 300 traces/min limit under
+[Limits](#limits), confirm how rows are counted against it.
+
+`span.add_tool_call()` is the cheap alternative on a high-volume path with deep tool loops: it
+appends to the root span's flat `tool_calls` list instead of emitting a row, so a request with 10
+tool calls sends 1 row rather than 11. The trade-off is detail - those calls show up in the flat
+list (capped at 50 per trace) rather than as timed, individually inspectable nodes in the span
+tree.
 
 **The queue never blocks you.** `enqueue()` is a non-blocking put onto a 500-deep queue. If the
 backend is slow or down, the queue fills and the newest traces are dropped rather than the caller

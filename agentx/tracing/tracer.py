@@ -334,6 +334,7 @@ class _TraceSpan:
         error: Optional[str] = None,
         tool_calls: Optional[List[Dict[str, Any]]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        _serialized: bool = False,
     ) -> "_TraceSpan":
         """
         Send one real child-span row parented to this span, with explicit timing (the caller's
@@ -348,6 +349,12 @@ class _TraceSpan:
         another ``child_span()`` call on it). The returned span is not pushed onto the
         active-span stack and has already been sent by the time this returns, since the caller
         supplies finished timing rather than opening a ``with`` block.
+
+        ``_serialized`` (private) says ``input``/``output`` have already been through
+        ``_safe_serialize`` and should be used as-is. Only for callers that need the serialized
+        form for themselves anyway - see ``Tracer.record_tool_call``, which writes the same tool
+        payload to both this child row and the root's flat ``tool_calls`` list, and would
+        otherwise walk it twice on the caller's thread.
         """
         child = _TraceSpan(
             tracer=self._tracer,
@@ -375,9 +382,9 @@ class _TraceSpan:
         # consume queue entries meant for a sibling or the outer span.
         wire: Dict[str, Any] = {"name": name}
         if input is not None:
-            wire["input"] = _safe_serialize(input)
+            wire["input"] = input if _serialized else _safe_serialize(input)
         if output is not None:
-            wire["output"] = _safe_serialize(output)
+            wire["output"] = output if _serialized else _safe_serialize(output)
         if latency_ms is not None:
             wire["latency_ms"] = latency_ms
         if child._error is not None:
@@ -744,6 +751,12 @@ class Tracer:
         ``success`` unset means "unknown" and the dashboard falls back to its output-text
         heuristic instead of assuming the call passed.
         """
+        # Serialize ONCE. Both writes below need the same JSON-safe payload, and a tool result
+        # (an API response, a page of retrieved documents) is the biggest thing this method
+        # touches - walking it twice doubles the only real cost here, on the caller's thread.
+        ser_input = _safe_serialize(input) if input is not None else None
+        ser_output = _safe_serialize(output) if output is not None else None
+
         active_span = self.current_span
         if active_span is not None:
             active_span.child_span(
@@ -751,9 +764,10 @@ class Tracer:
                 start_time=start_time,
                 end_time=end_time,
                 duration_ms=latency_ms,
-                input=input,
-                output=output,
+                input=ser_input,
+                output=ser_output,
                 error=error,
+                _serialized=True,
             )
             # The child span above is only for the trace detail's span tree - the engine's
             # built-in "Tool failure" check and the dashboard's Tool quality column read the
@@ -762,8 +776,8 @@ class Tracer:
             # a failed trace_tool_call() used to be invisible to both surfaces.
             summary: Dict[str, Any] = {
                 "name": name,
-                "input": _safe_serialize(input) if input is not None else None,
-                "output": _safe_serialize(output) if output is not None else None,
+                "input": ser_input,
+                "output": ser_output,
                 "latency_ms": latency_ms,
             }
             if success is not None:
@@ -774,8 +788,8 @@ class Tracer:
             return
         pending: Dict[str, Any] = {
             "name": name,
-            "input": _safe_serialize(input) if input is not None else None,
-            "output": _safe_serialize(output) if output is not None else None,
+            "input": ser_input,
+            "output": ser_output,
             "latency_ms": latency_ms,
         }
         if success is not None:
