@@ -26,8 +26,10 @@ class FeedbackClient:
     reopened", reported by a workflow); feedback is a human vote with up/down semantics.
     """
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         self._api_key = api_key
+        # Captured once at construction (deep-dive round 3, bug #1).
+        self._base_url = (base_url or api_base()).rstrip("/")
 
     def report(
         self,
@@ -61,7 +63,7 @@ class FeedbackClient:
             payload["endUserId"] = end_user_id
 
         resp = requests.post(
-            f"{api_base()}/feedback",
+            f"{self._base_url}/feedback",
             headers={**get_headers(self._api_key), "Content-Type": "application/json"},
             json=payload,
             timeout=10,
@@ -79,7 +81,7 @@ class FeedbackClient:
         """All votes recorded on one trace, oldest first (``GET /feedback/trace/:traceId``) -
         the same rows the dashboard's trace dialog shows as up/down chips."""
         resp = requests.get(
-            f"{api_base()}/feedback/trace/{trace_id}",
+            f"{self._base_url}/feedback/trace/{trace_id}",
             headers=get_headers(self._api_key),
             timeout=10,
         )

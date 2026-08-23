@@ -20,10 +20,12 @@ class AgentX:
         if self.api_key and not os.getenv("AGENTX_API_KEY"):
             os.environ["AGENTX_API_KEY"] = self.api_key
 
-        # base_url overrides AGENTX_API_BASE_URL env var (and the SDK default)
+        # base_url overrides AGENTX_API_BASE_URL env var (and the SDK default). It is
+        # deliberately NOT written back into os.environ: the constructor used to do that, which
+        # made the last-constructed client silently re-point every other client in the process
+        # (deep-dive round 3, bug #1). Each sub-client below receives this value explicitly and
+        # captures it at construction instead.
         self.base_url = base_url or os.getenv("AGENTX_API_BASE_URL")
-        if self.base_url:
-            os.environ["AGENTX_API_BASE_URL"] = self.base_url
 
         self.workspace_id = workspace_id or os.getenv("AGENTX_WORKSPACE_ID")
 
@@ -58,29 +60,29 @@ class AgentX:
 
         # Report real, after-the-fact outcomes ("the ticket got reopened") against traces - the
         # ground truth behind the dashboard's Judge Calibration card. Self-host only.
-        self.outcomes = OutcomesClient(api_key=self.api_key)
+        self.outcomes = OutcomesClient(api_key=self.api_key, base_url=self.base_url)
 
         from agentx.projects import ProjectsClient
 
         # Project CRUD (self-host): isolated tenants with their own API keys (P1.1).
-        self.projects = ProjectsClient(api_key=self.api_key)
+        self.projects = ProjectsClient(api_key=self.api_key, base_url=self.base_url)
 
         from agentx.traces import TracesClient
 
         # The read side of tracing: trace-by-id detail and paginated listing (P1.2).
-        self.traces = TracesClient(api_key=self.api_key)
+        self.traces = TracesClient(api_key=self.api_key, base_url=self.base_url)
 
         from agentx.export import ExportClient
 
         # Bulk NDJSON egress for backup/migration (P2.1): manifest, per-entity streaming, and
         # directory dumps. Self-host only.
-        self.export = ExportClient(api_key=self.api_key)
+        self.export = ExportClient(api_key=self.api_key, base_url=self.base_url)
 
         from agentx.feedback import FeedbackClient
 
         # Forward end-user votes ("up"/"down") on traced responses - a "down" raises a signal
         # directly, and every vote feeds Judge Calibration alongside outcomes. Self-host only.
-        self.feedback = FeedbackClient(api_key=self.api_key)
+        self.feedback = FeedbackClient(api_key=self.api_key, base_url=self.base_url)
 
         _ingest_client = IngestClient(
             api_key=self.api_key,
@@ -96,9 +98,9 @@ class AgentX:
         return cls()
 
     def get_agent(self, id: str) -> Agent:
-        url = f"{api_base()}/access/agents/{id}"
+        url = f"{self.base_url or api_base()}/access/agents/{id}"
         # Make a GET request to the AgentX API
-        response = requests.get(url, headers=get_headers())
+        response = requests.get(url, headers=get_headers(self.api_key))
         # Check if response was successful
         if response.status_code == 200:
             return Agent(**response.json())
@@ -106,9 +108,9 @@ class AgentX:
             raise Exception(f"Failed to retrieve agent: {response.reason}")
 
     def list_agents(self) -> List[Agent]:
-        url = f"{api_base()}/access/agents"
+        url = f"{self.base_url or api_base()}/access/agents"
         # Make a GET request to the AgentX API
-        response = requests.get(url, headers=get_headers())
+        response = requests.get(url, headers=get_headers(self.api_key))
         # Check if response was successful
         if response.status_code == 200:
             return [Agent(**agent) for agent in response.json()]
@@ -146,7 +148,7 @@ class AgentX:
         """
         from agentx.exceptions import AgentXAPIError, AgentXAuthError, AgentXConnectionError
 
-        base = api_base()
+        base = (self.base_url or api_base()).rstrip("/")
         # /monitor/patterns: the cheapest key-authenticated endpoint that exists on both the
         # hosted API and the self-host engine's SDK-facing router.
         url = f"{base}/monitor/patterns"
@@ -173,8 +175,8 @@ class AgentX:
 
     def get_profile(self):
         """Get the current user's profile information."""
-        url = f"{api_base()}/access/getProfile"
-        response = requests.get(url, headers=get_headers())
+        url = f"{self.base_url or api_base()}/access/getProfile"
+        response = requests.get(url, headers=get_headers(self.api_key))
         if response.status_code == 200:
             return response.json()
         else:

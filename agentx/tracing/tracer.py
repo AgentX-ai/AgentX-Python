@@ -890,9 +890,11 @@ class Tracer:
             agent_id=agent_id,
         )
 
-    def flush(self, timeout: float = 5.0) -> None:
-        """Block until all queued traces have been delivered."""
-        self._client.flush(timeout)
+    def flush(self, timeout: float = 5.0) -> bool:
+        """Block until all queued traces have been delivered, or until ``timeout`` seconds
+        elapse. Returns ``True`` when everything drained, ``False`` on deadline (a warning is
+        logged and undelivered traces keep sending in the background)."""
+        return self._client.flush(timeout)
 
     # ------------------------------------------------------------------
     # CI/CD evaluation

@@ -85,7 +85,9 @@ class MonitorClient:
         from agentx.monitor.scorers import ScorersClient
         # Scorers-catalog administration as code: template enable/disable, code/external scorer
         # CRUD and dry runs - full parity with the dashboard's Scorers page (P1.3).
-        self.scorers = ScorersClient(api_key=api_key)
+        # Handed this client's own resolved API root, never the process-global default, so a
+        # second AgentX() with a different base_url can't re-point it (deep-dive bug #1).
+        self.scorers = ScorersClient(api_key=api_key, base_url=self._api_root())
         self.profile = MonitorProfileClient(self)
         self.online_evaluators = MonitorOnlineEvaluatorClient(self)
         from agentx.monitor.sessions import MonitorSessionClient
