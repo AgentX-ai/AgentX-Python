@@ -151,8 +151,14 @@ def handle_query(query: str) -> str:
 
 # Every call is automatically traced: input, output, latency, tool calls, token usage
 handle_query("How do I reset my password?")
-tracer.flush(timeout=10)  # ensure delivery before the process exits
 ```
+
+Tracing stays off your agent's critical path: ending a span costs the calling thread roughly
+60-350 µs depending on payload size, and a background thread does all the network I/O. If the
+backend is slow or unreachable, traces are dropped rather than your agent being made to wait.
+Queued traces are flushed on a bounded best-effort basis at process exit, so short-lived jobs
+don't lose them - call `tracer.flush(timeout=10)` to control that moment yourself. See
+[Performance and delivery](TRACING.md#performance-and-delivery).
 
 Prefer full control over what gets captured? Use the context manager instead:
 
@@ -199,7 +205,7 @@ extra:
 
 Or plain Python - wrap any function with `@tracer.trace(...)` and it just works, no framework required.
 
-Running specialist agents in parallel with a `ThreadPoolExecutor`? Wrap each worker body in `tracer.use_span(span)` so their steps land on the parent trace instead of becoming independent traces - see [TRACING.md](TRACING.md) for the full pattern.
+Running specialist agents in parallel with a `ThreadPoolExecutor`? Wrap each worker body in `tracer.use_span(span)` so their steps land on the parent trace instead of becoming independent traces - see [TRACING.md](TRACING.md) for the full pattern. With `asyncio` there's nothing to wrap: spans follow the task, so concurrent handlers stay separate traces and a task spawned inside a span nests under it automatically.
 
 See **[TRACING.md](TRACING.md)** for the complete guide - session grouping, error handling, async support, and the full API reference.
 

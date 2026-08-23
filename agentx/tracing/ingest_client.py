@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import queue
 import threading
 import time
+import weakref
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -26,6 +28,26 @@ _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 _MAX_RETRIES = 3
 _RETRY_BACKOFF = [1.0, 2.0, 4.0]
 _QUEUE_MAX = 500
+# Once the queue is this deep, _send() stops burning its retry backoff on the payload in hand.
+# The drain thread is single-threaded, so every second it sleeps re-delivering one old span is a
+# second no newer span moves - and at _RETRY_BACKOFF's full ladder (7s/payload) a backend blip
+# turns a 500-deep queue into ~an hour of backlog, during which enqueue() silently drops
+# everything new. Shedding the retry keeps the queue draining and the dashboard current.
+_RETRY_SHED_DEPTH = _QUEUE_MAX // 2
+
+# Bounded best-effort flush at interpreter shutdown. The worker is a daemon thread, so without
+# this every span still queued when main() returns dies with the process - invisible for a
+# long-lived server (the queue is near-empty) but it loses most traces for scripts, CLI jobs and
+# serverless handlers, which exit right after the work they wanted traced. Bounded so it can
+# never hang a shutdown; set AGENTX_EXIT_FLUSH_TIMEOUT=0 to opt out entirely.
+_EXIT_FLUSH_TIMEOUT_DEFAULT = 3.0
+
+
+def _exit_flush_timeout() -> float:
+    try:
+        return max(0.0, float(os.getenv("AGENTX_EXIT_FLUSH_TIMEOUT", _EXIT_FLUSH_TIMEOUT_DEFAULT)))
+    except (TypeError, ValueError):
+        return _EXIT_FLUSH_TIMEOUT_DEFAULT
 
 
 class IngestClient:
@@ -76,6 +98,21 @@ class IngestClient:
         self._worker = threading.Thread(target=self._drain, daemon=True, name="agentx-ingest")
         self._worker.start()
 
+        # weakref so a discarded client can still be collected - atexit holds its callbacks for
+        # the life of the process, and a strong self-reference here would pin every client (and
+        # its session) forever.
+        _self_ref = weakref.ref(self)
+
+        def _flush_at_exit() -> None:
+            client = _self_ref()
+            if client is None:
+                return
+            budget = _exit_flush_timeout()
+            if budget > 0:
+                client.flush(timeout=budget)
+
+        atexit.register(_flush_at_exit)
+
         # Base URL (without the /ingest/traces suffix) for synchronous calls like evaluate_trace
         self._base_url = _base
 
@@ -93,8 +130,30 @@ class IngestClient:
             logger.debug("agentx ingest queue full - trace dropped")
 
     def flush(self, timeout: float = 5.0) -> None:
-        """Block until all queued traces have been sent (or timeout elapses)."""
-        self._queue.join()
+        """
+        Block until all queued traces have been sent, or ``timeout`` seconds elapse - whichever
+        comes first. Returns normally either way; a timed-out flush is not an error, the
+        undelivered spans simply stay queued.
+
+        ``queue.join()`` takes no timeout, so waiting on the queue's own condition variable is
+        what actually bounds this. It matters: ``flush()`` is reachable from the request path
+        (``trace(..., sync=True)``'s ``__exit__`` drains child spans through it, and the OpenAI
+        Agents integration exposes it as ``force_flush``/``shutdown``), and an unbounded join
+        against a hung or throttled backend stalls the caller for as long as the backend is
+        unwell - the one thing the fire-and-forget design exists to prevent.
+        """
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._queue.all_tasks_done:
+            while self._queue.unfinished_tasks:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.debug(
+                        "agentx flush timed out after %.1fs with %d trace(s) still queued",
+                        timeout,
+                        self._queue.unfinished_tasks,
+                    )
+                    return
+                self._queue.all_tasks_done.wait(remaining)
 
     def send_trace_sync(self, payload: Dict[str, Any]) -> Optional[str]:
         """
@@ -380,6 +439,14 @@ class IngestClient:
         last_exc: Optional[Exception] = None
         for attempt, wait in enumerate([0.0] + _RETRY_BACKOFF):
             if wait:
+                # Retrying this payload costs the whole queue, not just this payload - see
+                # _RETRY_SHED_DEPTH. Under a deep backlog, drop it and keep the line moving.
+                if self._queue.qsize() >= _RETRY_SHED_DEPTH:
+                    logger.debug(
+                        "agentx ingest backlog %d - skipping retry to keep the queue draining",
+                        self._queue.qsize(),
+                    )
+                    break
                 time.sleep(wait)
             try:
                 resp = self._session.post(self._endpoint, json=payload, timeout=10)

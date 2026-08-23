@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextvars
 import functools
 import inspect
 import threading
 import time
 from contextlib import contextmanager
-from typing import Any, Callable, Dict, Iterator, List, Optional, TypeVar
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar
 from uuid import uuid4
 
 from agentx.exceptions import CIGateFailure
@@ -15,6 +16,49 @@ from agentx.tracing.ingest_client import IngestClient
 from agentx.tracing.ci_types import CIRun, CIRunResult, CIRunStatus, CIQuestionScore
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+# The active-span stack, holding the chain of spans currently open around the running code so a
+# nested span (or an auto-instrumented LLM call) can find its real parent.
+#
+# A ContextVar rather than a threading.local(): asyncio runs every task on ONE thread, so a
+# thread-local stack is SHARED by all concurrently-awaiting tasks, and three independent
+# `async def` handlers running under asyncio.gather() would push onto each other's stack and be
+# ingested as one nested trace tree instead of three sibling roots - with whichever task happened
+# to enter first adopting the others as children. A ContextVar is per-task (each task runs in a
+# copy of the context that created it), so tasks nest correctly and never see a sibling's spans.
+#
+# Thread behaviour is unchanged: a new thread starts from an empty context, exactly as a
+# threading.local() did, so ThreadPoolExecutor workers still need Tracer.use_span() to attach.
+#
+# The value is an immutable tuple, and push/pop rebind it with .set(). This is the part that
+# makes task isolation work at all: a task inherits a COPY of the context, but a copy still
+# points at the same list object, so mutating a shared list in place would leak right back out
+# to the parent and its siblings. Rebinding only ever touches the current context.
+#
+# Module-level (not per-Tracer) because ContextVars are meant to be created once at import time -
+# one per Tracer instance would leak a variable per client into every live Context. Tracers stay
+# isolated from each other by filtering on span._tracer in current_span() instead.
+_active_spans: contextvars.ContextVar[Tuple["_TraceSpan", ...]] = contextvars.ContextVar(
+    "agentx_active_spans", default=()
+)
+
+
+@functools.lru_cache(maxsize=1024)
+def _cached_signature(fn: Callable) -> Optional[inspect.Signature]:
+    """
+    ``inspect.signature(fn)`` memoised per function object.
+
+    Signatures are recomputed from scratch on every call otherwise, and _capture_fn_input() runs
+    on the caller's thread on every single invocation of an ``@tracer.trace``-decorated function.
+    It is the most expensive thing the decorator does - about a third of its total overhead - and
+    the answer never changes for a given function. Bounded so a program that decorates closures in
+    a loop can't grow this without limit. Returns None when the signature can't be read (builtins,
+    some C extensions), which callers treat the same as a failed capture.
+    """
+    try:
+        return inspect.signature(fn)
+    except (TypeError, ValueError):
+        return None
 
 
 def _safe_serialize(value: Any, depth: int = 0) -> Any:
@@ -43,7 +87,9 @@ def _safe_serialize(value: Any, depth: int = 0) -> Any:
 
 def _capture_fn_input(fn: Callable, args: tuple, kwargs: dict) -> Optional[Dict[str, Any]]:
     try:
-        sig = inspect.signature(fn)
+        sig = _cached_signature(fn)
+        if sig is None:
+            return None
         bound = sig.bind(*args, **kwargs)
         bound.apply_defaults()
         result = {k: v for k, v in bound.arguments.items() if k not in ("self", "cls")}
@@ -185,6 +231,32 @@ class _TraceSpan:
             parent_span_id=self._parent_span_id,
             started_at_unix_nano=str(int(self._start * 1_000_000_000)) if self._start else None,
         )
+        return False  # never suppress exceptions
+
+    # ------------------------------------------------------------------
+    # Async context manager
+    # ------------------------------------------------------------------
+
+    async def __aenter__(self) -> "_TraceSpan":
+        """``async with tracer.trace(...) as span:`` - identical to the sync form.
+
+        Entering is pure bookkeeping (no I/O), so there is nothing to offload; it runs inline.
+        """
+        return self.__enter__()
+
+    async def __aexit__(self, exc_type, exc_val, tb) -> bool:
+        # The default path only serialises the payload and drops it on the ingest queue - tens of
+        # microseconds of CPU and no I/O - so running it inline is cheaper than the round trip
+        # through an executor would be.
+        if not (self._sync and self._parent_span_id is None):
+            return self.__exit__(exc_type, exc_val, tb)
+
+        # sync=True is the one path that blocks: it drains the queue and then POSTs, waiting on
+        # the network. Doing that inline would block the whole event loop - every other coroutine
+        # on this thread stalls behind one trace delivery. Hand it to a worker thread instead, so
+        # only this coroutine waits.
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self.__exit__, exc_type, exc_val, tb)
         return False  # never suppress exceptions
 
     @property
@@ -572,46 +644,59 @@ class Tracer:
         self._client = ingest_client
         self._pending_tool_calls: List[Dict[str, Any]] = []
         self._pending_retrievals: List[Dict[str, Any]] = []
-        self._local = threading.local()
 
     # ------------------------------------------------------------------
-    # Active-span stack (per thread) - lets auto-instrumented integrations
-    # (e.g. patch_anthropic_client) detect they're running inside a
-    # `with tracer.trace(...)` block and attach to it as an LLM-call step
-    # instead of sending their own independent trace.
+    # Active-span stack (per thread, and per asyncio task - see _active_spans)
+    # - lets auto-instrumented integrations (e.g. patch_anthropic_client)
+    # detect they're running inside a `with tracer.trace(...)` block and
+    # attach to it as an LLM-call step instead of sending their own
+    # independent trace.
     # ------------------------------------------------------------------
 
-    def _get_span_stack(self) -> List["_TraceSpan"]:
-        stack = getattr(self._local, "span_stack", None)
-        if stack is None:
-            stack = []
-            self._local.span_stack = stack
-        return stack
+    def _get_span_stack(self) -> Tuple["_TraceSpan", ...]:
+        """Every span open around the caller right now, outermost first - this tracer's and any
+        other tracer's. Use ``current_span`` for the one this tracer should parent to."""
+        return _active_spans.get()
 
     def _push_active_span(self, span: "_TraceSpan") -> None:
-        self._get_span_stack().append(span)
+        _active_spans.set(_active_spans.get() + (span,))
 
     def _pop_active_span(self, span: "_TraceSpan") -> None:
-        stack = self._get_span_stack()
-        if stack and stack[-1] is span:
-            stack.pop()
-        elif span in stack:
-            stack.remove(span)
+        stack = _active_spans.get()
+        if not stack:
+            return
+        if stack[-1] is span:
+            _active_spans.set(stack[:-1])
+            return
+        # Out-of-order exit (spans closed in a different order than opened). Drop the innermost
+        # occurrence and leave the rest of the chain intact, matching what list.remove() did -
+        # except by identity, so two spans that compare equal can't unseat each other.
+        for i in range(len(stack) - 1, -1, -1):
+            if stack[i] is span:
+                _active_spans.set(stack[:i] + stack[i + 1:])
+                return
 
     @property
     def current_span(self) -> Optional["_TraceSpan"]:
-        """The innermost ``with tracer.trace(...)`` span active on this thread, if any."""
-        stack = self._get_span_stack()
-        return stack[-1] if stack else None
+        """
+        The innermost ``with tracer.trace(...)`` span open around the caller, if any.
+
+        Scoped to the running task/thread (see ``_active_spans``), and to spans belonging to THIS
+        tracer - the stack is shared process-wide, so a program holding two AgentX clients must
+        not have one client's span silently adopt the other's as its parent.
+        """
+        for span in reversed(_active_spans.get()):
+            if span._tracer is self:
+                return span
+        return None
 
     @contextmanager
     def use_span(self, span: "_TraceSpan") -> Iterator["_TraceSpan"]:
         """
-        Make ``span`` (created on another thread) the active span for the
-        duration of this block, on *this* thread. The active-span stack is
-        thread-local, so work submitted to a ``ThreadPoolExecutor`` or run on
-        any other thread doesn't automatically see a span opened on the
-        calling thread - wrap the worker function body in this to attach it::
+        Make ``span`` (created elsewhere) the active span for the duration of this block, here.
+        The active-span stack is scoped to the running thread/task, so work submitted to a
+        ``ThreadPoolExecutor`` or run on any other thread doesn't automatically see a span opened
+        on the calling thread - wrap the worker function body in this to attach it::
 
             with tracer.trace("orchestrator") as span:
                 def worker():
@@ -621,8 +706,12 @@ class Tracer:
                 with ThreadPoolExecutor(max_workers=2) as ex:
                     ex.submit(worker).result()
 
-        Safe to call from multiple threads concurrently for the same span -
-        each thread pushes/pops on its own stack.
+        Safe to call from multiple threads (or asyncio tasks) concurrently for the same span -
+        each pushes/pops within its own context, never on a shared stack.
+
+        Not needed for ``asyncio``: a task created inside a ``with tracer.trace(...)`` block
+        inherits the enclosing span automatically, and one created outside it correctly sees no
+        parent.
         """
         self._push_active_span(span)
         try:

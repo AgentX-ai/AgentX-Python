@@ -530,6 +530,70 @@ async with tracer.trace("async-agent") as span:
     span.output = result
 ```
 
+Spans are scoped to the **task**, not the thread, so concurrent handlers stay separate traces:
+
+```python
+# Three independent root traces, one per request - not one nested tree.
+await asyncio.gather(handle_async(q1), handle_async(q2), handle_async(q3))
+```
+
+A task started *inside* a span still nests under it, which is what you want for fan-out within
+one request:
+
+```python
+async with tracer.trace("research-agent") as span:
+    # Both subtasks become child spans of research-agent, on its session.
+    await asyncio.gather(
+        asyncio.create_task(search_web(q)),
+        asyncio.create_task(search_docs(q)),
+    )
+```
+
+Nothing on the async path awaits the network. The default (`sync=False`) exit only serialises the
+span and hands it to the background sender. `sync=True` does wait for delivery, but under
+`async with` that wait is moved to a worker thread so the event loop keeps serving other
+coroutines meanwhile.
+
+---
+
+## Performance and delivery
+
+Tracing runs on your agent's critical path, so the design goal is that it costs the caller
+almost nothing and can never make a user wait on AgentX.
+
+**What a traced call costs the calling thread.** Ending a span serialises the payload and puts it
+on an in-memory queue; a background daemon thread does all the HTTP. Measured on CPython 3.11:
+
+| Traced work | Added to the caller |
+|---|---|
+| `with tracer.trace(...)`, small payload | ~60 µs |
+| `@tracer.trace` decorated call | ~135 µs |
+| Span carrying a 20-message history + 4 KB output | ~100 µs |
+| Span carrying 50 RAG documents in and out | ~350 µs |
+
+Against an LLM call measured in seconds, that is well under a thousandth of the request.
+
+**The queue never blocks you.** `enqueue()` is a non-blocking put onto a 500-deep queue. If the
+backend is slow or down, the queue fills and the newest traces are dropped rather than the caller
+being made to wait - tracing degrades, your agent does not. The sender also stops spending its
+retry backoff on old payloads once the queue is more than half full, so an outage costs you some
+traces instead of an hour-long backlog of stale ones.
+
+**Delivery at shutdown.** A bounded best-effort flush runs at interpreter exit, so short-lived
+processes (scripts, CI jobs, serverless handlers) don't lose whatever was still queued when
+`main()` returned. It is capped at 3 seconds; set `AGENTX_EXIT_FLUSH_TIMEOUT` to change the
+budget, or `0` to skip it. Call `tracer.flush(timeout=...)` yourself if you want to control
+exactly when that happens.
+
+`flush()` always returns within its `timeout`, delivered or not - it will not hold your process
+open waiting on an unhealthy backend.
+
+**When tracing does block.** Only `tracer.trace(..., sync=True)`, and only because you asked for
+`span.trace_id` back in the same call. It waits for the queue to drain and then POSTs inline.
+Keep it out of user-facing request paths; use it for evaluation runs and offline jobs where you
+need the id. Under `async with` the wait is offloaded to a worker thread so it doesn't freeze the
+event loop, but the awaiting coroutine still waits.
+
 ---
 
 ## Configuration reference
