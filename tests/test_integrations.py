@@ -640,22 +640,32 @@ def test_crewai_captures_real_per_task_timing_via_event_bus():
 
             return FakeCrewOutput(raw="final output", tasks_output=[output1, output2])
 
-    tracer = make_tracer()
+    # Boundary-mocked rather than make_tracer(): each task is a real child span now (9d45dd1
+    # replaced the synthetic performance_summary step list), and mocking tracer._send would
+    # bypass the very _send/_dispatch/child_span chain that builds them. Same idiom as
+    # tests/test_span_tree.py.
+    tracer = Tracer(ingest_client=MagicMock())
     observer = AgentXCrewObserver(tracer, name="my-crew")
 
     result = observer.kickoff(FakeCrew(), inputs={"topic": "AI"})
 
     assert result.raw == "final output"
-    tracer._send.assert_called_once()
-    _, kwargs = tracer._send.call_args
-    steps = kwargs["performance_summary"]["execution_steps"]
-    assert len(steps) == 2
-    assert steps[0]["name"] == "Research topic"
-    assert steps[1]["name"] == "Write summary"
-    # Real timing, not an even split — task 1 slept ~3x longer than task 2.
-    assert steps[0]["duration_ms"] > steps[1]["duration_ms"] * 1.5
-    assert steps[0]["output"] == "research done"
-    assert steps[1]["output"] == "summary done"
+    wires = [call.args[0] for call in tracer._client.enqueue.call_args_list]
+    assert len(wires) == 3
+    research, summary, root = wires
+    assert root["name"] == "my-crew"
+    assert root["output"] == "final output"
+
+    # Each task is its own child span under the crew's root, carrying its own real duration.
+    assert research["name"] == "Research topic"
+    assert summary["name"] == "Write summary"
+    assert research["parent_span_id"] == root["span_id"]
+    assert summary["parent_span_id"] == root["span_id"]
+    assert research["output"] == "research done"
+    assert summary["output"] == "summary done"
+    # The point of the test: real timing, not an even split — task 1 slept ~3x longer than
+    # task 2, and the old "divide latency evenly" approximation reported them identical.
+    assert research["latency_ms"] > summary["latency_ms"] * 1.5
 
 
 def test_crewai_falls_back_to_even_split_without_event_bus():
@@ -930,6 +940,10 @@ def test_llamaindex_llm_error_is_captured():
 def test_autogen_agent_run_traces_text_reply():
     """Drives a real AssistantAgent.run() via AutoGen's own ReplayChatCompletionClient (no network/API keys)."""
     pytest.importorskip("autogen_agentchat")
+    # autogen-ext is a separate distribution and is NOT part of the "autogen" extra -
+    # ReplayChatCompletionClient below is a test double that lives there, so guard it too
+    # or this fails with ModuleNotFoundError instead of skipping.
+    pytest.importorskip("autogen_ext")
     from autogen_agentchat.agents import AssistantAgent
     from autogen_ext.models.replay import ReplayChatCompletionClient
 
@@ -938,25 +952,33 @@ def test_autogen_agent_run_traces_text_reply():
     model_client = ReplayChatCompletionClient(["Hello from AutoGen!"])
     agent = AssistantAgent("assistant", model_client=model_client)
 
-    tracer = make_tracer()
+    # Boundary-mocked, not make_tracer(): the agent's turn is a real child span since
+    # 9d45dd1, and mocking tracer._send would bypass the chain that builds it.
+    tracer = Tracer(ingest_client=MagicMock())
     observer = AgentXAutoGenObserver(tracer, name="my-agent")
 
     result = asyncio.run(observer.run(agent, task="Say hello"))
 
     assert result.messages[-1].content == "Hello from AutoGen!"
-    tracer._send.assert_called_once()
-    _, kwargs = tracer._send.call_args
-    assert kwargs["input"] == "Say hello"
-    assert kwargs["output"] == "Hello from AutoGen!"
-    assert kwargs["input_tokens"] == 22
-    assert kwargs["output_tokens"] == 3
-    steps = kwargs["performance_summary"]["execution_steps"]
-    assert len(steps) == 1
-    assert steps[0]["output"] == "Hello from AutoGen!"
+    wires = [call.args[0] for call in tracer._client.enqueue.call_args_list]
+    assert len(wires) == 2
+    step, root = wires
+    assert root["input"] == "Say hello"
+    assert root["output"] == "Hello from AutoGen!"
+    assert root["input_tokens"] == 22
+    assert root["output_tokens"] == 3
+    # The turn itself, as its own child span rather than a performance_summary step.
+    assert step["name"] == "assistant"
+    assert step["output"] == "Hello from AutoGen!"
+    assert step["parent_span_id"] == root["span_id"]
 
 
 def test_autogen_agent_run_traces_tool_call():
     pytest.importorskip("autogen_agentchat")
+    # autogen-ext is a separate distribution and is NOT part of the "autogen" extra -
+    # ReplayChatCompletionClient below is a test double that lives there, so guard it too
+    # or this fails with ModuleNotFoundError instead of skipping.
+    pytest.importorskip("autogen_ext")
     import json
 
     from autogen_agentchat.agents import AssistantAgent
@@ -986,16 +1008,24 @@ def test_autogen_agent_run_traces_tool_call():
     )
     agent = AssistantAgent("assistant", model_client=model_client, tools=[tool])
 
-    tracer = make_tracer()
+    tracer = Tracer(ingest_client=MagicMock())
     observer = AgentXAutoGenObserver(tracer, name="my-agent")
 
     asyncio.run(observer.run(agent, task="What is the weather in NYC?"))
 
-    tracer._send.assert_called_once()
-    _, kwargs = tracer._send.call_args
-    perf = kwargs["performance_summary"]
-    assert len(perf["tool_calls"]) == 1
-    tool_call = perf["tool_calls"][0]
+    wires = [call.args[0] for call in tracer._client.enqueue.call_args_list]
+    assert len(wires) == 2
+    child, root = wires
+    # The tool call is a real child span...
+    assert child["name"] == "get_weather"
+    assert "NYC" in child["input"]
+    assert child["output"] == "sunny in NYC"
+    assert child["parent_span_id"] == root["span_id"]
+    # ...and is mirrored onto the ROOT's flat tool_calls, which is what the engine's built-in
+    # "Tool failure" check and the dashboard's Tool quality column read. Same deliberate
+    # dual-write as trace_tool_call() - see test_span_tree.py.
+    assert len(root["tool_calls"]) == 1
+    tool_call = root["tool_calls"][0]
     assert tool_call["name"] == "get_weather"
     assert "NYC" in tool_call["input"]
     assert tool_call["output"] == "sunny in NYC"
