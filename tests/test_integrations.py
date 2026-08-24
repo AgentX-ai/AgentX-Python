@@ -46,6 +46,9 @@ def make_tracer() -> Tracer:
 # ---------------------------------------------------------------------------
 
 def test_adk_model_error_is_captured():
+    # google-adk is an optional extra; skip like the crewai/litellm/llamaindex/autogen tests
+    # below rather than failing on ImportError (importing the module raises when it is absent).
+    pytest.importorskip("google.adk")
     from agentx.integrations.google_adk import AgentXADKPlugin
 
     tracer = make_tracer()

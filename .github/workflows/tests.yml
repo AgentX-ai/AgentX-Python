@@ -1,0 +1,36 @@
+# Until this workflow existed, nothing in the repo ran a test: release.yml only publishes.
+# Two things had rotted quietly as a result - the docs never mentioned the LLM Judge Scorer
+# surface 0.6.36 shipped, and tests/test_span_tree.py had been failing since 40c6f6e changed
+# trace_tool_call()'s dual-write behaviour four days after the test was written.
+#
+# It runs the whole suite. Tests for optional extras (crewai, litellm, llamaindex, autogen,
+# google-adk) skip themselves via pytest.importorskip when the extra is absent, so the base
+# install is green - a skip is honest about not being covered here, where a failure would
+# have drowned out real ones. Installing those extras to actually run them is a fair next
+# step; it is a slower job, not a different one.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # The version release.yml builds the published wheel with, and a current one.
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[langchain]" pytest
+      # tests/test_integration.py talks to the hosted API and skips itself without a key;
+      # no secret is passed here on purpose, so pull requests from forks behave the same.
+      - run: python -m pytest tests/ -q
