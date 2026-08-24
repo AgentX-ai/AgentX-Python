@@ -197,13 +197,21 @@ client.evaluations.datasets.builder(name="Support Agent v2").add_case(
 
 ---
 
-### Evaluation Settings builder - reusable grading configs
+### LLM Judge Scorers - reusable grading configs
 
-By default, a dataset runs against the grading config it was created with (`number_of_requests`, `acceptance_criteria`, similarity metrics, etc. - see above). If you want to grade the **same dataset** against **different configs** (e.g. a strict config vs. a lenient one, or reuse one config across many datasets), create a standalone `EvaluationSettings` and pass its id to `.run()`:
+By default, a dataset runs against the grading config it was created with (`number_of_requests`, `acceptance_criteria`, similarity metrics, etc. - see above). If you want to grade the **same dataset** against **different configs** (e.g. a strict config vs. a lenient one, or reuse one config across many datasets), create a standalone **LLM Judge Scorer** and pass its id to `.run()`.
+
+One scorer is one entity: a judge rubric plus two setting profiles.
+
+| Section | What it holds |
+|---|---|
+| `judge` | The rubric every surface grades with - acceptance / rejection / evaluation criteria, judge prompt, judge model |
+| `offline` | How dataset runs grade with it - repetitions, similarity metrics, code scorers, default flag |
+| `online` | Whether it *also* scores live production traffic - enabled, sample rate, scope, alert threshold. `None` means offline-only |
 
 ```python
-strict_settings = (
-    client.evaluations.settings
+strict = (
+    client.monitor.judge_scorers
     .builder(
         name="Strict grading",
         number_of_requests=5,
@@ -215,27 +223,113 @@ strict_settings = (
 
 report = (
     client.evaluations
-    .run(dataset_id=dataset.id, subject={...}, evaluation_settings_id=strict_settings.id)
+    .run(dataset_id=dataset.id, subject={...}, scorer_id=strict.id)
     .execute(my_agent)
     .finalize()
     .analyze()
 )
 ```
 
-Omit `evaluation_settings_id` to keep using the dataset's own config, exactly as before - this is fully additive, no existing code needs to change. The builder accepts the same config kwargs as `datasets.builder(...)` (`number_of_requests`, the three criteria fields, `vector_similarity`/`jaccard_similarity`/`bleu_score`/`rouge_score`, `sovereignty_models`, `judge_prompt`/`judge_model` below) but no `questions` - it's config-only and reusable.
+**The scorer's id is the `scorer_id` a run takes** - there is no second id to keep track of. Omit `scorer_id` to keep using the dataset's own config, exactly as before - this is fully additive, no existing code needs to change. The builder accepts the same config kwargs as `datasets.builder(...)` (`number_of_requests`, the three criteria fields, `vector_similarity`/`jaccard_similarity`/`bleu_score`/`rouge_score`, `sovereignty_models`, `judge_prompt`/`judge_model` below) but no `questions` - it's config-only and reusable, plus `thresholds`, `tool_context`, `code_scorers` and the online profile below.
 
 ```python
-client.evaluations.settings.get(strict_settings.id)   # fetch one
-client.evaluations.settings.list()                     # list all
+client.monitor.judge_scorers.get(strict.id)      # -> JudgeScorer
+client.monitor.judge_scorers.list()              # -> list[JudgeScorer]
+client.monitor.judge_scorers.update(strict.id, judge={"acceptanceCriteria": "..."})
+client.monitor.judge_scorers.delete(strict.id)   # rubric, version history and online profile together
+```
+
+`update()` is sparse - only the sections you pass change. `online={...}` upserts the online profile (this is how an offline-only scorer goes live), and `online=None` detaches it. Section dicts use the wire's camelCase keys; `create(name, judge=..., offline=..., online=...)` takes the same three sections directly if you would rather not go through the builder. Deleting, and detaching the online profile, are both refused for the built-in Session Baseline Judge.
+
+A `JudgeScorer` is a `dict` subclass, so unknown fields round-trip untouched, with `.id`, `.name`, `.judge`, `.offline`, `.online` and `.online_profile_id` as conveniences.
+
+#### Naming: `scorer_id` and `evaluation_settings_id`
+
+`scorer_id` is the current name for the kwarg naming a run's grader. `evaluation_settings_id` is the pre-consolidation spelling of **the same id** - the wire still calls the field `evaluationSettingsId` - and it keeps working on `client.evaluations.run(...)` and `init_run(...)`. Passing both with *different* values raises `ValueError`.
+
+Which to write depends on the SDK versions your code has to run under:
+
+| Kwarg | `agentx-python` < 0.6.36 | >= 0.6.36 |
+|---|---|---|
+| `evaluation_settings_id` | works | works |
+| `scorer_id` | `TypeError` | works |
+
+So prefer `scorer_id` in new code, and keep `evaluation_settings_id` where a script may be executed against a pinned older client - CI gates and committed evaluation harnesses that get re-run for a controlled before-and-after comparison are the usual cases.
+
+#### Scoring live traffic with the same scorer
+
+Pass `live=True` to give the scorer an online profile at creation, and the same rubric that grades your dataset runs also scores a sample of production traffic. See [`client.monitor.online_evaluators`](TRACING.md#clientmonitoronline_evaluators-self-host-only) for what the online profile does and what its fields mean.
+
+```python
+scorer = client.monitor.judge_scorers.builder(
+    name="Support quality",
+    acceptance_criteria="Concrete, correct, cites the policy.",
+    live=True,             # every check is a real judge call on your own provider key
+    sample_rate=0.2,
+    alert_threshold=6,
+).publish()
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `live` | `bool` | `False` | Create the online profile and start scoring live traffic |
+| `sample_rate` | `float` | `0.1` | Fraction of traffic actually scored |
+| `scope` | `str` | `"trace"` | `"trace"` scores individual traces at ingest; `"session"` scores whole conversations |
+| `alert_threshold` | `float \| None` | `5` | A score below this raises a signal. `None` scores without ever raising one |
+| `severity` | `str` | `"medium"` | `"low"`, `"medium"`, `"high"` or `"critical"`, applied to signals it raises |
+| `agent_ids` | `list[str]` | `None` | Restrict scoring to specific agents instead of the whole workspace |
+| `idle_seconds` | `int` | `120` | For `scope="session"`: how long a session must be quiet before it is judged |
+
+Calibration, tuning and the live-scoring history hang off the same scorer id - the SDK resolves the online profile for you:
+
+```python
+client.monitor.judge_scorers.calibration(scorer.id, window="7d")   # verdicts vs. recorded ground truth
+proposal = client.monitor.judge_scorers.tune(scorer.id)            # LLM call, slow
+client.monitor.judge_scorers.validate_tuning(scorer.id, proposal)  # re-judge with candidate criteria
+client.monitor.judge_scorers.publish_tuning(scorer.id, proposal)   # write it onto the rubric
+client.monitor.judge_scorers.ratings(scorer.id, window="7d")       # -> list[OnlineEvaluatorRatingPoint]
+client.monitor.judge_scorers.events(scorer.id, window="7d")        # -> list[OnlineEvaluatorEvent]
+```
+
+Those six cover live-traffic scoring, so calling them on an offline-only scorer raises `AgentXJudgeScorersError` naming the fix (`update(scorer_id, online={"enabled": True})`). `publish_tuning` writes to the shared rubric, so it applies everywhere the scorer is used: online scoring, offline dataset runs and the playground alike.
+
+#### Engine compatibility (self-host)
+
+`client.monitor.judge_scorers` calls `/agent-monitoring/judge-scorers`, which needs a self-host engine build that serves it. **Older engines return 404 on that route** while the rest of `/agent-monitoring/` works normally, and the SDK surfaces that as `AgentXJudgeScorersError: ... (404)`. Check before building on it:
+
+```python
+try:
+    client.monitor.judge_scorers.list()
+except Exception as exc:
+    print("unified surface unavailable on this engine:", exc)
+    # the legacy views below work on every engine
+```
+
+The legacy views are not affected - they call the long-standing `/custom-agent-evaluations/evaluation-settings` and `/agent-monitoring/online-evaluators` routes - so they remain the portable choice for code that must run against engines you do not control. This does not affect the `scorer_id` kwarg on `.run()`, which is client-side naming over a field the wire has always had.
+
+#### Legacy views
+
+Before the consolidation the same entity was reached through two half-views, and both keep working:
+
+| Legacy | Covers | Successor |
+|---|---|---|
+| `client.evaluations.settings` | the offline profile | `client.monitor.judge_scorers` |
+| `client.monitor.online_evaluators` | the online profile | `client.monitor.judge_scorers` |
+
+Both emit a `DeprecationWarning` on first use (hidden by default; visible under `-W` or pytest) pointing at `judge_scorers`. Nothing breaks, and by design they address the same records under the same ids - an evaluation-settings id, an online-evaluator's `evaluation_settings_id` and a `scorer_id` are all the one id. They keep their pre-consolidation kwarg names deliberately: renaming compatibility surfaces would defeat their purpose.
+
+```python
+settings = client.evaluations.settings.builder(name="Strict grading", ...).publish()
+client.evaluations.run(dataset_id=dataset.id, subject={...}, scorer_id=settings.id)
 ```
 
 #### Configuring the judge
 
-Both `datasets.builder(...)` and `settings.builder(...)` accept `judge_prompt`/`judge_model` to override how the LLM-as-judge grades responses, applying to every scoring path (native dashboard runs and SDK/custom-agent runs alike):
+`datasets.builder(...)`, `judge_scorers.builder(...)` and the legacy `settings.builder(...)` all accept `judge_prompt`/`judge_model` to override how the LLM-as-judge grades responses, applying to every scoring path (native dashboard runs and SDK/custom-agent runs alike):
 
 ```python
-settings = (
-    client.evaluations.settings
+scorer = (
+    client.monitor.judge_scorers
     .builder(
         name="Strict grading",
         judge_model="claude-opus-4-8",                    # any id from list_models()

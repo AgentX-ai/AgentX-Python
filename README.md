@@ -251,6 +251,21 @@ evaluator = client.monitor.online_evaluators.builder(
 client.monitor.online_evaluators.ratings(evaluator.id, window="7d")
 ```
 
+An online evaluator and a dataset run's grading config are two profiles of one **LLM Judge Scorer**, and `client.monitor.judge_scorers` manages both in a single call - one rubric, one id, used offline and online:
+
+```python
+scorer = client.monitor.judge_scorers.builder(
+    name="Helpfulness",
+    acceptance_criteria="Concrete, correct, cites the policy.",
+    live=True, sample_rate=0.1, alert_threshold=5,   # the online profile
+).publish()
+
+client.evaluations.run(dataset_id=dataset.id, subject={...}, scorer_id=scorer.id)
+client.monitor.judge_scorers.ratings(scorer.id, window="7d")
+```
+
+The two clients above are that entity's per-profile legacy views; they keep working and share the same ids. See [LLM Judge Scorers](EVALUATIONS.md#llm-judge-scorers---reusable-grading-configs) for the full surface, including which self-host engine builds serve it.
+
 An online evaluator can also judge **whole conversations** instead of single traces: pass `scope="session"` and the engine scores each multi-turn session once it's been idle for `idle_seconds`, re-scoring if the conversation resumes. And to close the loop with reality, two ground-truth streams feed the dashboard's Judge Calibration view (which measures how often AgentX's automated verdicts agree with what actually happened): `client.outcomes.report(...)` for after-the-fact system results (a reopened ticket, a human confirmation), and `client.feedback.report(...)` for end-user votes forwarded from your own app's UI - a "down" raises a "Negative user feedback" signal directly, no sampling or judge call involved. All self-host features.
 
 ```python
