@@ -87,7 +87,9 @@ class EvaluationSettingsClient:
     Note: an evaluation-settings record is the judge rubric + OFFLINE profile of an
     **LLM Judge Scorer** - the unified entity at ``client.monitor.judge_scorers``, which also
     carries the optional online (live-traffic) profile. This client keeps working unchanged;
-    prefer ``judge_scorers`` for new code so both profiles live in one place."""
+    prefer ``judge_scorers`` for new code so both profiles live in one place -
+    ``client.monitor.judge_scorers.builder(...)`` has the same snake_case ergonomics as the
+    builder below, plus tool_context, thresholds, and the live profile in one call."""
 
     def __init__(self, client: "EvaluationsClient"):
         self._client = client

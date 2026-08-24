@@ -165,3 +165,50 @@ def test_init_run_sends_scorer_id_as_evaluationSettingsId(monkeypatch):
     monkeypatch.setattr(client, "_request", fake_request)
     client.init_run("d1", EvaluationSubject(type="external"), scorer_id="scorer-123")
     assert captured["payload"]["evaluationSettingsId"] == "scorer-123"
+
+
+def test_judge_scorers_builder_matches_legacy_builder_ergonomics(monkeypatch):
+    """The unified successor of evaluations.settings.builder: snake_case kwargs, .publish(),
+    plus what the legacy builder never had - tool_context, thresholds, and the live profile in
+    the same call. The payload it assembles is plain judge-scorers wire."""
+    from agentx.monitor.judge_scorers import JudgeScorersClient
+
+    client = JudgeScorersClient(api_key="agtx_local_test", base_url="http://localhost:1")
+    captured = {}
+
+    def fake_request(method, path, **kwargs):
+        captured["method"] = method
+        captured["path"] = path
+        captured["payload"] = kwargs.get("json")
+        return {"judgeScorer": {"_id": "s1", "name": "Support quality", "judge": {}, "offline": {}, "online": None}}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    scorer = (
+        client.builder(
+            "Support quality",
+            acceptance_criteria="Concrete and correct.",
+            judge_model="gpt-4.1-mini",
+            tool_context="detailed",
+            number_of_requests=2,
+            vector_similarity=True,
+            thresholds={"enabled": True, "gates": [{"metric": "rating", "operator": "lt", "value": 5}]},
+            live=True,
+            sample_rate=0.25,
+            agent_ids=["support-agent"],
+        ).publish()
+    )
+    assert scorer.id == "s1"
+    payload = captured["payload"]
+    assert captured["path"] == "/judge-scorers"
+    assert payload["judge"] == {
+        "acceptanceCriteria": "Concrete and correct.",
+        "judgeModel": "gpt-4.1-mini",
+        "toolContext": "detailed",
+    }
+    assert payload["offline"]["numberOfRequests"] == 2
+    assert payload["offline"]["vectorSimilarity"] == {"enabled": True}
+    assert payload["offline"]["thresholds"]["gates"][0]["value"] == 5
+    assert payload["online"]["enabled"] is True
+    assert payload["online"]["sampleRate"] == 0.25
+    assert payload["online"]["scopeMode"] == "selected"
+    assert payload["online"]["agentIds"] == ["support-agent"]

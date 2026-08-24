@@ -98,6 +98,87 @@ class JudgeScorersClient:
     # CRUD
     # ------------------------------------------------------------------
 
+    def builder(
+        self,
+        name: str,
+        description: Optional[str] = None,
+        *,
+        # Judge rubric (shared by every surface that runs this scorer)
+        acceptance_criteria: Optional[str] = None,
+        rejection_criteria: Optional[str] = None,
+        evaluation_criteria: Optional[str] = None,
+        judge_prompt: Optional[str] = None,
+        judge_model: Optional[str] = None,
+        tool_context: Optional[str] = None,
+        # Offline profile (dataset-run grading)
+        number_of_requests: int = 1,
+        vector_similarity: bool = False,
+        jaccard_similarity: bool = False,
+        bleu_score: bool = False,
+        rouge_score: bool = False,
+        similarity_model: Optional[str] = None,
+        sovereignty_models: Optional[List[str]] = None,
+        thresholds: Optional[Dict[str, Any]] = None,
+        code_scorers: Optional[List[Dict[str, Any]]] = None,
+        is_default: bool = False,
+        # Online profile (live traffic). live=True enables scoring immediately - every check is
+        # a real judge call on your own key.
+        live: bool = False,
+        sample_rate: float = 0.1,
+        scope: str = "trace",
+        alert_threshold: Optional[float] = 5,
+        severity: str = "medium",
+        agent_ids: Optional[List[str]] = None,
+        idle_seconds: int = 120,
+    ) -> "JudgeScorerBuilder":
+        """Snake_case builder with ``.publish()``, the unified successor of
+        ``client.evaluations.settings.builder(...)`` - same offline fields (plus ``thresholds``,
+        ``tool_context``) and, new here, the online profile in the same call. The scorer the
+        builder publishes is one entity: its ``.id`` is what ``client.evaluations.run(...,
+        scorer_id=...)`` takes, and its live profile is what online scoring keys on."""
+        judge: Dict[str, Any] = {}
+        for key, value in (
+            ("acceptanceCriteria", acceptance_criteria),
+            ("rejectionCriteria", rejection_criteria),
+            ("evaluationCriteria", evaluation_criteria),
+            ("judgePrompt", judge_prompt),
+            ("judgeModel", judge_model),
+            ("toolContext", tool_context),
+        ):
+            if value is not None:
+                judge[key] = value
+        offline: Dict[str, Any] = {"numberOfRequests": number_of_requests, "isDefault": is_default}
+        if vector_similarity:
+            offline["vectorSimilarity"] = (
+                {"enabled": True, "model": similarity_model} if similarity_model else {"enabled": True}
+            )
+        if jaccard_similarity:
+            offline["jaccardSimilarity"] = {"enabled": True}
+        if bleu_score:
+            offline["bleuScore"] = {"enabled": True}
+        if rouge_score:
+            offline["rougeScore"] = {"enabled": True}
+        if sovereignty_models is not None:
+            offline["sovereigntyIndex"] = {"enabled": bool(sovereignty_models), "models": sovereignty_models}
+        if thresholds is not None:
+            offline["thresholds"] = thresholds
+        if code_scorers is not None:
+            offline["codeScorers"] = code_scorers
+        online: Optional[Dict[str, Any]] = None
+        if live:
+            online = {
+                "enabled": True,
+                "sampleRate": sample_rate,
+                "scope": scope,
+                "alertThreshold": alert_threshold,
+                "severity": severity,
+                "idleSeconds": idle_seconds,
+            }
+            if agent_ids:
+                online["scopeMode"] = "selected"
+                online["agentIds"] = agent_ids
+        return JudgeScorerBuilder(self, name=name, description=description, judge=judge, offline=offline, online=online)
+
     def create(
         self,
         name: str,
@@ -207,3 +288,33 @@ class JudgeScorersClient:
 
     def events(self, scorer_id: str, window: str = "7d") -> dict:
         return self._request("GET", f"/online-evaluators/{self._profile_id(scorer_id)}/events?window={window}")
+
+
+class JudgeScorerBuilder:
+    """Assembled by :meth:`JudgeScorersClient.builder`; ``.publish()`` creates the scorer."""
+
+    def __init__(
+        self,
+        client: "JudgeScorersClient",
+        *,
+        name: str,
+        description: Optional[str],
+        judge: Dict[str, Any],
+        offline: Dict[str, Any],
+        online: Optional[Dict[str, Any]],
+    ):
+        self._client = client
+        self._name = name
+        self._description = description
+        self._judge = judge
+        self._offline = offline
+        self._online = online
+
+    def publish(self) -> JudgeScorer:
+        return self._client.create(
+            self._name,
+            description=self._description,
+            judge=self._judge or None,
+            offline=self._offline or None,
+            online=self._online,
+        )
