@@ -471,7 +471,9 @@ client.monitor.profile.update("agent_123", threshold_overrides={"latencyMs": 150
 
 ### `client.monitor.online_evaluators` (self-host only)
 
-A real LLM judge scoring a sample of live production traffic continuously, distinct from a pattern's rule-matching: the same judge-scoring logic Evaluate's offline runs use, just pointed at production instead of a golden dataset. References an `evaluation_settings_id` (an Evaluator config: criteria, judge prompt, judge model) rather than storing its own copy, the same config datasets/Evaluate runs use.
+> **Legacy view.** An online evaluator is the *online profile* of an **LLM Judge Scorer**, and this client is the half-view of it that predates the consolidation. It keeps working unchanged and its ids are the same ids, but it emits a `DeprecationWarning` on first use. Prefer [`client.monitor.judge_scorers`](EVALUATIONS.md#llm-judge-scorers---reusable-grading-configs), which manages the judge rubric, the offline (dataset-run) profile and this online profile as one entity - and note that route needs a self-host engine build that serves it, where this one works on every engine.
+
+A real LLM judge scoring a sample of live production traffic continuously, distinct from a pattern's rule-matching: the same judge-scoring logic Evaluate's offline runs use, just pointed at production instead of a golden dataset. References an `evaluation_settings_id` (an Evaluator config: criteria, judge prompt, judge model) rather than storing its own copy, the same config datasets/Evaluate runs use - post-consolidation that id is a judge scorer's id, and the two names address the same record.
 
 ```python
 evaluator = client.monitor.online_evaluators.builder(
