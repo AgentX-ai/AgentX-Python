@@ -486,6 +486,9 @@ def test_google_adk_emits_real_child_spans():
     import asyncio
     import types
 
+    # google-adk is an optional extra; skip like every other integration test here rather
+    # than failing on ImportError (importing the module raises when it is absent).
+    pytest.importorskip("google.adk")
     from agentx.integrations.google_adk import AgentXADKPlugin
 
     tracer = make_tracer()
@@ -529,6 +532,7 @@ def test_google_adk_model_error_is_captured():
     import asyncio
     import types
 
+    pytest.importorskip("google.adk")
     from agentx.integrations.google_adk import AgentXADKPlugin
 
     tracer = make_tracer()
@@ -581,7 +585,13 @@ def test_trace_tool_call_emits_real_child_span():
     assert child["name"] == "policy_lookup"
     assert child["parent_span_id"] == root["span_id"]
     assert child["output"] == "digital purchases are final"
-    assert "tool_calls" not in root or root.get("tool_calls") in (None, [])
+    # ...and a summary of it also lands on the ROOT's flat tool_calls list. That dual-write is
+    # deliberate (40c6f6e): the child span feeds the trace detail's span tree, while the
+    # engine's built-in "Tool failure" check and the dashboard's Tool quality column read the
+    # root's flat list - before it, a failed trace_tool_call() was invisible to both surfaces.
+    # Asserted positively, and as exactly one entry, so a third write shows up here too.
+    assert [tc["name"] for tc in root["tool_calls"]] == ["policy_lookup"]
+    assert root["tool_calls"][0]["output"] == "digital purchases are final"
 
 
 def test_trace_retrieval_emits_real_child_span():
