@@ -263,16 +263,20 @@ class JudgeScorersClient:
 
     def tune(self, scorer_id: str, window: str = "7d") -> dict:
         """Propose a rewrite of the rubric from calibration disagreements (LLM call, slow)."""
-        return self._request(
+        data = self._request(
             "POST", f"/online-evaluators/{self._profile_id(scorer_id)}/tune", json={"window": window}, timeout=300
         )
+        # The wire wraps the proposal ({"proposal": {...}}); unwrap like the legacy client so
+        # proposal["reasoning"] / the criteria fields are directly addressable.
+        return data.get("proposal", data) if isinstance(data, dict) else data
 
     def validate_tuning(self, scorer_id: str, criteria: Dict[str, Any], window: str = "7d") -> dict:
         """Re-judge the disagreement + control cases with candidate criteria (LLM calls, slow)."""
+        # The wire takes the criteria fields at the TOP level of the body, not nested.
         return self._request(
             "POST",
             f"/online-evaluators/{self._profile_id(scorer_id)}/tune/validate",
-            json={"criteria": criteria, "window": window},
+            json={**criteria, "window": window},
             timeout=600,
         )
 
@@ -280,14 +284,24 @@ class JudgeScorersClient:
         """Write tuned criteria onto the scorer's rubric - it applies everywhere the scorer is
         used: online scoring, offline dataset runs, and the playground."""
         return self._request(
-            "POST", f"/online-evaluators/{self._profile_id(scorer_id)}/tune/publish", json={"criteria": criteria}
+            "POST", f"/online-evaluators/{self._profile_id(scorer_id)}/tune/publish", json=dict(criteria)
         )
 
-    def ratings(self, scorer_id: str, window: str = "7d") -> dict:
-        return self._request("GET", f"/online-evaluators/{self._profile_id(scorer_id)}/ratings?window={window}")
+    def ratings(self, scorer_id: str, window: str = "7d") -> "List[OnlineEvaluatorRatingPoint]":
+        """Bucketed average-rating-over-time for this scorer's live checks - same typed points
+        the legacy online_evaluators client returns, so scripts migrate without shape changes."""
+        from agentx.monitor.models import OnlineEvaluatorRatingPoint
 
-    def events(self, scorer_id: str, window: str = "7d") -> dict:
-        return self._request("GET", f"/online-evaluators/{self._profile_id(scorer_id)}/events?window={window}")
+        data = self._request("GET", f"/online-evaluators/{self._profile_id(scorer_id)}/ratings?window={window}")
+        return [OnlineEvaluatorRatingPoint(**p) for p in data.get("points", [])]
+
+    def events(self, scorer_id: str, window: str = "7d") -> "List[OnlineEvaluatorEvent]":
+        """Individually scored traces behind the ratings series, worst-rated first - typed, same
+        as the legacy online_evaluators client."""
+        from agentx.monitor.models import OnlineEvaluatorEvent
+
+        data = self._request("GET", f"/online-evaluators/{self._profile_id(scorer_id)}/events?window={window}")
+        return [OnlineEvaluatorEvent(**e) for e in data.get("events", [])]
 
 
 class JudgeScorerBuilder:

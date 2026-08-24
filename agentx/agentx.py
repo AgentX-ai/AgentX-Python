@@ -94,8 +94,18 @@ class AgentX:
 
     @classmethod
     def from_env(cls) -> "AgentX":
-        """Create an AgentX client using AGENTX_API_KEY (and optionally AGENTX_API_BASE_URL) from the environment."""
-        return cls()
+        """Create an AgentX client from the environment: AGENTX_API_KEY plus, for the base URL,
+        the first of AGENTX_API_BASE_URL / AGENTX_SELFHOST_BASE_URL / BASE_URL that is set.
+        The fallbacks match the conventions the self-host samples and .env files already use,
+        so from_env works wherever an explicit AgentX(base_url=...) would."""
+        import os
+
+        base_url = (
+            os.getenv("AGENTX_API_BASE_URL")
+            or os.getenv("AGENTX_SELFHOST_BASE_URL")
+            or os.getenv("BASE_URL")
+        )
+        return cls(base_url=base_url) if base_url else cls()
 
     def get_agent(self, id: str) -> Agent:
         url = f"{self.base_url or api_base()}/access/agents/{id}"

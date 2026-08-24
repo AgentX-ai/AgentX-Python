@@ -212,3 +212,59 @@ def test_judge_scorers_builder_matches_legacy_builder_ergonomics(monkeypatch):
     assert payload["online"]["sampleRate"] == 0.25
     assert payload["online"]["scopeMode"] == "selected"
     assert payload["online"]["agentIds"] == ["support-agent"]
+
+
+def test_from_env_honors_selfhost_base_url_conventions(monkeypatch):
+    """from_env silently targeting the hosted default while the shell exports the self-host
+    conventions (AGENTX_SELFHOST_BASE_URL / BASE_URL) produced confusing auth errors - it now
+    picks up the first convention that is set."""
+    from agentx import AgentX
+
+    monkeypatch.setenv("AGENTX_API_KEY", "agtx_local_test")
+    monkeypatch.delenv("AGENTX_API_BASE_URL", raising=False)
+    monkeypatch.setenv("AGENTX_SELFHOST_BASE_URL", "http://localhost:4999/api/v1")
+    client = AgentX.from_env()
+    assert client.base_url == "http://localhost:4999/api/v1"
+
+    monkeypatch.setenv("AGENTX_API_BASE_URL", "http://localhost:5000/api/v1")
+    assert AgentX.from_env().base_url == "http://localhost:5000/api/v1"  # explicit name wins
+
+
+def test_tune_unwraps_the_proposal_envelope(monkeypatch):
+    """The tune wire wraps its result in {"proposal": {...}} - judge_scorers.tune must unwrap it
+    like the legacy client does, so proposal["reasoning"]/criteria are directly addressable
+    (selfhost_demo/11 crashed on the wrapped form)."""
+    from agentx.monitor.judge_scorers import JudgeScorersClient
+
+    client = JudgeScorersClient(api_key="agtx_local_test", base_url="http://localhost:1")
+    monkeypatch.setattr(client, "_profile_id", lambda scorer_id: "prof-1")
+    monkeypatch.setattr(
+        client,
+        "_request",
+        lambda *a, **k: {"proposal": {"reasoning": "why", "acceptanceCriteria": "a"}},
+    )
+    proposal = client.tune("s1")
+    assert proposal["reasoning"] == "why"
+
+
+def test_validate_and_publish_send_criteria_at_top_level(monkeypatch):
+    """The tuning wire takes the criteria fields at the TOP level of the body (the legacy client
+    always did) - nesting them under "criteria" 400s with 'acceptanceCriteria is required'."""
+    from agentx.monitor.judge_scorers import JudgeScorersClient
+
+    client = JudgeScorersClient(api_key="agtx_local_test", base_url="http://localhost:1")
+    monkeypatch.setattr(client, "_profile_id", lambda scorer_id: "prof-1")
+    captured = {}
+
+    def fake_request(method, path, json=None, timeout=60):
+        captured[path.rsplit("/", 1)[-1]] = json
+        return {}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    criteria = {"acceptanceCriteria": "a", "rejectionCriteria": "r", "evaluationCriteria": "e"}
+    client.validate_tuning("s1", criteria, window="24h")
+    client.publish_tuning("s1", criteria)
+    assert captured["validate"]["acceptanceCriteria"] == "a"
+    assert captured["validate"]["window"] == "24h"
+    assert "criteria" not in captured["validate"]
+    assert captured["publish"]["acceptanceCriteria"] == "a"
