@@ -1,13 +1,18 @@
 # Until this workflow existed, nothing in the repo ran a test: release.yml only publishes.
 # Two things had rotted quietly as a result - the docs never mentioned the LLM Judge Scorer
-# surface 0.6.36 shipped, and tests/test_span_tree.py had been failing since 40c6f6e changed
-# trace_tool_call()'s dual-write behaviour four days after the test was written.
+# surface 0.6.36 shipped, and four tests had been asserting on a performance_summary payload
+# that 9d45dd1 replaced with real child spans, some of them for over two weeks.
 #
-# It runs the whole suite. Tests for optional extras (crewai, litellm, llamaindex, autogen,
-# google-adk) skip themselves via pytest.importorskip when the extra is absent, so the base
-# install is green - a skip is honest about not being covered here, where a failure would
-# have drowned out real ones. Installing those extras to actually run them is a fair next
-# step; it is a slower job, not a different one.
+# Two jobs, because they answer different questions at different costs:
+#
+#   tests   - the base install on both supported Pythons. Fast feedback on the core, and the
+#             configuration most contributors actually have. Integration tests for optional
+#             extras skip themselves here via pytest.importorskip.
+#   extras  - every framework integration installed, so those tests actually run instead of
+#             skipping. Slower (chromadb, onnxruntime and friends come along), so it runs on
+#             one Python rather than the matrix. autogen-ext is installed explicitly: its
+#             ReplayChatCompletionClient is a test double, so it belongs in CI rather than in
+#             the package's "autogen" extra.
 name: tests
 
 on:
@@ -33,4 +38,15 @@ jobs:
       - run: pip install -e ".[langchain]" pytest
       # tests/test_integration.py talks to the hosted API and skips itself without a key;
       # no secret is passed here on purpose, so pull requests from forks behave the same.
+      - run: python -m pytest tests/ -q
+
+  extras:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[all]" autogen-ext pytest
       - run: python -m pytest tests/ -q
