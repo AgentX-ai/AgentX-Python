@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from agentx.evaluations.models import EvaluationSettings
@@ -81,10 +82,25 @@ class EvaluationSettingsBuilder:
 
 
 class EvaluationSettingsClient:
-    """Thin wrapper surfaced as client.evaluations.settings."""
+    """Thin wrapper surfaced as ``client.evaluations.settings``.
+
+    Note: an evaluation-settings record is the judge rubric + OFFLINE profile of an
+    **LLM Judge Scorer** - the unified entity at ``client.monitor.judge_scorers``, which also
+    carries the optional online (live-traffic) profile. This client keeps working unchanged;
+    prefer ``judge_scorers`` for new code so both profiles live in one place -
+    ``client.monitor.judge_scorers.builder(...)`` has the same snake_case ergonomics as the
+    builder below, plus tool_context, thresholds, and the live profile in one call."""
 
     def __init__(self, client: "EvaluationsClient"):
         self._client = client
+        # Soft deprecation: hidden by default (DeprecationWarning), visible under -W or pytest.
+        warnings.warn(
+            "client.evaluations.settings is the legacy view of an LLM Judge Scorer's offline "
+            "profile; prefer client.monitor.judge_scorers, which manages the judge rubric, "
+            "offline profile, and online (live-traffic) profile as one entity.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
 
     def builder(
         self,

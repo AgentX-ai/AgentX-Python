@@ -94,7 +94,7 @@ class Dataset(BaseModel):
 
 class EvaluationSettings(BaseModel):
     """A standalone, reusable grading config - no dataset/questions attached.
-    Created via ``client.evaluations.settings.builder(...).publish()`` and run
+    Created via ``client.monitor.judge_scorers.builder(...).publish()`` (or the legacy ``client.evaluations.settings.builder``) and run
     against any dataset by passing its id as ``evaluation_settings_id`` to
     ``client.evaluations.run(...)``."""
 

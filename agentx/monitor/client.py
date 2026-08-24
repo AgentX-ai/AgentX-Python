@@ -88,8 +88,15 @@ class MonitorClient:
         # Handed this client's own resolved API root, never the process-global default, so a
         # second AgentX() with a different base_url can't re-point it (deep-dive bug #1).
         self.scorers = ScorersClient(api_key=api_key, base_url=self._api_root())
+        from agentx.monitor.judge_scorers import JudgeScorersClient
+        # The unified LLM Judge Scorer (rubric + offline/online profiles in one entity) - the
+        # surface that matches the product; evaluations.settings and online_evaluators below
+        # remain as its profile-level views.
+        self.judge_scorers = JudgeScorersClient(api_key=api_key, base_url=self._api_root())
         self.profile = MonitorProfileClient(self)
-        self.online_evaluators = MonitorOnlineEvaluatorClient(self)
+        # Legacy view of an LLM Judge Scorer's online profile - constructed lazily so its
+        # DeprecationWarning fires on first USE, not for every client that never touches it.
+        self._online_evaluators: "MonitorOnlineEvaluatorClient | None" = None
         from agentx.monitor.sessions import MonitorSessionClient
         from agentx.monitor.agents import MonitorAgentClient
         self.sessions = MonitorSessionClient(self)
@@ -172,6 +179,14 @@ class MonitorClient:
     def create_online_evaluator(self, payload: dict) -> MonitorOnlineEvaluator:
         data = self._request("POST", "/online-evaluators", json=self._with_workspace(payload))
         return MonitorOnlineEvaluator(**data["evaluator"])
+
+    @property
+    def online_evaluators(self) -> "MonitorOnlineEvaluatorClient":
+        if self._online_evaluators is None:
+            from agentx.monitor.online_evaluators import MonitorOnlineEvaluatorClient
+
+            self._online_evaluators = MonitorOnlineEvaluatorClient(self)
+        return self._online_evaluators
 
     def list_online_evaluators(self) -> List[MonitorOnlineEvaluator]:
         data = self._request("GET", "/online-evaluators", params=self._workspace_params())

@@ -59,6 +59,15 @@ class AgentXValidationError(AgentXEvaluationsError):
     pass
 
 
+def _resolve_scorer_id(scorer_id: Optional[str], evaluation_settings_id: Optional[str]) -> Optional[str]:
+    """One grader, two spellings: ``scorer_id`` is the post-consolidation name for what the wire
+    still calls ``evaluationSettingsId`` (the ids are identical by design). Both kwargs are
+    accepted everywhere a run picks its grader; passing both with different values is a bug."""
+    if scorer_id and evaluation_settings_id and scorer_id != evaluation_settings_id:
+        raise ValueError("Pass either scorer_id or evaluation_settings_id (they are the same id), not two different ids")
+    return scorer_id or evaluation_settings_id
+
+
 class EvaluationsClient:
     def __init__(
         self,
@@ -100,10 +109,20 @@ class EvaluationsClient:
         from agentx.evaluations.prompts import PromptClient
 
         self.datasets = DatasetClient(self)
-        self.settings = EvaluationSettingsClient(self)
+        # Legacy view of an LLM Judge Scorer's offline profile - constructed lazily so its
+        # DeprecationWarning fires on first USE, not for every client that never touches it.
+        self._settings: "EvaluationSettingsClient | None" = None
         self.prompts = PromptClient(self)
         from agentx.evaluations.tool_schemas import ToolSchemaClient
         self.tool_schemas = ToolSchemaClient(self)
+
+    @property
+    def settings(self) -> "EvaluationSettingsClient":
+        if self._settings is None:
+            from agentx.evaluations.evaluation_settings import EvaluationSettingsClient
+
+            self._settings = EvaluationSettingsClient(self)
+        return self._settings
 
     # ------------------------------------------------------------------
     # Low-level HTTP
@@ -275,9 +294,15 @@ class EvaluationsClient:
         dataset_id: str,
         subject: EvaluationSubject,
         python_version: Optional[str] = None,
+        scorer_id: Optional[str] = None,
         evaluation_settings_id: Optional[str] = None,
     ) -> EvaluationRun:
+        """``scorer_id`` names the LLM Judge Scorer grading this run (its id doubles as the
+        wire's ``evaluationSettingsId``). ``evaluation_settings_id`` is the pre-consolidation
+        alias and keeps working."""
         from agentx.version import VERSION
+
+        grader_id = _resolve_scorer_id(scorer_id, evaluation_settings_id)
 
         payload = {
             "datasetId": dataset_id,
@@ -290,8 +315,8 @@ class EvaluationsClient:
                 "pythonVersion": python_version or _python_version(),
             },
         }
-        if evaluation_settings_id:
-            payload["evaluationSettingsId"] = evaluation_settings_id
+        if grader_id:
+            payload["evaluationSettingsId"] = grader_id
         data = self._request("POST", "/runs", json=self._with_workspace(payload))
         return EvaluationRun(**data)
 

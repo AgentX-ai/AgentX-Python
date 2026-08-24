@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from agentx.monitor.models import MonitorOnlineEvaluator, OnlineEvaluatorRatingPoint, OnlineEvaluatorEvent
@@ -17,7 +18,12 @@ class MonitorOnlineEvaluatorBuilder:
     ``evaluation_settings_id`` must reference an existing Evaluator config (criteria, judge
     prompt, judge model), the same config datasets/Evaluate runs use, see
     ``client.evaluations.settings.builder(...)``.
-    """
+
+    Note: an online evaluator is the ONLINE profile of an **LLM Judge Scorer** - the unified
+    entity at ``client.monitor.judge_scorers``. Strictly one profile per config since the
+    unification: binding a config that is already another evaluator's profile transparently
+    binds a fresh copy of it instead (the response's ``evaluationSettingsId`` is the copy).
+    This surface keeps working unchanged; prefer ``judge_scorers`` for new code."""
 
     def __init__(
         self,
@@ -60,10 +66,23 @@ class MonitorOnlineEvaluatorBuilder:
 
 
 class MonitorOnlineEvaluatorClient:
-    """Thin wrapper surfaced as ``client.monitor.online_evaluators``."""
+    """Thin wrapper surfaced as ``client.monitor.online_evaluators``.
+
+    Note: an online evaluator is the ONLINE (live-traffic) profile of an **LLM Judge Scorer** -
+    the unified entity at ``client.monitor.judge_scorers``, which also carries the judge rubric
+    and the offline profile. This client keeps working unchanged; prefer ``judge_scorers`` for
+    new code so both profiles live in one place."""
 
     def __init__(self, client: "MonitorClient"):
         self._client = client
+        # Soft deprecation: hidden by default (DeprecationWarning), visible under -W or pytest.
+        warnings.warn(
+            "client.monitor.online_evaluators is the legacy view of an LLM Judge Scorer's "
+            "online profile; prefer client.monitor.judge_scorers, which manages the judge "
+            "rubric, offline profile, and online profile as one entity.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
 
     def builder(
         self,

@@ -290,6 +290,7 @@ class DatasetClient:
         rouge_score: bool = False,
         similarity_model: Optional[str] = None,
         sovereignty_models: Optional[List[str]] = None,
+        code_scorers: Optional[List[Dict[str, Any]]] = None,
     ) -> DatasetBuilder:
         return DatasetBuilder(
             self._client,
@@ -307,6 +308,9 @@ class DatasetClient:
             rouge_score=rouge_score,
             similarity_model=similarity_model,
             sovereignty_models=sovereignty_models,
+            # Was documented (evaluation/code-scorers.mdx) but not forwarded - DatasetBuilder
+            # itself always accepted it. Fixed with the judge-scorer unification.
+            code_scorers=code_scorers,
         )
 
     def from_csv(self, path: str, name: str, **kwargs) -> DatasetBuilder:
