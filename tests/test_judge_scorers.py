@@ -105,3 +105,26 @@ def test_dataset_builder_forwards_code_scorers(monkeypatch):
     assert payload["codeScorers"][0]["name"] == "tool order"
     assert payload["codeScorers"][0]["enabled"] is True
     assert payload["codeScorers"][0]["id"]
+
+
+def test_legacy_profile_clients_warn_once_on_first_access():
+    """The legacy views (evaluations.settings / monitor.online_evaluators) stay functional but
+    emit a DeprecationWarning pointing at judge_scorers - lazily, so a client that never touches
+    them never warns."""
+    import warnings
+
+    from agentx import AgentX
+
+    with warnings.catch_warnings(record=True) as during_init:
+        warnings.simplefilter("always")
+        client = AgentX(api_key="agtx_local_test", base_url="http://localhost:1")
+        _ = client.monitor.judge_scorers  # the unified surface never warns
+    assert not [w for w in during_init if "judge_scorers" in str(w.message)]
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _ = client.evaluations.settings
+        _ = client.monitor.online_evaluators
+    messages = [str(w.message) for w in caught if issubclass(w.category, DeprecationWarning)]
+    assert any("judge_scorers" in m for m in messages), messages
+    assert len(messages) >= 2

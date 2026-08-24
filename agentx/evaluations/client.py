@@ -100,10 +100,20 @@ class EvaluationsClient:
         from agentx.evaluations.prompts import PromptClient
 
         self.datasets = DatasetClient(self)
-        self.settings = EvaluationSettingsClient(self)
+        # Legacy view of an LLM Judge Scorer's offline profile - constructed lazily so its
+        # DeprecationWarning fires on first USE, not for every client that never touches it.
+        self._settings: "EvaluationSettingsClient | None" = None
         self.prompts = PromptClient(self)
         from agentx.evaluations.tool_schemas import ToolSchemaClient
         self.tool_schemas = ToolSchemaClient(self)
+
+    @property
+    def settings(self) -> "EvaluationSettingsClient":
+        if self._settings is None:
+            from agentx.evaluations.evaluation_settings import EvaluationSettingsClient
+
+            self._settings = EvaluationSettingsClient(self)
+        return self._settings
 
     # ------------------------------------------------------------------
     # Low-level HTTP

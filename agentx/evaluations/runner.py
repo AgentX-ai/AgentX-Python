@@ -421,9 +421,14 @@ class EvaluationsRunner:
     def __init__(self, client: EvaluationsClient):
         self._client = client
         self.datasets = client.datasets
-        self.settings = client.settings
         self.prompts = client.prompts
         self.tool_schemas = client.tool_schemas
+
+    @property
+    def settings(self):
+        # Deferred: touching client.settings eagerly here would fire its legacy-surface
+        # DeprecationWarning for every runner, used or not.
+        return self._client.settings
 
     def list_models(self, provider: Optional[str] = None) -> List[ModelInfo]:
         """List the LLM models AgentX supports - the same set selectable for

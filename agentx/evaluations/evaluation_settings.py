@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from agentx.evaluations.models import EvaluationSettings
@@ -90,6 +91,14 @@ class EvaluationSettingsClient:
 
     def __init__(self, client: "EvaluationsClient"):
         self._client = client
+        # Soft deprecation: hidden by default (DeprecationWarning), visible under -W or pytest.
+        warnings.warn(
+            "client.evaluations.settings is the legacy view of an LLM Judge Scorer's offline "
+            "profile; prefer client.monitor.judge_scorers, which manages the judge rubric, "
+            "offline profile, and online (live-traffic) profile as one entity.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
 
     def builder(
         self,
