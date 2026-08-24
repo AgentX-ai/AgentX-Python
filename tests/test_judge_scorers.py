@@ -128,3 +128,40 @@ def test_legacy_profile_clients_warn_once_on_first_access():
     messages = [str(w.message) for w in caught if issubclass(w.category, DeprecationWarning)]
     assert any("judge_scorers" in m for m in messages), messages
     assert len(messages) >= 2
+
+
+def test_scorer_id_is_the_preferred_run_kwarg():
+    """Runs pick their grader as scorer_id (post-consolidation name); the legacy
+    evaluation_settings_id kwarg maps to the same wire field, and passing two DIFFERENT ids is
+    rejected."""
+    import pytest
+
+    from agentx.evaluations.client import _resolve_scorer_id
+
+    assert _resolve_scorer_id("s1", None) == "s1"
+    assert _resolve_scorer_id(None, "s1") == "s1"
+    assert _resolve_scorer_id("s1", "s1") == "s1"
+    assert _resolve_scorer_id(None, None) is None
+    with pytest.raises(ValueError):
+        _resolve_scorer_id("s1", "s2")
+
+
+def test_init_run_sends_scorer_id_as_evaluationSettingsId(monkeypatch):
+    from agentx.evaluations.client import EvaluationsClient
+    from agentx.evaluations.models import EvaluationSubject
+
+    client = EvaluationsClient(api_key="agtx_local_test", base_url="http://localhost:1")
+    captured = {}
+
+    def fake_request(method, path, **kwargs):
+        captured["payload"] = kwargs.get("json")
+        return {
+            "runId": "r1",
+            "datasetId": "d1",
+            "status": "running",
+            "numberOfRequests": 1,
+        }
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    client.init_run("d1", EvaluationSubject(type="external"), scorer_id="scorer-123")
+    assert captured["payload"]["evaluationSettingsId"] == "scorer-123"

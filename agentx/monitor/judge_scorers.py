@@ -54,7 +54,7 @@ class JudgeScorersClient:
 
     - ``offline`` - how dataset runs grade with it (repetitions, similarity metrics, code
       scorers, default/status). The scorer's ``id`` is exactly what
-      ``client.evaluations.run(dataset_id, evaluation_settings_id=scorer.id)`` takes.
+      ``client.evaluations.run(dataset_id, scorer_id=scorer.id)`` takes.
     - ``online`` - whether/how it scores live traffic (enabled, sample rate, scope,
       alert threshold). ``None`` means offline-only.
 
@@ -69,7 +69,7 @@ class JudgeScorersClient:
             judge={"acceptanceCriteria": "Concrete, correct, cites the policy."},
             online={"enabled": True, "sampleRate": 0.2, "alertThreshold": 6},
         )
-        client.evaluations.run(dataset_id, subject, evaluation_settings_id=scorer.id)
+        client.evaluations.run(dataset_id, subject, scorer_id=scorer.id)
         cal = client.monitor.judge_scorers.calibration(scorer.id)
     """
 

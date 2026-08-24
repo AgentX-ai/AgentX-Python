@@ -487,24 +487,24 @@ class EvaluationsRunner:
         self,
         dataset_id: str,
         subject: Union[Dict[str, Any], EvaluationSubject],
+        scorer_id: Optional[str] = None,
         evaluation_settings_id: Optional[str] = None,
     ) -> EvaluationRunContext:
-        """Start a run of ``dataset_id`` against ``subject``. Pass
-        ``evaluation_settings_id`` to grade against a standalone, reusable
-        config (created via ``client.evaluations.settings.builder(...)``)
-        instead of the dataset's own default config."""
+        """Start a run of ``dataset_id`` against ``subject``. Pass ``scorer_id`` (an LLM Judge
+        Scorer's id, e.g. from ``client.monitor.judge_scorers``) to grade with a specific
+        scorer instead of the dataset's default. ``evaluation_settings_id`` is the
+        pre-consolidation alias for the same id and keeps working."""
+        from agentx.evaluations.client import _resolve_scorer_id
+
         if isinstance(subject, dict):
             subject = EvaluationSubject(**subject)
 
+        grader_id = _resolve_scorer_id(scorer_id, evaluation_settings_id)
         dataset = self._client.get_dataset(dataset_id)
         evaluation_settings = (
-            self._client.get_evaluation_settings(evaluation_settings_id)
-            if evaluation_settings_id
-            else None
+            self._client.get_evaluation_settings(grader_id) if grader_id else None
         )
-        run = self._client.init_run(
-            dataset_id, subject, evaluation_settings_id=evaluation_settings_id
-        )
+        run = self._client.init_run(dataset_id, subject, scorer_id=grader_id)
         logger.info(
             "Started evaluation run %s on dataset %s (%d case(s), %d repetition(s))",
             run.run_id,
