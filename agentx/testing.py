@@ -88,3 +88,78 @@ def assert_evaluation(
         f"Evaluation run {run_id} failed its quality gate:\n{_format_failures(gate)}",
         gate=gate,
     )
+
+
+def _format_pairwise(comparison: Any) -> str:
+    summary = getattr(comparison, "summary", None)
+    lines: List[str] = []
+    if summary is not None:
+        flip = getattr(summary, "flip_rate", None)
+        lines.append(
+            f"  A won {getattr(summary, 'a_wins', 0)}, B won {getattr(summary, 'b_wins', 0)}, "
+            f"{getattr(summary, 'ties', 0)} tied, out of {getattr(summary, 'total', 0)}"
+            + (f" (flip rate {flip})" if flip is not None else "")
+        )
+    for case in getattr(comparison, "cases", None) or []:
+        if getattr(case, "winner", None) == "b":
+            query = (getattr(case, "query", None) or "").strip()
+            lines.append(f"  lost: {query[:80]} - {(getattr(case, 'justification', None) or '')[:120]}")
+    return "\n".join(lines) if lines else f"  comparison: {comparison!r}"
+
+
+def assert_pairwise(
+    comparison: Any,
+    *,
+    must_win: bool = False,
+    max_losses: Optional[int] = None,
+    max_flip_rate: Optional[float] = None,
+) -> Any:
+    """Assert a head-to-head comparison went the candidate's way.
+
+    ``comparison`` is what ``client.evaluations.compare_pairwise(a, b)`` returns; run A is the
+    candidate and run B is the baseline it has to beat.
+
+    - ``must_win`` - fail unless A won more cases than B. A tie fails: "no worse than before" is
+      not the same claim as "better", and a change that cannot win its own comparison has not
+      earned a green test.
+    - ``max_losses`` - fail when A lost more than this many individual cases, even if it won
+      overall. This is the check that catches a change that lifts the average by improving easy
+      cases while breaking hard ones.
+    - ``max_flip_rate`` - fail when too many verdicts reversed with the presentation order. That
+      is position bias rather than quality, and it means the comparison itself is inconclusive,
+      so treating it as a pass would be worse than a red test. Only meaningful for a comparison
+      run with ``both_orders=True``; a comparison without it has no flip rate and this check is
+      skipped rather than quietly passing.
+
+    At least one check is required. Returns the comparison on success; raises
+    :class:`EvaluationAssertionError` naming the cases that lost.
+    """
+    if not must_win and max_losses is None and max_flip_rate is None:
+        raise ValueError(
+            "assert_pairwise needs at least one check: must_win, max_losses, and/or max_flip_rate"
+        )
+    summary = getattr(comparison, "summary", None)
+    if summary is None:
+        raise ValueError("assert_pairwise expects the result of compare_pairwise()")
+
+    failures: List[str] = []
+    a_wins = getattr(summary, "a_wins", 0)
+    b_wins = getattr(summary, "b_wins", 0)
+    if must_win and a_wins <= b_wins:
+        failures.append(f"run A did not win ({a_wins} vs {b_wins})")
+    if max_losses is not None and b_wins > max_losses:
+        failures.append(f"run A lost {b_wins} cases, more than the {max_losses} allowed")
+    flip_rate = getattr(summary, "flip_rate", None)
+    if max_flip_rate is not None and flip_rate is not None and flip_rate > max_flip_rate:
+        failures.append(
+            f"verdicts flipped on {flip_rate:.0%} of cases with the presentation order, above the "
+            f"{max_flip_rate:.0%} allowed - this comparison is inconclusive, not a pass"
+        )
+
+    if not failures:
+        return comparison
+    batch_id = getattr(comparison, "batch_id", "?")
+    raise EvaluationAssertionError(
+        f"Head-to-head {batch_id} failed: {'; '.join(failures)}\n{_format_pairwise(comparison)}",
+        gate=comparison,
+    )

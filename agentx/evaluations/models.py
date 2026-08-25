@@ -742,3 +742,64 @@ class AnalysisStatus(BaseModel):
     @property
     def is_terminal(self) -> bool:
         return self.status in ("completed", "partially_failed", "failed")
+
+
+class PairwiseSummary(BaseModel):
+    """Batch-level verdict of a head-to-head comparison (``compare_pairwise``).
+
+    ``winner`` is "a", "b", or "tie" - a dead heat is reported as a tie rather than broken
+    arbitrarily. ``flip_rate`` is only populated for a ``both_orders=True`` comparison: it is the
+    share of cases whose winner reversed when the two answers were swapped, which is position
+    bias rather than quality. A high flip rate means the batch is inconclusive, so it is reported
+    instead of being folded away."""
+
+    total: int = 0
+    a_wins: int = Field(default=0, alias="aWins")
+    b_wins: int = Field(default=0, alias="bWins")
+    ties: int = 0
+    winner: str = "tie"
+    flip_rate: Optional[float] = Field(default=None, alias="flipRate")
+
+    class Config:
+        populate_by_name = True
+        extra = "ignore"
+
+
+class PairwiseCase(BaseModel):
+    """One question's verdict. ``presented_first`` records which run's answer the judge read
+    first, because that is the confound pairwise judging exists to control for."""
+
+    id: Optional[str] = Field(default=None, alias="_id")
+    question_index: Optional[int] = Field(default=None, alias="questionIndex")
+    query: Optional[str] = None
+    winner: str = "tie"
+    presented_first: str = Field(default="a", alias="presentedFirst")
+    flipped: bool = False
+    justification: Optional[str] = None
+    judge_model: Optional[str] = Field(default=None, alias="judgeModel")
+
+    class Config:
+        populate_by_name = True
+        extra = "ignore"
+
+
+class PairwiseComparison(BaseModel):
+    """A full head-to-head between two runs of the same dataset.
+
+    ``skipped`` names the cases that could not be judged (one side produced no answer, or the
+    batch hit the server's per-comparison cap) with the reason - a comparison that quietly
+    dropped half the dataset would read as a clean sweep."""
+
+    batch_id: str = Field(alias="batchId")
+    run_a_id: str = Field(alias="runAId")
+    run_b_id: str = Field(alias="runBId")
+    both_orders: bool = Field(default=False, alias="bothOrders")
+    judge_model: Optional[str] = Field(default=None, alias="judgeModel")
+    summary: PairwiseSummary = Field(default_factory=PairwiseSummary)
+    cases: List[PairwiseCase] = Field(default_factory=list)
+    skipped: List[Dict[str, Any]] = Field(default_factory=list)
+    created_at: Optional[str] = Field(default=None, alias="createdAt")
+
+    class Config:
+        populate_by_name = True
+        extra = "ignore"

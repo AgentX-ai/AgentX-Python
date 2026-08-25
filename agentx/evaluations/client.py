@@ -17,6 +17,7 @@ from agentx.evaluations.models import (
     EvaluationSettings,
     EvaluationSubject,
     ModelInfo,
+    PairwiseComparison,
     Prompt,
     Report,
 )
@@ -540,6 +541,63 @@ class EvaluationsClient:
         return self._request(
             "POST", f"/evaluate/prompts/{prompt_id}/versions", base=self._api_root, json=payload
         )
+
+    # ------------------------------------------------------------------
+    # Head-to-head (pairwise) judging. Rides the /evaluate dialect via _api_root(), same
+    # precedent as get_report and the prompt loop above.
+    # ------------------------------------------------------------------
+
+    def compare_pairwise(
+        self,
+        run_a_id: str,
+        run_b_id: str,
+        *,
+        criteria: Optional[str] = None,
+        judge_model: Optional[str] = None,
+        both_orders: bool = False,
+    ) -> PairwiseComparison:
+        """Ask a judge which of two runs answered each question better.
+
+        Both runs must be of the same dataset. Absolute ratings answer "is this above the bar";
+        this answers "did the change help", which is the question a diff between two runs is
+        actually asking. The judge sees the two answers as "Answer 1"/"Answer 2" with the order
+        alternating case by case, so it never learns which run is the candidate.
+
+        ``both_orders=True`` judges every pair twice with the sides swapped. It doubles the judge
+        cost and is the only real defense against position bias: a pair whose winner reverses is
+        recorded as a tie, and the batch reports its ``flip_rate``.
+
+        ``criteria`` and ``judge_model`` default to the dataset's own evaluation criteria and
+        judge model, so a head-to-head grades on the same terms a normal run of it does.
+        """
+        payload: Dict[str, Any] = {"runAId": run_a_id, "runBId": run_b_id}
+        if criteria:
+            payload["criteria"] = criteria
+        if judge_model:
+            payload["judgeModel"] = judge_model
+        if both_orders:
+            payload["bothOrders"] = True
+        response = self._request("POST", "/evaluate/runs/pairwise", json=payload, base=self._api_root)
+        return PairwiseComparison(**response["comparison"])
+
+    def get_pairwise(self, batch_id: str) -> PairwiseComparison:
+        """Read back a stored head-to-head by its batch id."""
+        response = self._request("GET", f"/evaluate/runs/pairwise/{batch_id}", base=self._api_root)
+        return PairwiseComparison(**response["comparison"])
+
+    def list_pairwise(
+        self, *, run_a_id: Optional[str] = None, run_b_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Summaries of past head-to-heads, newest first, optionally narrowed to one run."""
+        params: Dict[str, Any] = {}
+        if run_a_id:
+            params["runAId"] = run_a_id
+        if run_b_id:
+            params["runBId"] = run_b_id
+        response = self._request(
+            "GET", "/evaluate/runs/pairwise", params=params or None, base=self._api_root
+        )
+        return response.get("comparisons", [])
 
     # ------------------------------------------------------------------
     # Tool schema registry (same version-scoped propose/publish loop as prompts)
