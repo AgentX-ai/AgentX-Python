@@ -445,6 +445,68 @@ sys.exit(0 if result.gate == "pass" else 1)
 
 ---
 
+## pytest assertions
+
+`agentx.testing` turns a run into a plain pytest failure, so quality checks live in the same
+suite as everything else. Both helpers raise `AssertionError` subclasses - no plugin, no
+registration, works in any runner.
+
+### `assert_evaluation` - does it clear the bar
+
+```python
+from agentx import AgentX
+from agentx.testing import assert_evaluation
+
+def test_support_agent_quality():
+    client = AgentX.from_env()
+    report = (
+        client.evaluations
+        .run(dataset_id=DATASET_ID, scorer_id=SCORER_ID, subject=SUBJECT)
+        .execute(my_agent)
+        .finalize()
+    )
+    assert_evaluation(report, min_rating=7.0, no_regression=True)
+```
+
+`min_rating` is an absolute floor; `no_regression` compares against the dataset's previous
+completed run (`tolerance` defaults to 0.5, since judge scores are noisy). The check rides the
+engine's CI gate, so every pytest verdict also appears in the dashboard's gate history with
+`caller="pytest"` - the red test and the dashboard row are one event, not two systems drifting.
+
+### `assert_pairwise` - is it better than what it replaces
+
+An average clearing a floor does not mean a change helped. For that, compare the two runs
+head to head and assert the comparison went the candidate's way:
+
+```python
+from agentx.testing import assert_pairwise
+
+def test_new_prompt_beats_the_old_one():
+    comparison = client.evaluations.compare_pairwise(
+        candidate_run_id,
+        baseline_run_id,
+        both_orders=True,
+    )
+    assert_pairwise(
+        comparison,
+        must_win=True,
+        max_losses=2,
+        max_flip_rate=0.2,
+    )
+```
+
+| Check | Fails when |
+|---|---|
+| `must_win` | Run A did not win more cases than run B. A tie fails - "no worse than before" is not the claim being made. |
+| `max_losses` | Run A lost more individual cases than allowed, even if it won overall. Catches a change that lifts the average by improving easy cases while breaking hard ones. |
+| `max_flip_rate` | Too many verdicts reversed when the answers were swapped. That is position bias, and an inconclusive comparison must not read as a pass. |
+
+`max_flip_rate` needs `both_orders=True` to mean anything: without it there is no flip rate, and
+the check is skipped rather than passing on a fabricated zero. The failure message names the
+cases that lost, so the test output is actionable without opening the dashboard.
+
+---
+
 ## Exceptions
 
 | Exception | When raised |
