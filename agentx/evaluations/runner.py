@@ -446,6 +446,20 @@ class EvaluationsRunner:
         EvaluationsClient.simulate_conversation for parameters."""
         return self._client.simulate_conversation(**kwargs)
 
+    def compare_pairwise(self, run_a_id: str, run_b_id: str, **kwargs):
+        """Head-to-head judging between two runs of the same dataset - "which answer is better"
+        rather than two absolute scores. See EvaluationsClient.compare_pairwise for the options,
+        and agentx.testing.assert_pairwise for the pytest-side check."""
+        return self._client.compare_pairwise(run_a_id, run_b_id, **kwargs)
+
+    def get_pairwise(self, batch_id: str):
+        """Read back a stored head-to-head by its batch id."""
+        return self._client.get_pairwise(batch_id)
+
+    def list_pairwise(self, **kwargs) -> list:
+        """Summaries of past head-to-heads, newest first, optionally narrowed to one run."""
+        return self._client.list_pairwise(**kwargs)
+
     def get_run(self, run_id: str) -> dict:
         """Run summary + per-result rows by id, without needing the EvaluationRunContext that
         created it (e.g. from a separate process)."""
