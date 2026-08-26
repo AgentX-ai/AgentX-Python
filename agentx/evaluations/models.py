@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional, Union
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 # ---------------------------------------------------------------------------
 # Observable trace
@@ -418,7 +418,11 @@ class RunResultRow(BaseModel):
     latency_ms: Optional[float] = Field(default=None, alias="latencyMs")
     input_tokens: Optional[int] = Field(default=None, alias="inputTokens")
     output_tokens: Optional[int] = Field(default=None, alias="outputTokens")
-    cosine_similarity: Optional[float] = Field(default=None, alias="cosineSimilarity")
+    # Self-host sends vectorSimilarity, the hosted platform cosineSimilarity - accept both
+    # (row.cosine_similarity was silently None forever on self-host before this).
+    cosine_similarity: Optional[float] = Field(
+        default=None, validation_alias=AliasChoices("cosineSimilarity", "vectorSimilarity")
+    )
     jaccard_similarity: Optional[float] = Field(default=None, alias="jaccardSimilarity")
     bleu_score: Optional[float] = Field(default=None, alias="bleuScore")
     rouge_score: Optional[float] = Field(default=None, alias="rougeScore")
@@ -468,7 +472,11 @@ class ReportStatistics(BaseModel):
     average_rating: float = Field(default=0.0, alias="averageRating")
     min_rating: float = Field(default=0.0, alias="minRating")
     max_rating: float = Field(default=0.0, alias="maxRating")
-    cosine_similarity: Optional[float] = Field(default=None, alias="cosineSimilarity")
+    # Self-host sends vectorSimilarity, the hosted platform cosineSimilarity - accept both
+    # (row.cosine_similarity was silently None forever on self-host before this).
+    cosine_similarity: Optional[float] = Field(
+        default=None, validation_alias=AliasChoices("cosineSimilarity", "vectorSimilarity")
+    )
     jaccard_similarity: Optional[float] = Field(default=None, alias="jaccardSimilarity")
     bleu_score: Optional[float] = Field(default=None, alias="bleuScore")
     rouge_score: Optional[float] = Field(default=None, alias="rougeScore")
