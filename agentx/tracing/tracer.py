@@ -13,6 +13,7 @@ from uuid import uuid4
 from agentx.exceptions import CIGateFailure
 from agentx.tracing.ingest_client import IngestClient
 from agentx.tracing.ci_types import CIRun, CIRunResult, CIRunStatus, CIQuestionScore
+from agentx.tracing.eval_scope import EVAL_RUN_SOURCE, current_eval_run_id
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -167,9 +168,21 @@ class _TraceSpan:
             # flush() uses; child-only spans keep their async fire-and-forget behavior.
             self._tracer.flush(timeout=5.0)
 
+        # Inside an eval run (evaluations' execute()), every trace states what it is: eval
+        # traffic. monitor=False unless the caller explicitly said True; the run id rides in
+        # metadata so the trace can be walked back to its run. See tracing/eval_scope.py.
+        eval_run_id = current_eval_run_id()
+        monitor = self._monitor
+        metadata = self._metadata
+        source = None
+        if eval_run_id is not None:
+            source = EVAL_RUN_SOURCE
+            if monitor is not True:
+                monitor = False
+            metadata = {**(metadata or {}), "evalRunId": eval_run_id}
         self._trace_id = self._tracer._send(
             sync=self._sync,
-            monitor=self._monitor,
+            monitor=monitor,
             pattern_ids=self._pattern_ids,
             name=self.name,
             agent_id=self._agent_id,
@@ -177,7 +190,7 @@ class _TraceSpan:
             output=_safe_serialize(self.output) if self.output is not None else None,
             latency_ms=latency_ms,
             error=self._error,
-            metadata=self._metadata,
+            metadata=metadata,
             framework=self._framework or self._captured_framework,
             model=self._model or self._captured_model,
             tool_calls=self.tool_calls or None,
@@ -189,6 +202,7 @@ class _TraceSpan:
             span_id=self._span_id,
             parent_span_id=self._parent_span_id,
             span_kind=self._span_kind,
+            source=source,
             started_at_unix_nano=str(int(self._start * 1_000_000_000)) if self._start else None,
         )
         return False  # never suppress exceptions
@@ -332,6 +346,8 @@ class _TraceSpan:
             wire["span_kind"] = span_kind
         if child._session_id:
             wire["session_id"] = child._session_id
+        if current_eval_run_id() is not None:
+            wire["source"] = EVAL_RUN_SOURCE
         wire["span_id"] = child._span_id
         if child._parent_span_id:
             wire["parent_span_id"] = child._parent_span_id
@@ -1148,6 +1164,8 @@ class Tracer:
             wire["started_at_unix_nano"] = payload["started_at_unix_nano"]
         if "agent_id" in payload:
             wire["agent_id"] = payload["agent_id"]
+        if "source" in payload:
+            wire["source"] = payload["source"]
         if "span_kind" in payload:
             wire["span_kind"] = payload["span_kind"]
 
