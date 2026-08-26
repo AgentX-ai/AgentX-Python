@@ -119,7 +119,21 @@ class EvaluationRunContext:
     # ------------------------------------------------------------------
 
     def execute(self, adapter: AdapterLike) -> "EvaluationRunContext":
-        """Run all cases locally and submit batches to AgentX."""
+        """Run all cases locally and submit batches to AgentX.
+
+        The whole loop runs inside the eval-run scope (tracing/eval_scope.py): any trace the
+        agent function creates is stamped source="eval-run" + monitor=False automatically, so
+        eval traffic never skews production monitoring and no one has to remember a flag.
+        """
+        from agentx.tracing.eval_scope import enter_eval_run, exit_eval_run
+
+        scope_token = enter_eval_run(self._run.run_id)
+        try:
+            return self._execute_inner(adapter)
+        finally:
+            exit_eval_run(scope_token)
+
+    def _execute_inner(self, adapter: AdapterLike) -> "EvaluationRunContext":
         normalized = _wrap_adapter(adapter)
         cases = _build_cases(self._dataset, self._run, self._evaluation_settings)
         max_batch = self._run.limits.max_batch_size
