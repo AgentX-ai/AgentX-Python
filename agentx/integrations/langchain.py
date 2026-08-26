@@ -455,6 +455,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                 input=node.get("input"),
                 output=node.get("output"),
                 error=node.get("error"),
+                span_kind="chain",
             )
 
         llm_count = 0
@@ -470,6 +471,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                 model=step.get("model"),
                 input_tokens=step.get("inputTokenSize"),
                 output_tokens=step.get("outputTokenSize"),
+                span_kind="llm",
             )
         for tc in tool_calls:
             resolve_parent(tc.get("parent_run_id")).child_span(
@@ -480,6 +482,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                 input=tc.get("input"),
                 output=tc.get("output"),
                 error=None if tc.get("success", True) else str(tc.get("output") or "Tool call failed"),
+                span_kind="tool",
             )
         for step in state.get("retrieval_steps", []):
             resolve_parent(step.get("parent_run_id")).child_span(
@@ -490,6 +493,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                 input=step.get("query"),
                 output=step.get("output"),
                 metadata={"kind": "retrieval"},
+                span_kind="retrieval",
             )
 
     def on_chain_end(

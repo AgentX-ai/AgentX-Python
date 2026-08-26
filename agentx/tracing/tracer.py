@@ -71,6 +71,7 @@ class _TraceSpan:
         monitor: bool = False,
         pattern_ids: Optional[List[str]] = None,
         agent_id: Optional[str] = None,
+        span_kind: Optional[str] = None,
     ) -> None:
         self._tracer = tracer
         self.name = name
@@ -84,6 +85,10 @@ class _TraceSpan:
         # from a prior GET /agents lookup) to pin this trace to that exact agent. None (the
         # default) resolves from `name` alone server-side, one stable agent per distinct name.
         self._agent_id = agent_id
+        # What kind of step this span is ("agent", "llm", ...), stated rather than left to the
+        # backend's fallback ladder. Optional: a root that says nothing still classifies the way
+        # it always did, which for the common flat trace (root carries the model) is "llm".
+        self._span_kind = span_kind
         # When True, __exit__ sends synchronously (blocking) instead of enqueueing, so trace_id
         # is populated by the time the `with` block exits - see Tracer.trace()'s sync param.
         self._sync = sync
@@ -183,6 +188,7 @@ class _TraceSpan:
             cache_write_tokens=self._cache_write_tokens or None,
             span_id=self._span_id,
             parent_span_id=self._parent_span_id,
+            span_kind=self._span_kind,
             started_at_unix_nano=str(int(self._start * 1_000_000_000)) if self._start else None,
         )
         return False  # never suppress exceptions
@@ -262,6 +268,7 @@ class _TraceSpan:
         error: Optional[str] = None,
         tool_calls: Optional[List[Dict[str, Any]]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        span_kind: Optional[str] = None,
     ) -> "_TraceSpan":
         """
         Send one real child-span row parented to this span, with explicit timing (the caller's
@@ -318,6 +325,11 @@ class _TraceSpan:
             wire["tool_calls"] = child.tool_calls
         if metadata:
             wire["metadata"] = _safe_serialize(metadata)
+        # What kind of step this is, stated rather than left for the backend to guess from the
+        # span's name and which columns happen to be null. Same idea as LangSmith's run_type and
+        # Langfuse's observation type; the engine folds other vocabularies onto its own.
+        if span_kind:
+            wire["span_kind"] = span_kind
         if child._session_id:
             wire["session_id"] = child._session_id
         wire["span_id"] = child._span_id
@@ -383,6 +395,9 @@ class _TraceSpan:
                     output_tokens=step.get("outputTokenSize"),
                     cache_read_tokens=step.get("cacheReadTokenSize"),
                     cache_write_tokens=step.get("cacheWriteTokenSize"),
+                    # Stated, so a step named anything other than "LLM Call N" still classifies -
+                    # the backend's name regex was the only thing holding this together.
+                    span_kind="llm",
                 )
             for tc in tool_calls or []:
                 # Some callers' tool_calls dicts (e.g. langchain.py's, which sets these on the
@@ -399,6 +414,7 @@ class _TraceSpan:
                         input=tc.get("input"),
                         output=tc.get("output"),
                         error=None if tc.get("success", True) else str(tc.get("output") or "Tool call failed"),
+                        span_kind="tool",
                     )
                 # Also mirror onto this span's own flat tool_calls list, sent in this span's own
                 # wire payload on __exit__ (see tool_calls=self.tool_calls or None below). The
@@ -424,6 +440,7 @@ class _TraceSpan:
                     input=step.get("query"),
                     output=step.get("output"),
                     metadata={"kind": "retrieval"},
+                    span_kind="retrieval",
                 )
 
             if self.input is None and input is not None:
@@ -665,6 +682,7 @@ class Tracer:
                 input=input,
                 output=output,
                 error=error,
+                span_kind="tool",
             )
             # The child span above is only for the trace detail's span tree - the engine's
             # built-in "Tool failure" check and the dashboard's Tool quality column read the
@@ -781,6 +799,7 @@ class Tracer:
             input=query,
             output=output,
             metadata={"kind": "retrieval"},
+            span_kind="retrieval",
         )
 
     @contextmanager
@@ -823,6 +842,7 @@ class Tracer:
         monitor: Optional[bool] = None,
         pattern_ids: Optional[List[str]] = None,
         agent_id: Optional[str] = None,
+        span_kind: Optional[str] = None,
     ) -> _TraceSpan:
         """
         Return a :class:`_TraceSpan` that works as both a decorator and a
@@ -888,6 +908,7 @@ class Tracer:
             monitor=monitor,
             pattern_ids=pattern_ids,
             agent_id=agent_id,
+            span_kind=span_kind,
         )
 
     def flush(self, timeout: float = 5.0) -> bool:
@@ -1127,6 +1148,8 @@ class Tracer:
             wire["started_at_unix_nano"] = payload["started_at_unix_nano"]
         if "agent_id" in payload:
             wire["agent_id"] = payload["agent_id"]
+        if "span_kind" in payload:
+            wire["span_kind"] = payload["span_kind"]
 
         pending_tool_calls, self._pending_tool_calls = self._pending_tool_calls, []
         if pending_tool_calls:
