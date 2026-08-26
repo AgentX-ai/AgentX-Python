@@ -71,6 +71,7 @@ class _TraceSpan:
         monitor: bool = False,
         pattern_ids: Optional[List[str]] = None,
         agent_id: Optional[str] = None,
+        span_kind: Optional[str] = None,
     ) -> None:
         self._tracer = tracer
         self.name = name
@@ -84,6 +85,10 @@ class _TraceSpan:
         # from a prior GET /agents lookup) to pin this trace to that exact agent. None (the
         # default) resolves from `name` alone server-side, one stable agent per distinct name.
         self._agent_id = agent_id
+        # What kind of step this span is ("agent", "llm", ...), stated rather than left to the
+        # backend's fallback ladder. Optional: a root that says nothing still classifies the way
+        # it always did, which for the common flat trace (root carries the model) is "llm".
+        self._span_kind = span_kind
         # When True, __exit__ sends synchronously (blocking) instead of enqueueing, so trace_id
         # is populated by the time the `with` block exits - see Tracer.trace()'s sync param.
         self._sync = sync
@@ -183,6 +188,7 @@ class _TraceSpan:
             cache_write_tokens=self._cache_write_tokens or None,
             span_id=self._span_id,
             parent_span_id=self._parent_span_id,
+            span_kind=self._span_kind,
             started_at_unix_nano=str(int(self._start * 1_000_000_000)) if self._start else None,
         )
         return False  # never suppress exceptions
@@ -836,6 +842,7 @@ class Tracer:
         monitor: Optional[bool] = None,
         pattern_ids: Optional[List[str]] = None,
         agent_id: Optional[str] = None,
+        span_kind: Optional[str] = None,
     ) -> _TraceSpan:
         """
         Return a :class:`_TraceSpan` that works as both a decorator and a
@@ -901,6 +908,7 @@ class Tracer:
             monitor=monitor,
             pattern_ids=pattern_ids,
             agent_id=agent_id,
+            span_kind=span_kind,
         )
 
     def flush(self, timeout: float = 5.0) -> bool:
@@ -1140,6 +1148,8 @@ class Tracer:
             wire["started_at_unix_nano"] = payload["started_at_unix_nano"]
         if "agent_id" in payload:
             wire["agent_id"] = payload["agent_id"]
+        if "span_kind" in payload:
+            wire["span_kind"] = payload["span_kind"]
 
         pending_tool_calls, self._pending_tool_calls = self._pending_tool_calls, []
         if pending_tool_calls:
