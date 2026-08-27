@@ -46,7 +46,9 @@ def _format_failures(gate: Any) -> str:
     for check in checks:
         get = check.get if isinstance(check, dict) else lambda k, d=None: getattr(check, k, d)
         status = "PASS" if get("passed") else "FAIL"
-        lines.append(f"  [{status}] {get('name', 'check')}: {get('detail', '')}")
+        # The engine names each check under the key "check" ("fail-under" / "no-regression");
+        # "name" is kept as a fallback for any older payload shape.
+        lines.append(f"  [{status}] {get('check') or get('name', 'check')}: {get('detail', '')}")
     average = getattr(gate, "average_rating", None)
     if average is not None:
         lines.append(f"  average rating: {average}")

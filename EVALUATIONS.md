@@ -197,6 +197,82 @@ client.evaluations.datasets.builder(name="Support Agent v2").add_case(
 
 ---
 
+### Agent trajectory and retrieval-context checks (deterministic, no judge spend)
+
+Two per-case expectations are scored server-side against the case's **linked trace** (return
+`{"output": ..., "trace_id": span.trace_id}` from your agent function, with the call wrapped in
+`client.tracer.trace(..., sync=True)`):
+
+```python
+client.evaluations.datasets.builder(name="Agent checks").add_case(
+    query="Refund order 4412 and email a confirmation.",
+    expected_results="Refund issued and confirmation sent.",
+    # The tool calls a correct run should make, matched against the trace's REAL calls.
+    # Modes (agentevals semantics): strict | unordered | superset | subset.
+    expected_tools=["lookup_order", "issue_refund", "send_email"],
+    trajectory_match_mode="strict",
+    # What a correct retriever should have fetched - compared to the actual retrieved context
+    # with token Jaccard. Catches retriever regressions even when the answer text is identical.
+    expected_retrieval_context=["Refunds: 30 days, no restocking fee."],
+)
+```
+
+Each produces a scorer row on the result (`Trajectory match (<mode>)` pass/fail, and
+`Context match (jaccard)` 0-1). Both are deterministic: no LLM judge call, no spend, and they
+run on every result that carries the needed evidence.
+
+---
+
+### Dataset splits (cheap PR runs vs. nightly full runs)
+
+Tag cases with named subsets and run just one subset:
+
+```python
+builder.add_case(query="smoke case", splits=["smoke"])
+builder.add_case(query="full-only case")
+
+client.evaluations.run(dataset_id, subject, split="smoke").execute(my_fn).finalize()
+```
+
+Original case indexes are preserved, so per-case comparisons line up between a split run and a
+full run. The connector-driven dashboard run accepts the same `split`.
+
+---
+
+### Concurrency and output reuse
+
+```python
+run.execute(my_fn, concurrency=4)                    # thread-pooled agent calls, ordered submission
+run.execute(my_fn, reuse_outputs_from="run_abc123")  # replay a previous run's outputs
+```
+
+`reuse_outputs_from` replays the recorded output for every case whose query text is unchanged
+(errored rows and changed/new cases run normally) and the judge re-scores everything with THIS
+run's grading config - which makes iterating on scorers essentially free. Reused results carry
+`metadata.reusedFromRun`.
+
+Interrupted runs resume: `execute()` asks the engine which idempotency keys were already
+accepted and skips those cases, so a crash or a failed batch (which now raises
+`EvaluationSubmissionError` instead of finishing silently empty) never re-pays for finished
+work - just call `execute()` again on the same context.
+
+---
+
+### Human review queue (label-and-calibrate from code)
+
+```python
+item = client.monitor.review_queue.queue(trace_id, note="spot-check this")
+for item in client.monitor.review_queue.list(status="pending"):
+    client.monitor.review_queue.label(item.id, "bad", corrected_score=2, note="hallucinated")
+```
+
+Labels (with the judge's own score for the same trace) feed per-scorer calibration
+(`client.monitor.judge_scorers.calibration(scorer_id)`) and become judge-tuning evidence.
+Project-level numbers come from `client.monitor.calibration(window="7d")`, whose exact wire
+keys are `comparedCount`, `agreementRate`, `falsePositiveRate`, `falseNegativeRate`.
+
+---
+
 ### LLM Judge Scorers - reusable grading configs
 
 By default, a dataset runs against the grading config it was created with (`number_of_requests`, `acceptance_criteria`, similarity metrics, etc. - see above). If you want to grade the **same dataset** against **different configs** (e.g. a strict config vs. a lenient one, or reuse one config across many datasets), create a standalone **LLM Judge Scorer** and pass its id to `.run()`.
@@ -285,13 +361,13 @@ Calibration, tuning and the live-scoring history hang off the same scorer id - t
 ```python
 client.monitor.judge_scorers.calibration(scorer.id, window="7d")   # verdicts vs. recorded ground truth
 proposal = client.monitor.judge_scorers.tune(scorer.id)            # LLM call, slow
-client.monitor.judge_scorers.validate_tuning(scorer.id, proposal)  # re-judge with candidate criteria
-client.monitor.judge_scorers.publish_tuning(scorer.id, proposal)   # write it onto the rubric
+verdict = client.monitor.judge_scorers.validate_tuning(scorer.id, proposal)  # re-judge with candidate criteria
+client.monitor.judge_scorers.publish_tuning(scorer.id, proposal, validation=verdict)  # write it onto the rubric
 client.monitor.judge_scorers.ratings(scorer.id, window="7d")       # -> list[OnlineEvaluatorRatingPoint]
 client.monitor.judge_scorers.events(scorer.id, window="7d")        # -> list[OnlineEvaluatorEvent]
 ```
 
-Those six cover live-traffic scoring, so calling them on an offline-only scorer raises `AgentXJudgeScorersError` naming the fix (`update(scorer_id, online={"enabled": True})`). `publish_tuning` writes to the shared rubric, so it applies everywhere the scorer is used: online scoring, offline dataset runs and the playground alike.
+Those six cover live-traffic scoring, so calling them on an offline-only scorer raises `AgentXJudgeScorersError` naming the fix (`update(scorer_id, online={"enabled": True})`). `publish_tuning` writes to the shared rubric, so it applies everywhere the scorer is used: online scoring, offline dataset runs and the playground alike. Publish is provenance-gated: the engine refuses an unvalidated publish, and a measured regression, unless you pass `force=True`; the validation verdict is stamped into the rubric's version history.
 
 #### Engine compatibility (self-host)
 
@@ -854,12 +930,9 @@ Your callable can return any of:
 | `dict` with `"output"` key | Output text from `output`, rest stored as metadata |
 | `EvaluationResult` | Full control - pass rating, justification, trace, timings |
 
-### Security and redaction
+### What gets uploaded
 
-The SDK automatically scrubs secrets from outputs and metadata before uploading:
-- `sk-...` API keys
-- Bearer tokens
-- Authorization headers
-- Password-like fields
-
-Raw agent outputs, prompts, and CoT reasoning are **never uploaded** - only the text response, metadata you explicitly include, and optional observable trace summaries.
+The SDK uploads exactly what your callable returns: the output text, any metadata you include,
+and (when tracing is enabled) the trace you instrumented. **The SDK does not scrub or redact
+anything** - if your agent's output or metadata can contain secrets, redact them in your own
+code before returning, or keep them out of the returned payload entirely.

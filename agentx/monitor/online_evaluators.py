@@ -157,9 +157,13 @@ class MonitorOnlineEvaluatorClient:
         is {acceptanceCriteria, rejectionCriteria, evaluationCriteria} from tune()."""
         return self._client.validate_online_evaluator_tuning(evaluator_id, criteria, window)
 
-    def publish_tuning(self, evaluator_id: str, criteria: dict) -> dict:
-        """Publish tuned criteria onto the evaluator's config (the human-approval step)."""
-        return self._client.publish_online_evaluator_tuning(evaluator_id, criteria)
+    def publish_tuning(
+        self, evaluator_id: str, criteria: dict, *, validation: Optional[dict] = None, force: bool = False
+    ) -> dict:
+        """Publish tuned criteria onto the evaluator's config (the human-approval step).
+        Pass ``validation`` (the ``validate_tuning`` result) - the engine refuses an unvalidated
+        publish, and a ``regressed`` verdict, unless ``force=True``."""
+        return self._client.publish_online_evaluator_tuning(evaluator_id, criteria, validation=validation, force=force)
 
     def ratings(self, evaluator_id: str, window: str = "7d") -> List[OnlineEvaluatorRatingPoint]:
         """Bucketed average-rating-over-time for this evaluator. ``window`` is one of

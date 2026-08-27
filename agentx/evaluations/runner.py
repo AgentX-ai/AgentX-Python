@@ -4,12 +4,12 @@ import logging
 import os
 import time
 import uuid
-from typing import Any, Callable, Dict, List, Optional, Set, Union
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Union
 
 from agentx.evaluations.adapters.raw import RawCallableAdapter
 from agentx.evaluations.adapters.precomputed import PrecomputedAdapter
 from agentx.evaluations.adapters.http_endpoint import HttpEndpointAdapter
-from agentx.evaluations.client import EvaluationsClient
+from agentx.evaluations.client import EvaluationsClient, EvaluationSubmissionError
 from agentx.evaluations.models import (
     AnalysisStatus,
     Dataset,
@@ -96,11 +96,14 @@ class EvaluationRunContext:
         run: EvaluationRun,
         subject: EvaluationSubject,
         evaluation_settings: Optional[EvaluationSettings] = None,
+        split: Optional[str] = None,
     ):
         self._client = client
         self._dataset = dataset
         self._run = run
         self._subject = subject
+        # Named case subset for this run - only cases tagged with it are built/executed.
+        self._split = split
         # When set, this run was started with an independently chosen grading
         # config (evaluation_settings_id) - its fields take precedence over the
         # dataset's own for anything execution-time reads (see _build_cases).
@@ -118,25 +121,63 @@ class EvaluationRunContext:
     # Step 1: execute
     # ------------------------------------------------------------------
 
-    def execute(self, adapter: AdapterLike) -> "EvaluationRunContext":
+    def execute(
+        self,
+        adapter: AdapterLike,
+        concurrency: int = 1,
+        reuse_outputs_from: Optional[str] = None,
+    ) -> "EvaluationRunContext":
         """Run all cases locally and submit batches to AgentX.
 
         The whole loop runs inside the eval-run scope (tracing/eval_scope.py): any trace the
         agent function creates is stamped source="eval-run" + monitor=False automatically, so
         eval traffic never skews production monitoring and no one has to remember a flag.
+
+        ``concurrency`` > 1 runs the agent callable across a thread pool (results are still
+        submitted in case order, and the eval-run scope is propagated into the workers).
+        ``reuse_outputs_from`` replays a previous run's recorded outputs for cases whose query
+        text is unchanged instead of re-running (and re-paying for) the agent - the judge still
+        re-scores them, which makes iterating on scorers cheap. Changed or new cases run
+        normally.
         """
         from agentx.tracing.eval_scope import enter_eval_run, exit_eval_run
 
         scope_token = enter_eval_run(self._run.run_id)
         try:
-            return self._execute_inner(adapter)
+            return self._execute_inner(adapter, concurrency=concurrency, reuse_outputs_from=reuse_outputs_from)
         finally:
             exit_eval_run(scope_token)
 
-    def _execute_inner(self, adapter: AdapterLike) -> "EvaluationRunContext":
+    def _fetch_reusable_outputs(self, run_id: str) -> Dict[tuple, str]:
+        """(query, run_number, is_smoke_variant) -> output text, from a previous run's rows.
+        Keyed on the query TEXT so a reworded case never silently reuses a stale answer."""
+        try:
+            prior = self._client.get_run(run_id)
+        except Exception as exc:
+            logger.warning("reuse_outputs_from: could not load run %s (%s) - running everything", run_id, exc)
+            return {}
+        reusable: Dict[tuple, str] = {}
+        for row in prior.get("results", []) or []:
+            if row.get("error") or row.get("status") == "failed":
+                continue
+            output = (row.get("output") or {}).get("text")
+            query = (row.get("input") or {}).get("query")
+            if not output or not query:
+                continue
+            key = (query, row.get("runNumber") or 1, bool(row.get("isSmokeTestVariant")))
+            reusable[key] = output
+        return reusable
+
+    def _execute_inner(
+        self,
+        adapter: AdapterLike,
+        concurrency: int = 1,
+        reuse_outputs_from: Optional[str] = None,
+    ) -> "EvaluationRunContext":
         normalized = _wrap_adapter(adapter)
-        cases = _build_cases(self._dataset, self._run, self._evaluation_settings)
+        cases = _build_cases(self._dataset, self._run, self._evaluation_settings, split=self._split)
         max_batch = self._run.limits.max_batch_size
+        reusable = self._fetch_reusable_outputs(reuse_outputs_from) if reuse_outputs_from else {}
 
         # Banner
         sep = "─" * 60
@@ -144,7 +185,7 @@ class EvaluationRunContext:
         framework = self._subject.framework or "custom"
         runtime = self._subject.runtime or "local"
         display = self._subject.display_name or ""
-        n_q = len(self._dataset.questions)
+        n_q = len({c.question_index for c in cases if not c.is_smoke_test_variant})
         n_r = (
             self._evaluation_settings.number_of_requests
             if self._evaluation_settings
@@ -171,6 +212,45 @@ class EvaluationRunContext:
         batch: List[EvaluationResult] = []
         total = len(cases)
 
+        def produce(case: EvaluationCase) -> EvaluationResult:
+            # Cached replay: same query text at the same repetition reuses the recorded output
+            # (the server still re-scores it with THIS run's grading config).
+            cached = reusable.get((case.query, case.run_number, case.is_smoke_test_variant))
+            if cached is not None:
+                return normalize_result(
+                    case, {"output": cached, "metadata": {"reusedFromRun": reuse_outputs_from}}
+                )
+            return normalized(case)
+
+        if concurrency > 1:
+            import concurrent.futures
+            import contextvars
+
+            def in_scope(case: EvaluationCase) -> EvaluationResult:
+                # ContextVars (the eval-run scope) do not cross thread boundaries on their own -
+                # each worker task runs inside a copy of the submitting thread's context so the
+                # agent's traces still get stamped source="eval-run".
+                return contextvars.copy_context().run(produce, case)
+
+            pending = [
+                case
+                for case in cases
+                if _idem_key(self._run.run_id, case.case_id, case.run_number) not in already_done
+            ]
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=concurrency)
+            # map() yields in submission order, so batching/submission below stays deterministic.
+            mapped = executor.map(in_scope, pending)
+
+            def ordered() -> "Iterator[EvaluationResult]":
+                try:
+                    yield from mapped
+                finally:
+                    executor.shutdown(wait=True)
+
+            results_iter = ordered()
+        else:
+            results_iter = None  # sequential path below produces inline
+
         for idx, case in enumerate(cases, start=1):
             idem_key = _idem_key(self._run.run_id, case.case_id, case.run_number)
 
@@ -179,7 +259,7 @@ class EvaluationRunContext:
                 _print_progress(idx, total, case, skipped=True)
                 continue
 
-            result = normalized(case)
+            result = next(results_iter) if results_iter is not None else produce(case)
             result.idempotency_key = idem_key
             # Tag the result with the case's model so the server can group it into
             # the Sovereignty & Portability matrix (the callable may also set it).
@@ -207,31 +287,46 @@ class EvaluationRunContext:
         batch_id = str(uuid.uuid4())
         n = len(batch)
         with Spinner(f"Scoring - AI is rating {n} result{'s' if n != 1 else ''}"):
-            try:
-                resp = self._client.append_results(self._run.run_id, batch_id, batch)
-                if resp.live_statistics is not None:
-                    self._live_stats = resp.live_statistics
-                _say(
-                    f"  {green('✓')}  Scored {resp.accepted} result{'s' if resp.accepted != 1 else ''}"
-                )
-                logger.info(
-                    "Batch %s: accepted=%d duplicates=%d failed=%d",
-                    batch_id[:8],
-                    resp.accepted,
-                    resp.duplicates,
-                    resp.failed_validation,
-                )
-            except Exception as exc:
-                _say(f"  {red('✗')}  Scoring failed: {dim(str(exc))}")
-                logger.error("Failed to submit batch %s: %s", batch_id[:8], exc)
+            last_exc: Optional[Exception] = None
+            for attempt in (1, 2):
+                try:
+                    resp = self._client.append_results(self._run.run_id, batch_id, batch)
+                    if resp.live_statistics is not None:
+                        self._live_stats = resp.live_statistics
+                    _say(
+                        f"  {green('✓')}  Scored {resp.accepted} result{'s' if resp.accepted != 1 else ''}"
+                    )
+                    logger.info(
+                        "Batch %s: accepted=%d duplicates=%d failed=%d",
+                        batch_id[:8],
+                        resp.accepted,
+                        resp.duplicates,
+                        resp.failed_validation,
+                    )
+                    return
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt == 1:
+                        logger.warning("Batch %s submission failed, retrying once: %s", batch_id[:8], exc)
+        # A batch that cannot be submitted must FAIL the run, not print a red line and carry on:
+        # execute() used to finish "successfully" having uploaded nothing. Failing fast also
+        # stops paying for agent calls whose results would hit the same broken engine; a
+        # re-execute() of this context resumes past everything already accepted (idempotency
+        # keys are deterministic and the engine returns the submitted set).
+        _say(f"  {red('✗')}  Scoring failed: {dim(str(last_exc))}")
+        logger.error("Failed to submit batch %s after retry: %s", batch_id[:8], last_exc)
+        raise EvaluationSubmissionError(
+            f"Failed to submit a batch of {n} result(s) to the engine after a retry: {last_exc}. "
+            "The run was left unfinalized; re-running execute() resumes past already-submitted cases."
+        ) from last_exc
 
     def _fetch_submitted_keys(self) -> Set[str]:
+        """Keys already accepted by this run - the engine's /missing-results route returns them
+        so a re-execute() after a crash skips (and never re-pays for) finished cases."""
         try:
-            missing = self._client.get_missing_results(self._run.run_id)
-            # missing-results returns cases NOT yet submitted - we want the inverse
-            # but if the endpoint isn't live yet, just return empty set
-            return set()
+            return set(self._client.get_submitted_keys(self._run.run_id))
         except Exception:
+            # Older engines without the route: no resume, identical to the historical behavior.
             return set()
 
     # ------------------------------------------------------------------
@@ -517,11 +612,16 @@ class EvaluationsRunner:
         subject: Union[Dict[str, Any], EvaluationSubject],
         scorer_id: Optional[str] = None,
         evaluation_settings_id: Optional[str] = None,
+        split: Optional[str] = None,
     ) -> EvaluationRunContext:
         """Start a run of ``dataset_id`` against ``subject``. Pass ``scorer_id`` (an LLM Judge
         Scorer's id, e.g. from ``client.monitor.judge_scorers``) to grade with a specific
         scorer instead of the dataset's default. ``evaluation_settings_id`` is the
-        pre-consolidation alias for the same id and keeps working."""
+        pre-consolidation alias for the same id and keeps working.
+
+        ``split`` runs only the cases tagged with that named subset (``add_case(...,
+        splits=["smoke"])``) - the cheap-PR-run vs nightly-full-run workflow. Original case
+        indexes are preserved so per-case comparisons line up with full runs."""
         from agentx.evaluations.client import _resolve_scorer_id
 
         if isinstance(subject, dict):
@@ -532,18 +632,24 @@ class EvaluationsRunner:
         evaluation_settings = (
             self._client.get_evaluation_settings(grader_id) if grader_id else None
         )
-        run = self._client.init_run(dataset_id, subject, scorer_id=grader_id)
+        run = self._client.init_run(dataset_id, subject, scorer_id=grader_id, split=split)
+        case_count = (
+            sum(1 for q in dataset.questions if split in (q.main_question.splits or []))
+            if split
+            else len(dataset.questions)
+        )
         logger.info(
-            "Started evaluation run %s on dataset %s (%d case(s), %d repetition(s))",
+            "Started evaluation run %s on dataset %s (%d case(s)%s, %d repetition(s))",
             run.run_id,
             dataset_id,
-            len(dataset.questions),
+            case_count,
+            f' in split "{split}"' if split else "",
             evaluation_settings.number_of_requests
             if evaluation_settings
             else dataset.number_of_requests,
         )
         return EvaluationRunContext(
-            self._client, dataset, run, subject, evaluation_settings=evaluation_settings
+            self._client, dataset, run, subject, evaluation_settings=evaluation_settings, split=split
         )
 
 
@@ -568,6 +674,7 @@ def _build_cases(
     dataset: Dataset,
     run: EvaluationRun,
     evaluation_settings: Optional[EvaluationSettings] = None,
+    split: Optional[str] = None,
 ) -> List[EvaluationCase]:
     cases: List[EvaluationCase] = []
     # When an independent evaluation_settings was chosen (evaluation_settings_id
@@ -596,6 +703,10 @@ def _build_cases(
     }
     for q_idx, question in enumerate(dataset.questions):
         mq = question.main_question
+        # Split filtering preserves q_idx: a "smoke" run's case 7 is the same case 7 a full run
+        # scores, so per-case comparisons line up across the two.
+        if split and split not in (mq.splits or []):
+            continue
         for run_num in range(1, n_runs + 1):
             for model in models:
                 suffix = f"::{model}" if model else ""

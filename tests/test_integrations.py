@@ -741,6 +741,16 @@ def _reset_litellm_callback_state(litellm) -> None:
     litellm._async_input_callback = []
 
 
+def _wait_for_send(tracer, timeout: float = 5.0) -> None:
+    """LiteLLM dispatches success/failure callbacks on a background thread (or a
+    fire-and-forget task) even for sync completions, so asserting on tracer._send
+    immediately after the call races the dispatcher - reliably losing under a loaded
+    full-suite run. Poll until the mock is called instead of sleeping a fixed beat."""
+    deadline = time.time() + timeout
+    while time.time() < deadline and not tracer._send.called:
+        time.sleep(0.02)
+
+
 def test_litellm_sync_completion_traces_call():
     litellm = pytest.importorskip("litellm")
     _reset_litellm_callback_state(litellm)
@@ -757,6 +767,7 @@ def test_litellm_sync_completion_traces_call():
         litellm.callbacks = []
 
     assert response.choices[0].message.content == "Hello there!"
+    _wait_for_send(tracer)
     tracer._send.assert_called_once()
     _, kwargs = tracer._send.call_args
     assert kwargs["output"] == "Hello there!"
@@ -790,6 +801,7 @@ def test_litellm_async_completion_traces_call():
         litellm.callbacks = []
 
     assert response.choices[0].message.content == "Hello async!"
+    _wait_for_send(tracer)
     tracer._send.assert_called_once()
     _, kwargs = tracer._send.call_args
     assert kwargs["output"] == "Hello async!"
@@ -818,6 +830,7 @@ def test_litellm_streaming_traces_aggregated_response():
         litellm.callbacks = []
 
     assert len(chunks) > 1
+    _wait_for_send(tracer)
     tracer._send.assert_called_once()
     _, kwargs = tracer._send.call_args
     assert kwargs["output"] == "Hello streamed!"
@@ -839,6 +852,7 @@ def test_litellm_failure_records_error():
     finally:
         litellm.callbacks = []
 
+    _wait_for_send(tracer)
     tracer._send.assert_called_once()
     _, kwargs = tracer._send.call_args
     assert "boom" in kwargs["error"]

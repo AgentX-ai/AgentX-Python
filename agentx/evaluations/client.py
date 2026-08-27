@@ -60,6 +60,13 @@ class AgentXValidationError(AgentXEvaluationsError):
     pass
 
 
+class EvaluationSubmissionError(AgentXEvaluationsError):
+    """A result batch could not be submitted (after one retry). The run is left unfinalized;
+    re-running execute() on the same context resumes past already-submitted cases."""
+
+    pass
+
+
 def _resolve_scorer_id(scorer_id: Optional[str], evaluation_settings_id: Optional[str]) -> Optional[str]:
     """One grader, two spellings: ``scorer_id`` is the post-consolidation name for what the wire
     still calls ``evaluationSettingsId`` (the ids are identical by design). Both kwargs are
@@ -297,10 +304,11 @@ class EvaluationsClient:
         python_version: Optional[str] = None,
         scorer_id: Optional[str] = None,
         evaluation_settings_id: Optional[str] = None,
+        split: Optional[str] = None,
     ) -> EvaluationRun:
         """``scorer_id`` names the LLM Judge Scorer grading this run (its id doubles as the
         wire's ``evaluationSettingsId``). ``evaluation_settings_id`` is the pre-consolidation
-        alias and keeps working."""
+        alias and keeps working. ``split`` records the named case subset this run covers."""
         from agentx.version import VERSION
 
         grader_id = _resolve_scorer_id(scorer_id, evaluation_settings_id)
@@ -318,6 +326,8 @@ class EvaluationsClient:
         }
         if grader_id:
             payload["evaluationSettingsId"] = grader_id
+        if split:
+            payload["split"] = split
         data = self._request("POST", "/runs", json=self._with_workspace(payload))
         return EvaluationRun(**data)
 
@@ -435,6 +445,13 @@ class EvaluationsClient:
     def get_missing_results(self, run_id: str) -> List[Dict[str, Any]]:
         data = self._request("GET", f"/runs/{run_id}/missing-results")
         return data if isinstance(data, list) else data.get("missing", [])
+
+    def get_submitted_keys(self, run_id: str) -> List[str]:
+        """Idempotency keys this run has already accepted - what execute() uses to resume a
+        crashed or interrupted run without re-running (and re-paying for) finished cases."""
+        data = self._request("GET", f"/runs/{run_id}/missing-results")
+        keys = data.get("submittedKeys", []) if isinstance(data, dict) else []
+        return [k for k in keys if isinstance(k, str)]
 
     # ------------------------------------------------------------------
     # Self-host analysis fallback

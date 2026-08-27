@@ -52,6 +52,9 @@ class TestCase(BaseModel):
     expected_delegations: Optional[List[str]] = Field(default=None, alias="expectedDelegations")
     judge_guideline: Optional[str] = Field(default=None, alias="judgeGuideline")
     smoke_test: Optional[SmokeTestSettings] = Field(default=None, alias="smokeTest")
+    # Named subsets this case belongs to (e.g. ["smoke"], ["full", "regression"]).
+    # ``run(dataset_id, split="smoke")`` runs only cases tagged with that split.
+    splits: Optional[List[str]] = None
 
     class Config:
         populate_by_name = True
