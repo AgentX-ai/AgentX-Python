@@ -333,6 +333,37 @@ class DatasetClient:
     def list(self) -> List[Dataset]:
         return self._client.list_datasets()
 
+    def delete(self, dataset_id: str) -> None:
+        """Delete a dataset (and its grading config + version histories; past runs are kept)."""
+        self._client.delete_dataset(dataset_id)
+
+    def import_dataset(self, source: Any, name: Optional[str] = None) -> Dataset:
+        """Create a NEW dataset from an exported/fetched one (a ``Dataset`` from ``get()``, or
+        the engine's wire/NDJSON-export dict). Always a copy with a fresh id - never a
+        restore-in-place. ``name`` optionally renames the copy."""
+        wire: Dict[str, Any] = (
+            source.model_dump(by_alias=True) if hasattr(source, "model_dump") else dict(source)
+        )
+        payload: Dict[str, Any] = {
+            "name": name or wire.get("name") or "Imported dataset",
+            "questions": wire.get("questions") or [],
+        }
+        for key in (
+            "description",
+            "numberOfRequests",
+            "acceptanceCriteria",
+            "rejectionCriteria",
+            "evaluationCriteria",
+            "vectorSimilarity",
+            "jaccardSimilarity",
+            "bleuScore",
+            "rougeScore",
+            "codeScorers",
+        ):
+            if wire.get(key) is not None:
+                payload[key] = wire[key]
+        return self._client.create_dataset(payload)
+
 
 # ---------------------------------------------------------------------------
 # Helpers

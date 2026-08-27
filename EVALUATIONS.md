@@ -248,8 +248,9 @@ run.execute(my_fn, reuse_outputs_from="run_abc123")  # replay a previous run's o
 
 `reuse_outputs_from` replays the recorded output for every case whose query text is unchanged
 (errored rows and changed/new cases run normally) and the judge re-scores everything with THIS
-run's grading config - which makes iterating on scorers essentially free. Reused results carry
-`metadata.reusedFromRun`.
+run's grading config - which makes iterating on scorers essentially free. Replayed results are
+submitted with `metadata.reusedFromRun` set to the source run id (submission-side metadata; the
+stored row keeps the replayed output itself).
 
 Interrupted runs resume: `execute()` asks the engine which idempotency keys were already
 accepted and skips those cases, so a crash or a failed batch (which now raises

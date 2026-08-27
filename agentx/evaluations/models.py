@@ -415,6 +415,11 @@ class RunResultRow(BaseModel):
 
     rating: Optional[float] = None
     justification: Optional[str] = None
+    # scored | skipped (the judge could not score this row) | failed (the submitted result
+    # carried an error). A skipped row has rating None - a fact about the judge, not a 0.
+    status: Optional[str] = None
+    question_index: Optional[int] = Field(default=None, alias="questionIndex")
+    run_number: Optional[int] = Field(default=None, alias="runNumber")
     question_text: Optional[str] = Field(default=None, alias="questionText")
     response: Optional[str] = None
     trace_id: Optional[str] = Field(default=None, alias="traceId")

@@ -227,6 +227,12 @@ class EvaluationsClient:
         data = self._request("POST", "/datasets", json=self._with_workspace(payload))
         return Dataset(**data)
 
+    def delete_dataset(self, dataset_id: str) -> None:
+        """Deletes the dataset, its grading config, and both version histories. Past runs are
+        kept (their dataset reference degrades to a bare id). The engine refuses (409) when the
+        dataset's config is attached to a live scorer."""
+        self._request("DELETE", f"/datasets/{dataset_id}")
+
     def list_datasets(self) -> List[Dataset]:
         data = self._request("GET", "/datasets", params=self._workspace_params())
         return [
