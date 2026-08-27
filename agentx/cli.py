@@ -7,26 +7,35 @@ AgentX SaaS and would never touch it, so it isn't bundled in this package. Inste
 downloads the matching release into ~/.agentx/bin the first time it's needed (mirroring
 AgentX-trace-eval's own install.sh) and then hands off to the real `agentx-server` binary.
 
+The installed release tag is stamped in ~/.agentx/bin/.version. The launcher never silently
+re-downloads, but it re-installs when you ask: `--update` fetches the newest release (engine +
+dashboard), and setting AGENTX_TRACE_EVAL_VERSION to a tag other than the stamped one switches
+to that release. When running "latest", a quick fail-open check against GitHub tells you if a
+newer release exists.
+
 Usage:
     agentx-trace-eval --dev
+    agentx-trace-eval --update --dev
     agentx-trace-eval --port 5000 --db-url postgres://...
 """
 
 import os
 import platform
+import re
 import shutil
 import stat
 import sys
 import tarfile
 import tempfile
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 import requests
 
 REPO = "AgentX-ai/AgentX-trace-eval"
 INSTALL_DIR = Path(os.environ.get("AGENTX_INSTALL_DIR", str(Path.home() / ".agentx" / "bin")))
 _BIN_NAMES = ("agentx", "agentx-server", "agentx-engine")
+_VERSION_STAMP = ".version"
 
 
 def _platform_tag() -> Tuple[str, str]:
@@ -57,12 +66,22 @@ def _release_url(asset: str, version: str) -> str:
     return f"https://github.com/{REPO}/releases/download/{version}/{asset}"
 
 
-def _download(url: str, dest: Path) -> None:
+def _tag_from_release_url(url: str) -> Optional[str]:
+    # GitHub redirects releases/latest/download/... to releases/download/<tag>/...; the final
+    # URL is the one place the resolved tag shows up without a second API call.
+    match = re.search(r"/releases/download/([^/]+)/", url)
+    return match.group(1) if match else None
+
+
+def _download(url: str, dest: Path) -> Optional[str]:
+    """Downloads url to dest; returns the release tag resolved from the final (post-redirect)
+    URL, or None if it can't be determined."""
     response = requests.get(url, stream=True, timeout=60)
     response.raise_for_status()
     with open(dest, "wb") as f:
         for chunk in response.iter_content(chunk_size=1 << 16):
             f.write(chunk)
+    return _tag_from_release_url(response.url)
 
 
 def _extract_tar(archive: Path, dest_dir: Path) -> None:
@@ -76,6 +95,25 @@ def _extract_tar(archive: Path, dest_dir: Path) -> None:
             tar.extractall(dest_dir)  # Python < 3.12: filter kwarg doesn't exist yet
 
 
+def _stamped_version() -> Optional[str]:
+    try:
+        return (INSTALL_DIR / _VERSION_STAMP).read_text().strip() or None
+    except OSError:
+        return None
+
+
+def _latest_release_tag() -> Optional[str]:
+    """The newest published tag, or None when it can't be determined (offline, rate-limited).
+    Fail-open by design: an update NOTICE must never break launching the engine."""
+    try:
+        response = requests.get(f"https://api.github.com/repos/{REPO}/releases/latest", timeout=3)
+        response.raise_for_status()
+        tag = response.json().get("tag_name")
+        return tag if isinstance(tag, str) and tag else None
+    except Exception:
+        return None
+
+
 def _install(version: str = "latest") -> None:
     os_name, arch = _platform_tag()
     INSTALL_DIR.mkdir(parents=True, exist_ok=True)
@@ -86,7 +124,7 @@ def _install(version: str = "latest") -> None:
         archive = tmp_dir / "agentx.tar.gz"
         url = _release_url(f"agentx_{os_name}_{arch}.tar.gz", version)
         try:
-            _download(url, archive)
+            resolved_tag = _download(url, archive)
         except requests.HTTPError as exc:
             raise SystemExit(
                 f"agentx-trace-eval: failed to download {url} ({exc}).\n"
@@ -108,6 +146,11 @@ def _install(version: str = "latest") -> None:
         if not found_any:
             raise SystemExit(f"agentx-trace-eval: downloaded archive from {url} didn't contain any of {_BIN_NAMES}")
 
+    stamp = resolved_tag or (version if version != "latest" else None)
+    if stamp:
+        (INSTALL_DIR / _VERSION_STAMP).write_text(stamp + "\n")
+        print(f"agentx-trace-eval: installed {stamp}", file=sys.stderr)
+
     if os.environ.get("AGENTX_TRACE_EVAL_SKIP_WEB"):
         return
 
@@ -118,7 +161,9 @@ def _install(version: str = "latest") -> None:
     web_dir = INSTALL_DIR / "web"
     with tempfile.TemporaryDirectory() as tmp:
         web_archive = Path(tmp) / "agentx-web.tar.gz"
-        web_url = _release_url("agentx-web.tar.gz", version)
+        # Pin the dashboard to the tag the engine actually resolved to, so the two halves of one
+        # install can't skew (releases/latest assets are updated independently).
+        web_url = _release_url("agentx-web.tar.gz", stamp or version)
         try:
             _download(web_url, web_archive)
         except requests.HTTPError:
@@ -133,25 +178,54 @@ def _install(version: str = "latest") -> None:
         _extract_tar(web_archive, web_dir)
 
 
-def ensure_installed(version: str = "latest") -> Path:
-    """Downloads agentx-server (+ its engine) into ~/.agentx/bin if not already present there.
-    Returns the path to the agentx-server executable. Set AGENTX_INSTALL_DIR to change where
-    this looks/installs; set AGENTX_TRACE_EVAL_VERSION to pin a release tag instead of latest."""
+def ensure_installed(version: str = "latest", force: bool = False) -> Path:
+    """Downloads agentx-server (+ its engine and dashboard) into ~/.agentx/bin when it's missing
+    there, when `force` is set, or when `version` is a specific tag that differs from the
+    installed one. Returns the path to the agentx-server executable. Set AGENTX_INSTALL_DIR to
+    change where this looks/installs; set AGENTX_TRACE_EVAL_VERSION to pin a release tag."""
     server_path = INSTALL_DIR / "agentx-server"
-    if not server_path.exists():
+    installed = _stamped_version()
+    pin_changed = version != "latest" and installed is not None and installed != version
+    if force or pin_changed or not server_path.exists():
         _install(version=version)
     return server_path
 
 
+def _maybe_print_update_notice(installed: Optional[str]) -> None:
+    latest = _latest_release_tag()
+    if installed is None:
+        # Pre-stamp install (or a wiped stamp): age unknown, so always point at --update.
+        print(
+            "agentx-trace-eval: installed engine version unknown"
+            + (f" (newest release is {latest})" if latest else "")
+            + "; run with --update to fetch the newest release",
+            file=sys.stderr,
+        )
+    elif latest and latest != installed:
+        print(
+            f"agentx-trace-eval: engine {installed} is installed but {latest} is available; "
+            "run with --update to upgrade",
+            file=sys.stderr,
+        )
+
+
 def main() -> None:
+    args = sys.argv[1:]
+    force_update = "--update" in args
+    # --update belongs to this launcher, not to agentx-server - consume it before the handoff.
+    args = [a for a in args if a != "--update"]
+
     version = os.environ.get("AGENTX_TRACE_EVAL_VERSION", "latest")
-    server_path = ensure_installed(version=version)
+    server_path = ensure_installed(version=version, force=force_update)
     if not server_path.exists():
         raise SystemExit(f"agentx-trace-eval: {server_path} still missing after install, giving up")
 
+    if not force_update and version == "latest":
+        _maybe_print_update_notice(_stamped_version())
+
     # os.execv replaces this process rather than spawning a subprocess: signals, stdio, and the
     # exit code all pass straight through to agentx-server, same as invoking it directly.
-    os.execv(str(server_path), [str(server_path)] + sys.argv[1:])
+    os.execv(str(server_path), [str(server_path)] + args)
 
 
 if __name__ == "__main__":
