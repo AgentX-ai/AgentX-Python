@@ -4,18 +4,21 @@ Evaluate, Monitor), published separately at github.com/AgentX-ai/AgentX-trace-ev
 wrapping a Bun-compiled TypeScript engine, not Python). That compiled engine binary is tens of
 megabytes; most `pip install agentx-python` installs are just this SDK talking to the hosted
 AgentX SaaS and would never touch it, so it isn't bundled in this package. Instead, this command
-downloads the matching release into ~/.agentx/bin the first time it's needed (mirroring
+downloads the release into ~/.agentx/bin the first time it's needed (mirroring
 AgentX-trace-eval's own install.sh) and then hands off to the real `agentx-server` binary.
 
-The installed release tag is stamped in ~/.agentx/bin/.version. The launcher never silently
-re-downloads, but it re-installs when you ask: `--update` fetches the newest release (engine +
-dashboard), and setting AGENTX_TRACE_EVAL_VERSION to a tag other than the stamped one switches
-to that release. When running "latest", a quick fail-open check against GitHub tells you if a
-newer release exists.
+Versioning: each SDK release pins the engine release it was tested against
+(agentx.version.ENGINE_VERSION); the launcher installs that pin and converges to it - if the
+stamped install (~/.agentx/bin/.version) differs from the pin, it re-installs, so upgrading the
+SDK upgrades the engine to the matching pair. `--update` force-reinstalls the resolved version
+(recovering a broken or pre-stamp install). Set AGENTX_TRACE_EVAL_VERSION to a tag or `latest`
+to override the pin; in `latest` mode the launcher trusts whatever is installed, prints a
+fail-open notice when GitHub has something newer, and `--update` fetches it.
 
 Usage:
     agentx-trace-eval --dev
     agentx-trace-eval --update --dev
+    AGENTX_TRACE_EVAL_VERSION=latest agentx-trace-eval --update --dev
     agentx-trace-eval --port 5000 --db-url postgres://...
 """
 
@@ -31,6 +34,8 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 import requests
+
+from agentx.version import ENGINE_VERSION
 
 REPO = "AgentX-ai/AgentX-trace-eval"
 INSTALL_DIR = Path(os.environ.get("AGENTX_INSTALL_DIR", str(Path.home() / ".agentx" / "bin")))
@@ -114,11 +119,17 @@ def _latest_release_tag() -> Optional[str]:
         return None
 
 
+def resolve_version() -> str:
+    """The engine version this launcher should be running: the AGENTX_TRACE_EVAL_VERSION
+    override (a tag, or `latest`) when set, else the SDK's tested pin."""
+    return os.environ.get("AGENTX_TRACE_EVAL_VERSION") or ENGINE_VERSION
+
+
 def _install(version: str = "latest") -> None:
     os_name, arch = _platform_tag()
     INSTALL_DIR.mkdir(parents=True, exist_ok=True)
 
-    print(f"agentx-trace-eval: downloading agentx ({os_name}/{arch})...", file=sys.stderr)
+    print(f"agentx-trace-eval: downloading agentx {version} ({os_name}/{arch})...", file=sys.stderr)
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
         archive = tmp_dir / "agentx.tar.gz"
@@ -178,23 +189,30 @@ def _install(version: str = "latest") -> None:
         _extract_tar(web_archive, web_dir)
 
 
-def ensure_installed(version: str = "latest", force: bool = False) -> Path:
-    """Downloads agentx-server (+ its engine and dashboard) into ~/.agentx/bin when it's missing
+def ensure_installed(version: Optional[str] = None, force: bool = False) -> Path:
+    """Installs agentx-server (+ its engine and dashboard) into ~/.agentx/bin when it's missing
     there, when `force` is set, or when `version` is a specific tag that differs from the
-    installed one. Returns the path to the agentx-server executable. Set AGENTX_INSTALL_DIR to
-    change where this looks/installs; set AGENTX_TRACE_EVAL_VERSION to pin a release tag."""
+    stamped install - the convergence that makes an SDK upgrade carry its tested engine along.
+    `version` defaults to resolve_version() (the AGENTX_TRACE_EVAL_VERSION override, else the
+    SDK's pin); pass "latest" to trust whatever is installed and only fetch when missing.
+    Returns the path to the agentx-server executable. Set AGENTX_INSTALL_DIR to change where
+    this looks/installs."""
+    if version is None:
+        version = resolve_version()
     server_path = INSTALL_DIR / "agentx-server"
-    installed = _stamped_version()
-    pin_changed = version != "latest" and installed is not None and installed != version
-    if force or pin_changed or not server_path.exists():
+    stamped = _stamped_version()
+    pin_mismatch = version != "latest" and stamped != version
+    if force or pin_mismatch or not server_path.exists():
         _install(version=version)
     return server_path
 
 
 def _maybe_print_update_notice(installed: Optional[str]) -> None:
+    """Only relevant in `latest` mode, where nothing converges automatically - a quick fail-open
+    check tells the user when the world has moved on. (Pinned mode needs no notice: a pin
+    mismatch re-installs instead of nagging.)"""
     latest = _latest_release_tag()
     if installed is None:
-        # Pre-stamp install (or a wiped stamp): age unknown, so always point at --update.
         print(
             "agentx-trace-eval: installed engine version unknown"
             + (f" (newest release is {latest})" if latest else "")
@@ -215,7 +233,7 @@ def main() -> None:
     # --update belongs to this launcher, not to agentx-server - consume it before the handoff.
     args = [a for a in args if a != "--update"]
 
-    version = os.environ.get("AGENTX_TRACE_EVAL_VERSION", "latest")
+    version = resolve_version()
     server_path = ensure_installed(version=version, force=force_update)
     if not server_path.exists():
         raise SystemExit(f"agentx-trace-eval: {server_path} still missing after install, giving up")
