@@ -51,6 +51,35 @@ jobs:
           print(f'Bumped version from {current_version} to {new_version}')
           "
 
+      - name: Refresh engine pin (ENGINE_VERSION)
+        id: engine
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Every SDK release re-pins agentx.version.ENGINE_VERSION to AgentX-trace-eval's
+          # newest release, so the tested-pair contract (agentx/cli.py installs and converges to
+          # this tag) never goes stale - both repos release per merge, a manual pin would lag
+          # within days. Fail-open on a transient API error: publishing with the previous pin
+          # beats not publishing.
+          set -euo pipefail
+          tag="$(gh release view --repo AgentX-ai/AgentX-trace-eval --json tagName -q .tagName || true)"
+          if ! echo "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Could not resolve a v<x>.<y>.<z> engine release (got: '$tag'); keeping the existing pin."
+            grep ENGINE_VERSION agentx/version.py
+            exit 0
+          fi
+          python - "$tag" <<'EOF'
+          import re, sys
+          tag = sys.argv[1]
+          with open('agentx/version.py') as f:
+              content = f.read()
+          new_content = re.sub(r'ENGINE_VERSION = "[^"]+"', f'ENGINE_VERSION = "{tag}"', content)
+          with open('agentx/version.py', 'w') as f:
+              f.write(new_content)
+          print(f'Pinned ENGINE_VERSION = {tag}')
+          EOF
+
       - name: Get new version
         id: version
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -69,7 +98,7 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add agentx/version.py
-          git commit -m "Bump version to ${{ steps.version.outputs.new_version }} [skip ci]"
+          git commit -m "Bump version to ${{ steps.version.outputs.new_version }} (engine pin refreshed) [skip ci]"
           git push
 
       - name: Wait for version bump commit and fetch latest
