@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 import requests
 
@@ -116,6 +116,10 @@ class MonitorClient:
         # The human-review queue (list / queue / label / dismiss) - what makes the
         # label-and-calibrate loop scriptable instead of dashboard-only.
         self.review_queue = ReviewQueueClient(self)
+        from agentx.monitor.rules import MonitorRulesClient
+
+        # Automation rules: route matching traffic into review / a dataset / a webhook.
+        self.rules = MonitorRulesClient(self)
         from agentx.monitor.scorers import ScorersClient
         # Scorers-catalog administration as code: template enable/disable, code/external scorer
         # CRUD and dry runs - full parity with the dashboard's Scorers page (P1.3).
@@ -263,6 +267,28 @@ class MonitorClient:
         downvoteRate (share of end-user votes that were "down"), toolFailureRate, p95LatencyMs,
         plus deltas vs the prior window and the run-outcome breakdown."""
         return self._request("GET", "/kpis", params={"window": window})
+
+    def topics(self, window: str = "7d") -> dict:
+        """The Topics view's data over a window ("24h", "7d", "30d"): LLM-classified themes of
+        sampled production traffic with per-topic counts and sentiment. Empty until Topics is
+        enabled project-wide via ``set_topics(True)`` - classification spends one judge call
+        per sampled trace, so it is off by default."""
+        return self._request(
+            "GET", "/agent-monitoring/topics",
+            base=self._api_root(), params={"window": window},
+        )
+
+    def set_topics(self, enabled: bool, sample_rate: Optional[float] = None) -> dict:
+        """Turn Topics classification on/off for the whole project (Platform Settings >
+        Monitoring Defaults). ``sample_rate`` (0-1) optionally bounds what fraction of traffic
+        is classified - each classified trace costs one judge call."""
+        payload: Dict[str, Any] = {"topicsEnabled": enabled}
+        if sample_rate is not None:
+            payload["topicsSampleRate"] = sample_rate
+        return self._request(
+            "PUT", "/agent-monitoring/settings/monitoring-defaults",
+            base=self._api_root(), json=payload,
+        )
 
     def calibration(self, window: str = "7d") -> "CalibrationSummary":
         """Project-level judge calibration over a window ("24h", "7d", or "30d"): how often
