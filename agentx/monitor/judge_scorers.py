@@ -280,12 +280,30 @@ class JudgeScorersClient:
             timeout=600,
         )
 
-    def publish_tuning(self, scorer_id: str, criteria: Dict[str, Any]) -> dict:
+    def publish_tuning(
+        self,
+        scorer_id: str,
+        criteria: Dict[str, Any],
+        *,
+        validation: Optional[Dict[str, Any]] = None,
+        force: bool = False,
+    ) -> dict:
         """Write tuned criteria onto the scorer's rubric - it applies everywhere the scorer is
-        used: online scoring, offline dataset runs, and the playground."""
-        return self._request(
-            "POST", f"/online-evaluators/{self._profile_id(scorer_id)}/tune/publish", json=dict(criteria)
-        )
+        used: online scoring, offline dataset runs, and the playground.
+
+        The engine gates publish on provenance: pass ``validation`` (the dict returned by
+        ``validate_tuning``, or at least its ``verdict``/``netAgreementGain``) so the version
+        history records what the change measurably did; a ``regressed`` verdict is refused.
+        ``force=True`` publishes without (or despite) validation - deliberate escape hatch."""
+        payload = dict(criteria)
+        if validation is not None:
+            payload["validation"] = {
+                "verdict": validation.get("verdict"),
+                "netAgreementGain": validation.get("netAgreementGain"),
+            }
+        if force:
+            payload["force"] = True
+        return self._request("POST", f"/online-evaluators/{self._profile_id(scorer_id)}/tune/publish", json=payload)
 
     def ratings(self, scorer_id: str, window: str = "7d") -> "List[OnlineEvaluatorRatingPoint]":
         """Bucketed average-rating-over-time for this scorer's live checks - same typed points

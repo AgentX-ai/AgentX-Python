@@ -39,6 +39,35 @@ class AgentXValidationError(AgentXMonitorError):
     pass
 
 
+class CalibrationSummary(dict):
+    """Judge Calibration numbers (dict subclass, so existing key access keeps working).
+    Properties mirror the wire's exact camelCase keys."""
+
+    @property
+    def compared_count(self) -> int:
+        return int(self.get("comparedCount") or 0)
+
+    @property
+    def agreement_rate(self):
+        return self.get("agreementRate")
+
+    @property
+    def false_positive_rate(self):
+        return self.get("falsePositiveRate")
+
+    @property
+    def false_negative_rate(self):
+        return self.get("falseNegativeRate")
+
+    @property
+    def reported_count(self) -> int:
+        return int(self.get("reportedCount") or 0)
+
+    @property
+    def review_label_count(self) -> int:
+        return int(self.get("reviewLabelCount") or 0)
+
+
 class MonitorClient:
     """Low-level HTTP client for the Monitor API (``/monitor``). Accessed via
     ``client.monitor`` on the top-level :class:`agentx.AgentX` instance; most callers
@@ -82,6 +111,11 @@ class MonitorClient:
 
         self.patterns = MonitorPatternClient(self)
         self.signals = MonitorSignalClient(self)
+        from agentx.monitor.review_queue import ReviewQueueClient
+
+        # The human-review queue (list / queue / label / dismiss) - what makes the
+        # label-and-calibrate loop scriptable instead of dashboard-only.
+        self.review_queue = ReviewQueueClient(self)
         from agentx.monitor.scorers import ScorersClient
         # Scorers-catalog administration as code: template enable/disable, code/external scorer
         # CRUD and dry runs - full parity with the dashboard's Scorers page (P1.3).
@@ -230,15 +264,19 @@ class MonitorClient:
         plus deltas vs the prior window and the run-outcome breakdown."""
         return self._request("GET", "/kpis", params={"window": window})
 
-    def calibration(self, window: str = "7d") -> dict:
+    def calibration(self, window: str = "7d") -> "CalibrationSummary":
         """Project-level judge calibration over a window ("24h", "7d", or "30d"): how often
         AgentX's own verdicts agreed with real-world ground truth reported later (ops outcomes
-        via ``client.outcomes`` and end-user downvotes). Returns the dashboard's Judge
-        Calibration numbers: compared count, agreement, falsePositiveRate, falseNegativeRate.
-        Per-evaluator calibration lives on ``client.monitor.online_evaluators.calibration``."""
-        return self._request(
-            "GET", "/agent-monitoring/calibration",
-            base=self._api_root(), params={"window": window},
+        via ``client.outcomes``, end-user downvotes, and human review labels). Returns the
+        dashboard's Judge Calibration numbers with these exact keys: ``comparedCount``,
+        ``agreementRate``, ``falsePositiveRate``, ``falseNegativeRate`` (plus
+        ``reportedCount``/``reviewLabelCount``/``noVerdictCount``). Per-scorer calibration
+        lives on ``client.monitor.judge_scorers.calibration(scorer_id)``."""
+        return CalibrationSummary(
+            self._request(
+                "GET", "/agent-monitoring/calibration",
+                base=self._api_root(), params={"window": window},
+            )
         )
 
     # ------------------------------------------------------------------
@@ -352,10 +390,19 @@ class MonitorClient:
             base=self._api_root(), json={**criteria, "window": window}, timeout=600,
         )
 
-    def publish_online_evaluator_tuning(self, evaluator_id: str, criteria: dict) -> dict:
+    def publish_online_evaluator_tuning(
+        self, evaluator_id: str, criteria: dict, *, validation: Optional[dict] = None, force: bool = False
+    ) -> dict:
+        # The engine gates publish on validation provenance (and refuses a measured regression)
+        # unless forced - see judge_scorers.publish_tuning for the full story.
+        payload = dict(criteria)
+        if validation is not None:
+            payload["validation"] = validation
+        if force:
+            payload["force"] = True
         return self._request(
             "POST", f"/agent-monitoring/online-evaluators/{evaluator_id}/tune/publish",
-            base=self._api_root(), json=criteria, timeout=60,
+            base=self._api_root(), json=payload, timeout=60,
         )
 
     def update_profile(self, agent_id: str, payload: dict) -> MonitorProfile:

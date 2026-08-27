@@ -105,8 +105,14 @@ class DatasetBuilder:
         expected_tools: Optional[List[str]] = None,
         trajectory_match_mode: str = "strict",
         expected_retrieval_context: Optional[Union[str, List[str]]] = None,
+        splits: Optional[List[str]] = None,
     ) -> "DatasetBuilder":
         """Add a case. `judge_guideline` is optional grading guidance specific to this question.
+
+        `splits` tags this case with named subsets (e.g. ``["smoke"]``): a run started with
+        ``client.evaluations.run(dataset_id, subject, split="smoke")`` executes only the tagged
+        cases (original case indexes are preserved, so per-case comparisons still line up with
+        full runs). An untagged case belongs to no split and only runs in full runs.
 
         `expected_tools` declares the tool calls a correct run of this case should make. When a
         result links its trace (return `{"output": ..., "trace_id": span.trace_id}` from the
@@ -149,6 +155,8 @@ class DatasetBuilder:
             main["expectedTrajectory"] = {"tools": expected_tools, "mode": trajectory_match_mode}
         if expected_retrieval_context:
             main["expectedRetrievalContext"] = expected_retrieval_context
+        if splits:
+            main["splits"] = splits
         self._payload["questions"].append(
             {
                 "main_question": main,
