@@ -129,7 +129,7 @@ client.evaluations.run(
 
 See [Prompt registry](EVALUATIONS.md#prompt-registry) in the full guide, or [self-host's docs](https://docs.agentx.so/improve/prompt-management) for the "Suggest improvement" dashboard flow (self-host only - no hosted-SaaS equivalent yet).
 
-On self-host, a finalized run can also **gate a CI job**: `report.gate(fail_under=7, no_regression=True)` checks the run's average rating against an absolute floor and/or the dataset's previous run, prints per-check verdicts into the CI log, and returns an exit code - `sys.exit(gate.exit_code)` blocks the merge on regression. Recorded gates appear in the dashboard's CI Gates tab. See [self-host's CI docs](https://docs.agentx.so/integrations/self-host-ci) for the GitHub Actions recipe.
+On self-host, a finalized run can also **gate a CI job**: `run.gate(fail_under=7, no_regression=True)` (on the run context `.execute()` returns) checks the run's average rating against an absolute floor and/or the dataset's previous run, prints per-check verdicts into the CI log, and returns an exit code - `sys.exit(gate.exit_code)` blocks the merge on regression. Recorded gates appear in the dashboard's CI Gates tab. See [self-host's CI docs](https://docs.agentx.so/integrations/self-host-ci) for the GitHub Actions recipe.
 
 See **[EVALUATIONS.md](EVALUATIONS.md)** for the full guide - dataset builder, framework adapters, similarity metrics, smoke testing, judge configuration, prompt registry, and the complete API reference.
 
