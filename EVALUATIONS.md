@@ -846,19 +846,19 @@ These four metrics also appear per-model (as `average_bleu_score`/`average_rouge
 
 ### CI gate (self-host)
 
-A finalized run can pass/fail a CI job. `report.gate(...)` checks the run's average rating, prints per-check verdicts into the CI log, and returns a `GateResult` - the caller decides the exit code:
+A finalized run can pass/fail a CI job. `run.gate(...)` (on the run context `.execute()` returns - not on the `Report` model from `get_report()`) checks the run's average rating, prints per-check verdicts into the CI log, and returns a `GateResult` - the caller decides the exit code:
 
 ```python
 import sys
 
-report = (
+run = (
     client.evaluations
     .run(dataset_id="evds_…", subject={"kind": "custom_agent", "framework": "raw_python"})
     .execute(my_agent)   # in CI, this is the PR's version of your agent
     .finalize()
 )
 
-gate = report.gate(fail_under=7, no_regression=True, caller="github-actions")
+gate = run.gate(fail_under=7, no_regression=True, caller="github-actions")
 sys.exit(gate.exit_code)   # 0 = merge, 1 = block
 ```
 

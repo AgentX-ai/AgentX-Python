@@ -37,6 +37,9 @@ _RETRY_BACKOFF = [1.0, 2.0, 4.0]
 # wait out the whole job on one connection. Matches EvaluationRunContext.analyze()'s own
 # default timeout.
 _SELF_HOST_ANALYZE_TIMEOUT = 1800
+# Batch result submission scores each result synchronously inside the request (one judge call
+# per result on the sync path) - a big batch on a slow judge legitimately takes minutes.
+_SELF_HOST_SCORING_TIMEOUT = 900
 
 
 class AgentXEvaluationsError(Exception):
@@ -344,7 +347,15 @@ class EvaluationsClient:
             "batchId": batch_id,
             "results": [_result_to_payload(r) for r in results],
         }
-        data = self._request("POST", f"/runs/{run_id}/results", json=payload)
+        # Scoring is synchronous inside this request (a judge call per result - the runner's
+        # spinner says "~60s+" for a reason), so the default 30s timeout + silent backoff loop
+        # re-POSTed the batch WHILE the first submission was still scoring, and the two raced
+        # into the engine's (run_id, idempotency_key) unique constraint. Long timeout, no
+        # transport retry - the runner's own logged retry-once is the retry layer here.
+        data = self._request(
+            "POST", f"/runs/{run_id}/results", json=payload,
+            timeout=_SELF_HOST_SCORING_TIMEOUT, retry=False,
+        )
         return BatchAppendResponse(**data)
 
     def finalize_run(self, run_id: str) -> Dict[str, Any]:
