@@ -1,4 +1,4 @@
-VERSION = "0.8.9"
+VERSION = "0.8.10"
 
 # The AgentX-trace-eval release this SDK version is tested against - what `agentx-trace-eval`
 # installs and converges to (see agentx/cli.py). Bump together with VERSION when releasing, so
