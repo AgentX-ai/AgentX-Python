@@ -4,7 +4,7 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/agentx-python)](https://pypi.org/project/agentx-python/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-The official Python SDK for **[AgentX](https://app.agentx.so/)** - an evaluation, tracing, and monitoring framework for AI agents, plus a client for AgentX's own hosted agents.
+The official Python SDK for **[AgentX](https://www.agentx.so/)** - an evaluation, tracing, and monitoring framework for AI agents, plus a client for AgentX's own hosted agents.
 
 Also see [SDK Developer Docs](https://developers.agentx.so), [API Reference Docs](https://docs.agentx.so/reference)
 
@@ -45,19 +45,10 @@ pip install --upgrade agentx-python
 
 Requires Python 3.9 or newer.
 
----
+#### Run self host eval framework locally
 
-## Authentication
-
-Get your API key at [app.agentx.so](https://app.agentx.so), then either pass it inline or expose it as an environment variable.
-
-```python
-# Option A - pass the key inline
-from agentx import AgentX
-client = AgentX(api_key="your-api-key-here")
-
-# Option B - set AGENTX_API_KEY in your environment, then:
-client = AgentX.from_env()
+```
+agentx-trace-eval --dev --update
 ```
 
 ---
@@ -115,7 +106,7 @@ print(report.recommendations)      # list of prioritized, actionable fixes
 
 Ask a case's question several extra ways each run, LLM-paraphrased server-side, to catch agents that break on phrasing rather than substance, and override the judge's prompt/model per config, see [Smoke testing](EVALUATIONS.md#smoke-testing-phrasing-robustness) and [Configuring the judge](EVALUATIONS.md#configuring-the-judge) in the full guide.
 
-Since AgentX doesn't own your agent's code, `client.evaluations.prompts` lets AgentX become your prompt's *source of truth* instead - the same problem LangSmith's Prompt Hub and Langfuse's Prompt Management solve. Pull a version at runtime, tag your eval runs (or live traces) with it, and let a judge propose a rewrite from your real worst-rated results - a human always has to approve before it publishes:
+Since AgentX doesn't own your agent's code, `client.evaluations.prompts` lets AgentX become your prompt's _source of truth_ instead - the same problem LangSmith's Prompt Hub and Langfuse's Prompt Management solve. Pull a version at runtime, tag your eval runs (or live traces) with it, and let a judge propose a rewrite from your real worst-rated results - a human always has to approve before it publishes:
 
 ```python
 prompt = client.evaluations.prompts.get("support-agent-system-prompt")  # or prompt.id
@@ -184,18 +175,18 @@ regular totals, no extra config needed. Self-host's cost estimate prices these s
 regular input token when you've set optional cache rates on that model. Install the matching
 extra:
 
-| Framework             | Install                                      | Integration              |
-| --------------------- | -------------------------------------------- | ------------------------ |
-| LangChain             | `pip install "agentx-python[langchain]"`     | `AgentXCallbackHandler`  |
-| CrewAI                | `pip install "agentx-python[crewai]"`        | `AgentXCrewObserver`     |
-| OpenAI Agents SDK     | `pip install "agentx-python[openai-agents]"` | `AgentXTracingProcessor` |
-| OpenAI (raw client)   | `pip install "agentx-python[openai]"`        | `patch_openai_client`    |
-| Anthropic             | `pip install "agentx-python[anthropic]"`     | `patch_anthropic_client` |
-| Google ADK            | `pip install "agentx-python[google-adk]"`    | `AgentXADKPlugin`        |
-| Google GenAI (Gemini) | `pip install "agentx-python[google-genai]"`  | `patch_genai_client`     |
-| LiteLLM               | `pip install "agentx-python[litellm]"`       | `AgentXLiteLLMLogger`    |
-| LlamaIndex             | `pip install "agentx-python[llamaindex]"`    | `AgentXLlamaIndexHandler`|
-| AutoGen                | `pip install "agentx-python[autogen]"`       | `AgentXAutoGenObserver`  |
+| Framework             | Install                                      | Integration               |
+| --------------------- | -------------------------------------------- | ------------------------- |
+| LangChain             | `pip install "agentx-python[langchain]"`     | `AgentXCallbackHandler`   |
+| CrewAI                | `pip install "agentx-python[crewai]"`        | `AgentXCrewObserver`      |
+| OpenAI Agents SDK     | `pip install "agentx-python[openai-agents]"` | `AgentXTracingProcessor`  |
+| OpenAI (raw client)   | `pip install "agentx-python[openai]"`        | `patch_openai_client`     |
+| Anthropic             | `pip install "agentx-python[anthropic]"`     | `patch_anthropic_client`  |
+| Google ADK            | `pip install "agentx-python[google-adk]"`    | `AgentXADKPlugin`         |
+| Google GenAI (Gemini) | `pip install "agentx-python[google-genai]"`  | `patch_genai_client`      |
+| LiteLLM               | `pip install "agentx-python[litellm]"`       | `AgentXLiteLLMLogger`     |
+| LlamaIndex            | `pip install "agentx-python[llamaindex]"`    | `AgentXLlamaIndexHandler` |
+| AutoGen               | `pip install "agentx-python[autogen]"`       | `AgentXAutoGenObserver`   |
 
 Or plain Python - wrap any function with `@tracer.trace(...)` and it just works, no framework required.
 
