@@ -428,6 +428,15 @@ class IngestClient:
                 continue
 
             if resp.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES - 1:
+                # 429 = the engine's bounded ingest queue shedding load (its ADR-0005): honor
+                # Retry-After exactly instead of the generic backoff schedule, so the SDK backs
+                # off in step with the server's own flush cadence.
+                retry_after = resp.headers.get("Retry-After")
+                if resp.status_code == 429 and retry_after:
+                    try:
+                        time.sleep(min(30.0, float(retry_after)))
+                    except ValueError:
+                        pass
                 last_exc = Exception(f"HTTP {resp.status_code}")
                 continue
             if not resp.ok:
