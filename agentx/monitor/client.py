@@ -268,6 +268,28 @@ class MonitorClient:
         plus deltas vs the prior window and the run-outcome breakdown."""
         return self._request("GET", "/kpis", params={"window": window})
 
+    def metrics(
+        self,
+        window: str = "1d",
+        *,
+        agent: Optional[str] = None,
+        model: Optional[str] = None,
+        tool: Optional[str] = None,
+        framework: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> dict:
+        """The Monitor metrics grid's data over a window ("1h".."90d") - bucketed spans by kind,
+        latency percentiles, tokens/cost, tool executions and failures, and platform attribution
+        (`frameworks` window totals + per-bucket `byFramework` - the Platforms chart). Optional
+        filters scope every number the way the dashboard's filter chips do; `framework` matches
+        the platform label traces carry (see TRACING.md's Platform detection), with "other"
+        selecting unlabeled traffic."""
+        params = {"window": window}
+        for key, value in (("agent", agent), ("model", model), ("tool", tool), ("framework", framework), ("status", status)):
+            if value is not None:
+                params[key] = value
+        return self._request("GET", "/metrics", params=params)
+
     def topics(self, window: str = "7d") -> dict:
         """The Topics view's data over a window ("24h", "7d", "30d"): LLM-classified themes of
         sampled production traffic with per-topic counts and sentiment. Empty until Topics is
