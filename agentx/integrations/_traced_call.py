@@ -143,6 +143,9 @@ def finish_llm_call(
             input=input_repr,
             output=output,
             model=model,
+            # Stamp the provider literal on a span opened without one (adoption keeps an
+            # explicit framework= or a framework integration's label winning over this).
+            framework=framework,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cache_read_tokens=cache_read_tokens,

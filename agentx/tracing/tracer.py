@@ -14,6 +14,7 @@ from agentx.exceptions import CIGateFailure
 from agentx.tracing.ingest_client import IngestClient
 from agentx.tracing.ci_types import CIRun, CIRunResult, CIRunStatus, CIQuestionScore
 from agentx.tracing.eval_scope import EVAL_RUN_SOURCE, current_eval_run_id
+from agentx.tracing.framework_detect import detect_framework
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -125,6 +126,10 @@ class _TraceSpan:
         # Adopted from a merged child run (e.g. AgentXCallbackHandler) when this span itself
         # wasn't opened with an explicit framework= - see _merge_child_run below.
         self._captured_framework: Optional[str] = None
+        # Best-effort auto-detection (framework_detect.py), resolved once at span open so child
+        # spans emitted mid-flight carry the same label the root will. Lowest precedence:
+        # explicit framework= > integration adoption > this. None when ambiguous.
+        self._detected_framework: Optional[str] = None if framework else detect_framework()
         self._input_tokens: int = 0
         self._output_tokens: int = 0
         # Subsets of _input_tokens (not additional tokens) - a prompt-caching write/read, when the
@@ -191,7 +196,7 @@ class _TraceSpan:
             latency_ms=latency_ms,
             error=self._error,
             metadata=metadata,
-            framework=self._framework or self._captured_framework,
+            framework=self._framework or self._captured_framework or self._detected_framework or detect_framework(),
             model=self._model or self._captured_model,
             tool_calls=self.tool_calls or None,
             session_id=self._session_id,
@@ -235,14 +240,18 @@ class _TraceSpan:
         input: Any = None,
         output: Any = None,
         model: Optional[str] = None,
+        framework: Optional[str] = None,
         input_tokens: Optional[int] = None,
         output_tokens: Optional[int] = None,
         cache_read_tokens: Optional[int] = None,
         cache_write_tokens: Optional[int] = None,
     ) -> None:
         """Record one LLM-call child span (e.g. one patched Anthropic call) under this span -
-        name left unset so _merge_child_run auto-numbers it "LLM Call N"."""
+        name left unset so _merge_child_run auto-numbers it "LLM Call N". ``framework`` lets the
+        patched client stamp its provider literal on a span the user opened without one - the
+        adoption in _merge_child_run keeps explicit/integration labels winning."""
         self._merge_child_run(
+            framework=framework,
             execution_steps=[{
                 "duration_ms": duration_ms,
                 "start_time": start_time,
@@ -301,7 +310,7 @@ class _TraceSpan:
         child = _TraceSpan(
             tracer=self._tracer,
             name=name,
-            framework=framework or self._framework or self._captured_framework,
+            framework=framework or self._framework or self._captured_framework or self._detected_framework,
             model=model,
             session_id=self._session_id,
         )
@@ -397,6 +406,13 @@ class _TraceSpan:
         under this span).
         """
         with self._merge_lock:
+            # Adopt framework/model BEFORE emitting child spans: child_span resolves its
+            # framework from this span's fields, so adopting after the emission loops used to
+            # send every CrewAI/AutoGen child out unlabeled while only the root got stamped.
+            if model and not self._captured_model:
+                self._captured_model = model
+            if framework and not self._captured_framework:
+                self._captured_framework = framework
             for step in [] if not emit_steps else (execution_steps or []):
                 self._child_span_count += 1
                 self.child_span(
@@ -463,10 +479,6 @@ class _TraceSpan:
                 self.input = input
             if output is not None:
                 self.output = output
-            if model and not self._captured_model:
-                self._captured_model = model
-            if framework and not self._captured_framework:
-                self._captured_framework = framework
             if input_tokens:
                 self._input_tokens += input_tokens
             if output_tokens:
@@ -520,7 +532,8 @@ class _TraceSpan:
             # to be called from inside another active span.
             span = self._tracer.trace(
                 self.name, metadata=self._metadata, framework=self._framework, model=self._model,
-                session_id=self._session_id,
+                session_id=self._session_id, sync=self._sync, monitor=self._monitor,
+                pattern_ids=self._pattern_ids, agent_id=self._agent_id, span_kind=self._span_kind,
             )
             span.__enter__()
             try:
@@ -542,7 +555,8 @@ class _TraceSpan:
             # See _wrap_sync's comment - same "fresh span per call" reasoning applies here.
             span = self._tracer.trace(
                 self.name, metadata=self._metadata, framework=self._framework, model=self._model,
-                session_id=self._session_id,
+                session_id=self._session_id, sync=self._sync, monitor=self._monitor,
+                pattern_ids=self._pattern_ids, agent_id=self._agent_id, span_kind=self._span_kind,
             )
             span.__enter__()
             try:
@@ -911,6 +925,22 @@ class Tracer:
 
             with client.tracer.trace("support-agent", agent_id="ag_123", sync=True) as span:
                 span.output = call_llm(...)
+
+        ``framework`` names the platform the agent runs on - tracing is platform agnostic, and
+        this label is how the dashboard's framework filter and Monitor's Platforms chart group
+        traffic. Three ways it gets set, strongest first:
+
+        1. **Explicit**: ``framework="langchain"`` - any string works, including platforms
+           AgentX has no integration for (``framework="my-inhouse-runner"``).
+        2. **Integration**: every integration stamps its own literal automatically -
+           ``langchain``, ``crewai``, ``openai-agents``, ``openai``, ``anthropic``,
+           ``google-genai``, ``google-adk``, ``litellm``, ``llamaindex``, ``autogen``,
+           ``moveworks``, ``databricks``.
+        3. **Auto-detection**: with neither of the above, the SDK labels the span with the one
+           known orchestration framework imported in the process (LangChain/LangGraph, CrewAI,
+           LlamaIndex, AutoGen, OpenAI Agents SDK, Google ADK, Semantic Kernel, Haystack,
+           Pydantic AI, smolagents, DSPy). Ambiguous (several imported) or unknown -> the span
+           goes out unlabeled rather than mislabeled.
         """
         return _TraceSpan(
             tracer=self,

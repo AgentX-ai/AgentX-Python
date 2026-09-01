@@ -97,7 +97,7 @@ with tracer.trace("agent-name", framework="langchain") as span:
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `name` | `str` | ✓ | Agent or operation label shown in the UI |
-| `framework` | `str` | - | Framework identifier: `"langchain"`, `"crewai"`, `"openai-agents"`, `"anthropic"`, or custom |
+| `framework` | `str` | - | Platform label - any string, including custom platform names. Auto-filled when omitted: see [Platform detection](#platform-detection) |
 | `model` | `str` | - | LLM model used, e.g. `"gpt-4o"`, `"claude-sonnet-4-6"` |
 | `session_id` | `str` | - | Groups traces from the same user session or thread |
 | `metadata` | `dict` | - | Arbitrary key-value metadata (not indexed, max 16 KB) |
@@ -112,6 +112,44 @@ with tracer.trace("agent-name", framework="langchain") as span:
 | `span.set_error(message)` | Mark the span as failed with the given error message |
 
 ---
+
+## Platform detection
+
+Tracing is **platform agnostic**: every trace carries a platform label, and any agent runtime
+works. The label resolves in priority order:
+
+1. **Explicit** - `framework="..."` on `trace()`. Any string is valid, including platforms
+   AgentX has no integration for: `framework="my-inhouse-runner"` charts and filters like any
+   built-in name. (The engine folds labels to lowercase, so `"LangChain"` and `"langchain"`
+   are one platform.)
+2. **Integration** - every AgentX integration stamps its literal automatically, no parameter
+   needed:
+
+   | Integration | Label |
+   |---|---|
+   | `AgentXCallbackHandler` (LangChain/LangGraph) | `langchain` |
+   | `AgentXCrewObserver` | `crewai` |
+   | `AgentXTracingProcessor` (OpenAI Agents SDK) | `openai-agents` |
+   | `patch_openai_client` | `openai` |
+   | `patch_anthropic_client` | `anthropic` |
+   | `patch_genai_client` | `google-genai` |
+   | `AgentXADKPlugin` | `google-adk` |
+   | `AgentXLiteLLMLogger` | `litellm` |
+   | `AgentXLlamaIndexHandler` | `llamaindex` |
+   | `AgentXAutoGenObserver` | `autogen` |
+   | `MoveworksImporter` | `moveworks` |
+   | `DatabricksTraceImporter` | `databricks` |
+
+3. **Auto-detection** - a plain `@tracer.trace(...)` with neither of the above looks at which
+   known orchestration framework is actually imported in the process (LangChain/LangGraph,
+   CrewAI, LlamaIndex, AutoGen, OpenAI Agents SDK, Google ADK, Semantic Kernel, Haystack,
+   Pydantic AI, smolagents, DSPy) and labels the span when exactly one is loaded. Ambiguous or
+   unknown means no label - the trace still ingests fine and buckets as "Other / custom" in the
+   dashboard, never mislabeled.
+
+The label powers the Live Traces framework filter and Monitor's **Platforms** chart
+(`GET /agent-monitoring/metrics` - `byFramework` buckets, `frameworks` totals, and a
+`framework=` filter).
 
 ## Framework examples
 

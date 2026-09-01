@@ -188,7 +188,12 @@ extra:
 | LlamaIndex            | `pip install "agentx-python[llamaindex]"`    | `AgentXLlamaIndexHandler` |
 | AutoGen               | `pip install "agentx-python[autogen]"`       | `AgentXAutoGenObserver`   |
 
-Or plain Python - wrap any function with `@tracer.trace(...)` and it just works, no framework required.
+Or plain Python - wrap any function with `@tracer.trace(...)` and it just works, no framework
+required. Tracing is **platform agnostic**: each integration stamps its platform label
+automatically, a plain trace auto-detects the one orchestration framework imported in the
+process, and `framework="any-name"` labels platforms AgentX has never heard of - the label
+drives the dashboard's framework filter and Monitor's Platforms chart. See
+[Platform detection](TRACING.md#platform-detection).
 
 Running specialist agents in parallel with a `ThreadPoolExecutor`? Wrap each worker body in `tracer.use_span(span)` so their steps land on the parent trace instead of becoming independent traces - see [TRACING.md](TRACING.md) for the full pattern.
 
