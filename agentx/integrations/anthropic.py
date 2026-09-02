@@ -13,7 +13,7 @@ Usage::
 
 Works with both ``anthropic.Anthropic`` and ``anthropic.AsyncAnthropic`` clients.
 
-Requires: ``pip install agentx[anthropic]``
+Requires: ``pip install "agentx-python[anthropic]"``
 """
 from __future__ import annotations
 

@@ -41,15 +41,19 @@ response = handle_query("How do I reset my password?")
 # Explicit API key
 client = AgentX(api_key="ax_live_xxxxxxxxxxxxxxxx")
 
-# From environment variable (AGENTX_API_KEY)
+# From environment variables
 client = AgentX.from_env()
 ```
 
-Set the environment variable:
+`from_env()` reads `AGENTX_API_KEY`, plus - for the base URL - the first of `AGENTX_API_BASE_URL` / `AGENTX_SELFHOST_BASE_URL` / `BASE_URL` that is set:
 
 ```bash
 export AGENTX_API_KEY=ax_live_xxxxxxxxxxxxxxxx
+# self-host only:
+export AGENTX_API_BASE_URL=http://localhost:4700/api/v1
 ```
+
+The tracer is fire-and-forget: a wrong key or URL surfaces only as a one-time log warning while traces silently go nowhere. For a long-running service, call `client.ping()` once at startup - it raises immediately (`AgentXConnectionError` / `AgentXAuthError`) on a bad URL or key.
 
 ---
 
@@ -67,7 +71,7 @@ All tracing methods are on the `tracer` object.
 
 ## `tracer.trace()` - decorator / context manager
 
-The primary tracing interface. Captures the wrapped function's arguments as `input`, return value as `output`, wall-clock time as `latencyMs`, and any exception as `error`.
+The primary tracing interface. Captures the wrapped function's arguments as `input`, return value as `output`, wall-clock time as `latency_ms`, and any exception as `error`.
 
 ### As a decorator
 
@@ -94,22 +98,79 @@ with tracer.trace("agent-name", framework="langchain") as span:
 
 ### Parameters
 
+All parameters work in both decorator and context-manager form - the decorator forwards every one of them (including `sync`, `monitor`, `pattern_ids`, `agent_id`, and `span_kind`) onto the span it opens per call.
+
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `name` | `str` | ✓ | Agent or operation label shown in the UI |
+| `name` | `str` | ✓ | Agent or operation label shown in the UI. One stable agent is resolved per distinct name |
+| `input` | any | - | Initial input value (context manager form; the decorator captures the function's arguments) |
 | `framework` | `str` | - | Platform label - any string, including custom platform names. Auto-filled when omitted: see [Platform detection](#platform-detection) |
 | `model` | `str` | - | LLM model used, e.g. `"gpt-4o"`, `"claude-sonnet-4-6"` |
 | `session_id` | `str` | - | Groups traces from the same user session or thread |
-| `metadata` | `dict` | - | Arbitrary key-value metadata (not indexed, max 16 KB) |
+| `metadata` | `dict` | - | Arbitrary key-value metadata |
+| `sync` | `bool` | - | `True` sends the trace synchronously on exit so `span.trace_id` is populated. See [Getting the trace id back](#getting-the-trace-id-back-synctrue) |
+| `monitor` | `bool` | - | `True` checks this trace against Monitor patterns immediately; `False` opts out of every ingest-time check. Default (`None`) leaves the server's standard behavior. See [Monitor](#monitor) |
+| `pattern_ids` | `list[str]` | - | With `monitor=True`: restrict detection to exactly these pattern ids |
+| `agent_id` | `str` | - | Pin this trace to a known agent id instead of resolving by `name` - a disambiguator for when the name alone isn't enough |
+| `span_kind` | `str` | - | What kind of step this span is (`"agent"`, `"llm"`, `"tool"`, `"retrieval"`, ...), stated instead of left to the backend's classification fallback |
 
-### `_TraceSpan` methods (context manager only)
+### `_TraceSpan` methods and attributes (context manager form)
 
 | Method / Attribute | Description |
 |---|---|
 | `span.input = value` | Override the captured input |
-| `span.output = value` | Set the output (required in context manager mode) |
+| `span.output = value` | Set the output |
 | `span.add_tool_call(name, *, input, output, latency_ms)` | Record a tool call made during the span |
 | `span.set_error(message)` | Mark the span as failed with the given error message |
+| `span.trace_id` | The ingested trace's id - populated after the `with` block exits, and only when the span was opened with `sync=True` (otherwise `None`) |
+| `span.span_id` | This span's id, usable to parent further spans |
+| `span.child_span(name, *, start_time, end_time, input, output, ...)` | Send one already-finished child-span row with explicit timing, parented to this span. Returns the child (its `.span_id` can parent grandchildren) |
+
+---
+
+## Span trees and nesting
+
+Nested `with tracer.trace(...)` blocks link as real parent/child span rows sharing one session, so a multi-step run shows up as a tree in the trace dialog's span panel. Nesting is automatic: any span opened while another is active on the same thread becomes its child, and so does every auto-instrumented call made inside the block (a patched Anthropic/OpenAI/Google GenAI/LiteLLM client, or a framework integration like `AgentXCallbackHandler`):
+
+```python
+with tracer.trace("orchestrator") as root:
+    with tracer.trace("plan") as plan:          # child span of "orchestrator"
+        plan.output = make_plan(query)
+    reply = claude.messages.create(...)          # patched client: its own child-span row
+    root.output = reply
+```
+
+The active-span stack is **thread-local**. Work submitted to a `ThreadPoolExecutor` (or any other thread) doesn't see a span opened on the calling thread - wrap the worker body in `tracer.use_span(span)` to attach it:
+
+```python
+with tracer.trace("orchestrator") as span:
+    def worker():
+        with tracer.use_span(span):
+            chain.invoke(..., config={"callbacks": [handler]})
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        ex.submit(worker).result()
+```
+
+`use_span` is safe to use from multiple threads concurrently for the same span.
+
+---
+
+## Getting the trace id back (`sync=True`)
+
+By default a trace is queued and delivered by a background thread - it never blocks the caller, but there is no way to learn the resulting trace id. Pass `sync=True` to send synchronously on block exit instead, so `span.trace_id` is populated:
+
+```python
+with tracer.trace("support_agent_call", sync=True) as span:
+    resp = call_llm(query)
+    span.output = resp
+
+print(span.trace_id)   # ready - e.g. to link this trace to an evaluation result
+```
+
+On a root span, `sync=True` covers the whole tree: child spans recorded inside the block are drained before the root is sent, so a read immediately afterwards sees every span. This is exactly what evaluation harnesses use to link a case to its trace: return `{"output": resp, "trace_id": span.trace_id}` from the agent function (see EVALUATIONS.md).
+
+`tracer.flush(timeout=5.0)` is the companion for the default async mode: it blocks until all queued traces are delivered (or the timeout elapses, returning `False` and leaving delivery running in the background). Call it before a short-lived process exits.
 
 ---
 
@@ -147,9 +208,12 @@ works. The label resolves in priority order:
    unknown means no label - the trace still ingests fine and buckets as "Other / custom" in the
    dashboard, never mislabeled.
 
-The label powers the Live Traces framework filter and Monitor's **Platforms** chart
-(`GET /agent-monitoring/metrics` - `byFramework` buckets, `frameworks` totals, and a
-`framework=` filter).
+The label powers the Live Traces framework filter and Monitor's **Platforms** chart. From the
+SDK, the same numbers come from `client.monitor.metrics()` (`GET /monitor/metrics`): bucketed
+spans by kind, latency percentiles, tokens/cost, tool executions/failures, and platform
+attribution (`frameworks` window totals plus per-bucket `byFramework`). It takes a `window`
+(`"1h"` up to `"90d"`, default `"1d"`) and optional `agent`/`model`/`tool`/`framework`/`status`
+filters matching the dashboard's filter chips - `framework="other"` selects unlabeled traffic.
 
 ## Framework examples
 
@@ -288,7 +352,22 @@ with tracer.trace("support-agent") as span:
     span.output = answer
 ```
 
-An exception escaping the block records the call with `success=False` plus the error text, then propagates unchanged so your own error handling still runs. That `success: false` is what Monitor's built-in "Tool failure" check and the dashboard's Tool quality column read, so a flaky tool shows up in triage without any extra wiring. To set the outcome yourself instead (an API that returned a well-formed error payload, say), use `tracer.record_tool_call(name, input=..., output=..., success=False, error="...")`.
+An exception escaping the block records the call with `success=False` plus the error text, then propagates unchanged so your own error handling still runs. That `success: false` is what Monitor's built-in "Tool failure" check and the dashboard's Tool quality column read, so a flaky tool shows up in triage without any extra wiring. To set the outcome yourself instead (an API that returned a well-formed error payload, say), use `tracer.record_tool_call(name, input=..., output=..., success=False, error="...")`. Both attach to the innermost active span; with no active span, the call is queued onto the next trace this tracer sends.
+
+### Recording retrievals
+
+The retrieval twins of the tool-call helpers mark a span as a knowledge-base / vector-store lookup, which feeds the engine's retrieval-context extraction (used by RAG judges) and the dashboard's references panel:
+
+```python
+with tracer.trace("rag-agent") as span:
+    with tracer.trace_retrieval("kb_search", query=question) as r:
+        docs = retrieve(question)
+        r.doc_count = len(docs)
+        r.output = docs
+    span.output = answer_from(docs)
+```
+
+`tracer.record_retrieval(name, query=..., output=..., duration_ms=...)` is the after-the-fact form. Custom names like `"kb_search"` work - the span carries an explicit retrieval marker, not a name heuristic.
 
 ---
 
@@ -348,39 +427,34 @@ with tracer.trace("my-agent") as span:
 
 ## `tracer.evaluate_trace()`
 
-Evaluate a previously submitted trace against a dataset, without re-running the agent. Returns a score and justification.
+Score a previously ingested trace against a dataset, without re-running the agent (`POST /ingest/traces/{trace_id}/evaluate`, synchronous - it blocks for one judge call). The trace's recorded input/output are used as-is.
 
 ```python
+with tracer.trace("support-agent", sync=True) as span:
+    span.output = call_llm(query)
+
 result = tracer.evaluate_trace(
-    trace_id="6876abc123def456789abc01",
+    trace_id=span.trace_id,
     dataset_id="6876ddd222bbb333ccc444ee",
     question_index=0,   # optional - which question to score against
 )
 
-print(result.rating)         # 1–5
-print(result.justification)  # LLM explanation
-print(result.run_id)         # ID of the created eval run
+print(result["rating"])         # 0-10 (None if the judge could not score)
+print(result["justification"])  # LLM explanation
+print(result["run_id"])         # id of the one-result eval run this created
 ```
 
 ### Parameters
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `trace_id` | `str` | ✓ | Trace ID returned by `POST /ingest/traces` |
+| `trace_id` | `str` | ✓ | Id of an ingested trace - from `span.trace_id` after a `sync=True` block |
 | `dataset_id` | `str` | ✓ | Evaluation dataset to score against |
-| `question_index` | `int` | - | 0-based question index. Omit to score against general criteria only |
+| `question_index` | `int` | - | 0-based question index; when supplied, that question's `expectedResults` is included in the scoring prompt. Omit to score against the dataset's general criteria only |
 
-### Return type: `TraceEvalResult`
+### Return value
 
-```python
-@dataclass
-class TraceEvalResult:
-    run_id: str
-    trace_id: str
-    rating: int          # 1–5
-    justification: str
-    status: str          # "completed"
-```
+A plain `dict` with keys `run_id`, `trace_id`, `rating` (0-10, `None` when scoring failed), `justification`, and `status` (`"completed"`). Raises `requests.HTTPError` on a non-2xx response.
 
 ---
 
@@ -418,7 +492,7 @@ Enable monitoring once per agent in the dashboard, and every subsequent trace fr
 
 ### What gets checked
 
-Built-in detectors: empty response, trace/tool errors, latency regressions, and (native chat agents only) negative user feedback. Custom patterns: keyword, regex, or an LLM-judged semantic rubric, created via the dashboard or `client.monitor.patterns`. A match becomes a signal, deduped against repeat occurrences of the same issue. A trace that matches nothing counts toward the agent's health rate instead.
+Built-in detectors: empty response, trace/tool errors, latency regressions, and negative user feedback (native chat votes; on self-host, votes forwarded via `client.feedback.report(...)` too). Custom patterns: keyword, regex, or an LLM-judged semantic rubric, created via the dashboard or `client.monitor.patterns`. A match becomes a signal, deduped against repeat occurrences of the same issue. A trace that matches nothing counts toward the agent's health rate instead.
 
 ### `client.monitor.patterns`
 
@@ -450,7 +524,7 @@ client.monitor.patterns.list()            # -> list[MonitorPattern]
 | `severity` | `str` | `"medium"` | `"low"`, `"medium"`, `"high"`, or `"critical"` |
 | `polarity` | `str` | `"failure"` | `"failure"` raises a signal to triage; `"proper"` logs a healthy tally instead |
 | `enabled` | `bool` | `True` | Whether the pattern is checked at all |
-| `sample_rate` | `float` | `1.0` | Fraction of matching traces to actually check, `0.0`–`1.0` |
+| `sample_rate` | `float` | `1.0` | Fraction of matching traces to actually check, `0.0`-`1.0` |
 | `scope_mode` / `agent_ids` | `str` / `list[str]` | `"all"` / `[]` | Restrict this pattern to specific agents instead of the whole workspace |
 
 `publish()` returns a `MonitorPattern` with `.id`, which you pass in `pattern_ids` at trace time.
@@ -482,17 +556,17 @@ print(signal.recommended_actions)
 
 ### `client.monitor.profile`
 
-Get/update one agent's Monitor coverage and detection settings, the same settings shown in the dashboard's per-agent monitoring settings dialog (Observe > Patterns > Agents view): coverage mode, sample rate, retention, redaction, approval policy, and `threshold_overrides` for built-in detectors that take a configurable threshold (e.g. the "Latency regression" pattern's threshold, which otherwise defaults to 20000ms).
+Get/update one agent's Monitor settings, the same settings shown in the dashboard's per-agent monitoring settings dialog.
 
 ```python
 profile = client.monitor.profile.get("agent_123")
-print(profile.coverage_mode if profile else "never configured, on defaults")
+print(profile.enabled if profile else "never configured, on defaults")
 
-# Override just the latency-regression threshold, e.g. 15s instead of the 20s default.
-client.monitor.profile.update("agent_123", threshold_overrides={"latencyMs": 15000})
+# Opt this agent out of info (clean-run) signals.
+client.monitor.profile.update("agent_123", info_detection_enabled=False)
 ```
 
-`get()` returns `None` when the agent has never been configured (still on platform defaults). `update()` upserts and only changes the fields you pass, everything else on an existing profile is left as is:
+`get()` returns `None` when the agent has never been configured (still on platform defaults, e.g. a built-in latency threshold of 20000ms). `update()` upserts and only changes the fields you pass, everything else on an existing profile is left as is:
 
 | Parameter | Type | Description |
 |---|---|---|
@@ -504,8 +578,9 @@ client.monitor.profile.update("agent_123", threshold_overrides={"latencyMs": 150
 | `dataset_id` | `str` | Evaluation dataset this agent's signals feed into |
 | `threshold_overrides` | `dict` | Per-check threshold overrides, e.g. `{"latencyMs": 15000}` |
 | `retention_days` | `int` | How long monitored traces are kept |
-| `redaction_mode` | `str` | `"none"`, `"standard"`, or `"strict"` |
 | `approval_policy` | `dict[str, str]` | Per-action approval mode for autotune actions |
+
+**Self-host:** `coverage_mode`, `sample_rate`, `retention_days`, and `threshold_overrides["latencyMs"]` are project-level defaults there (set once for every agent in the dashboard's Platform Settings). `update()` still accepts them for wire compatibility, but the self-host engine doesn't read the stored per-agent values - `enabled`, the two detection toggles, and `channels` remain real per-agent settings everywhere.
 
 ### `client.monitor.online_evaluators` (self-host only)
 
@@ -555,19 +630,24 @@ A `scope="session"` evaluator is judged by the engine's background sweep rather 
 
 ## Async support
 
-All tracing methods work with both sync and async functions:
+The decorator wraps both sync and async functions (it detects coroutine functions and awaits them):
 
 ```python
 @tracer.trace("async-agent", framework="openai-agents")
 async def handle_async(query: str) -> str:
     response = await async_llm_client.complete(query)
     return response
+```
 
-# Or in async context manager:
-async with tracer.trace("async-agent") as span:
-    span.input = query
-    result = await async_llm_client.complete(query)
-    span.output = result
+The context-manager form is a regular (synchronous) context manager - use plain `with` inside async code, not `async with`:
+
+```python
+async def handle(query: str) -> str:
+    with tracer.trace("async-agent") as span:
+        span.input = query
+        result = await async_llm_client.complete(query)
+        span.output = result
+        return result
 ```
 
 ---
@@ -578,22 +658,20 @@ async with tracer.trace("async-agent") as span:
 from agentx import AgentX
 
 client = AgentX(
-    api_key="ax_live_xxxxxxxxxxxxxxxx",   # Required (or use AGENTX_API_KEY env var)
-    workspace_id="...",                    # Optional - explicit workspace override
-    base_url="https://api.agentx.so",     # Optional - for self-hosted deployments
-    timeout=10,                            # HTTP timeout in seconds (default 10)
+    api_key="ax_live_xxxxxxxxxxxxxxxx",         # or set AGENTX_API_KEY
+    workspace_id="...",                          # optional - or set AGENTX_WORKSPACE_ID
+    base_url="http://localhost:4700/api/v1",    # optional - or set AGENTX_API_BASE_URL;
+                                                 # defaults to the hosted API
 )
 ```
 
+Constructing the client makes no network call; `client.ping()` is the fail-fast startup check.
+
 ---
 
-## Limits
+## Delivery behavior and limits
 
-| Limit | Value |
-|---|---|
-| Traces per minute | 300 |
-| Max tool calls per trace | 50 (excess silently truncated) |
-| Max `input` / `output` size | 1 MB each |
-| Max `metadata` size | 16 KB |
-
-Traces that exceed size limits are submitted with the oversized field truncated and a warning logged to stderr.
+- **Queueing** - traces are enqueued (up to 500 in flight) and drained by a background daemon thread. On overflow, or when retries are exhausted, the trace is dropped **with a logged warning** (first drop, then every 50th, with a cumulative count) - never silently.
+- **Retries** - each queued trace is retried up to 3 times with backoff on connection errors, 429, and 5xx responses; a 429's `Retry-After` header is honored. `sync=True` sends block once with a 10s timeout and do not retry - a failed sync send just means `span.trace_id` stays `None`.
+- **Payload truncation** - `input`, `output`, and `metadata` are serialized best-effort before sending: nesting deeper than 4 levels, dicts/lists beyond 30 entries, and unserializable objects are truncated/stringified (long fallback strings cut to 200 chars) to keep payloads bounded.
+- **First failure warns** - the first delivery failure per client logs at WARNING with a hint (bad key vs. bad URL); repeats log at DEBUG. `client.ping()` at startup fails fast instead.

@@ -70,6 +70,7 @@ setup(
             "llama-index-core>=0.10.0",
             "autogen-agentchat>=0.4.0",
             "autogen-core>=0.4.0",
+            "mlflow>=3.6.0",
         ],
     },
     author="Robin Wang and AgentX Team",
@@ -83,5 +84,5 @@ setup(
         "License :: OSI Approved :: Apache Software License",
         "Operating System :: OS Independent",
     ],
-    python_requires=">=3.6",
+    python_requires=">=3.9",
 )

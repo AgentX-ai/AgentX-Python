@@ -73,15 +73,16 @@ print(f"Average rating:    {report.average_rating:.2f}")
 
 # Optional similarity metrics - present only when enabled on the dataset.
 if report.cosine_similarity is not None:
-    print(f"Cosine similarity: {report.cosine_similarity:.3f}")   # 0–1
+    print(f"Cosine similarity: {report.cosine_similarity:.3f}")   # 0-1
 if report.jaccard_similarity is not None:
-    print(f"Jaccard similarity:{report.jaccard_similarity:.3f}")  # 0–1
+    print(f"Jaccard similarity:{report.jaccard_similarity:.3f}")  # 0-1
 if report.bleu_score is not None:
-    print(f"BLEU score:        {report.bleu_score:.3f}")          # 0–1
+    print(f"BLEU score:        {report.bleu_score:.3f}")          # 0-1
 if report.rouge_score is not None:
-    print(f"ROUGE-L score:     {report.rouge_score:.3f}")         # 0–1
+    print(f"ROUGE-L score:     {report.rouge_score:.3f}")         # 0-1
 
-print(f"Dashboard: {report.dashboard_url}")
+if report.dashboard_url:   # hosted runs; self-host doesn't send one
+    print(f"Dashboard: {report.dashboard_url}")
 ```
 
 ### Environment variables
@@ -89,13 +90,15 @@ print(f"Dashboard: {report.dashboard_url}")
 | Variable | Description |
 |---|---|
 | `AGENTX_API_KEY` | Required. Your AgentX API key. |
-| `AGENTX_API_BASE_URL` | Optional. Override the API base URL (useful for local dev). |
+| `AGENTX_API_BASE_URL` | Optional. Override the API base URL, e.g. `http://localhost:4700/api/v1` for self-host. |
+| `AGENTX_WORKSPACE_ID` | Optional. Explicit workspace instead of the API key's default. |
+| `AGENTX_EVAL_QUIET` | Optional. `1` silences the interactive progress UI (spinners, per-case lines) for CI logs; results, gate verdicts, and errors still print. |
 
-You can also pass `base_url` directly to the constructor:
+You can also pass `base_url` directly to the constructor (the `/custom-agent-evaluations` suffix is appended automatically, so `/api/v1` is enough):
 
 ```python
-# Point at your local dev server
-client = AgentX(api_key="your-key", base_url="http://localhost:3000/api/v1/custom-agent-evaluations")
+# Point at a local self-host engine
+client = AgentX(api_key="your-key", base_url="http://localhost:4700/api/v1")
 ```
 
 ---
@@ -129,6 +132,8 @@ print(dataset.id)   # use this id in .run()
 
 #### Import from CSV
 
+`from_csv()` returns a builder (add more cases if you like), so finish with `.publish()`:
+
 ```python
 dataset = client.evaluations.datasets.from_csv(
     path="cases.csv",
@@ -136,7 +141,7 @@ dataset = client.evaluations.datasets.from_csv(
     number_of_requests=2,
     acceptance_criteria="...",
     rejection_criteria="...",
-)
+).publish()
 ```
 
 CSV format:
@@ -146,7 +151,7 @@ query,expected_results
 "What is your refund policy?","Describe refund terms."
 ```
 
-Optional `case_id` column for stable idempotency keys across re-runs.
+`query` is the only required column. Optional columns: `expected_results`, plus semicolon-separated `expected_capabilities`, `expected_knowledge_base`, and `expected_delegations`. Rows with an empty query are skipped with a logged warning. `from_dataframe(df, name, ...)` does the same from a pandas DataFrame.
 
 ---
 
@@ -168,7 +173,7 @@ dataset = (
 )
 ```
 
-`smoke_test_guidance` is optional free text steering *what kind* of variants get generated (tone, adversarial phrasing, different languages, ...); leave it out for natural rewording only. Both the paraphrase text and the count are decided entirely server-side, reusing the same generation the AgentX dashboard's native runs use, `.execute()` just asks the extra variants and submits them for you, nothing to configure on the SDK side beyond these two kwargs. Ignored on `follow_up_questions`, only a case's opening question can be smoke-tested.
+`smoke_test_count` accepts 1-10 extra variants per case. `smoke_test_guidance` is optional free text steering *what kind* of variants get generated (tone, adversarial phrasing, different languages, ...); leave it out for natural rewording only. Both the paraphrase text and the count are decided entirely server-side, reusing the same generation the AgentX dashboard's native runs use, `.execute()` just asks the extra variants and submits them for you, nothing to configure on the SDK side beyond these two kwargs. Ignored on `follow_up_questions`, only a case's opening question can be smoke-tested.
 
 Variants show up as extra entries in `EvaluationCase`/`EvaluationResult`:
 
@@ -428,6 +433,7 @@ Score strictly: any missing policy detail is a failing response.""",
 
 - `judge_prompt` is a raw template. `{input}`, `{output}`, and `{expected}` are substituted in; everything else (chain of thought, capabilities/references, criteria, per-question `judge_guideline`, delegation notes) is appended automatically after it, so a custom prompt can restructure the grading philosophy without ever losing that context. Omit it to keep the default rubric.
 - `judge_model` accepts any OpenAI or Anthropic model id (`client.evaluations.list_models(provider="Anthropic")` to discover valid ones). Omit it to keep the default (`gpt-5.5`).
+- `list_models()` is **hosted platform only**: it calls the hosted API's `/custom-agent-evaluations/models` registry, which the self-host engine does not serve (404, surfaced as `AgentXEvaluationsError`). On self-host, pass any model id your engine's judge keys can reach.
 
 ---
 
@@ -471,13 +477,15 @@ with client.tracer.trace("support-agent", metadata={"promptName": prompt.name}) 
     ...  # your agent's own call
 ```
 
-From the self-host dashboard: Governance → Improve → **Prompt Management** → a prompt's row menu → **Suggest
+From the self-host dashboard: Governance > Manage > **Prompts** > a prompt's row menu > **Suggest
 improvement**. It merges both kinds of evidence - deliberate eval runs (defaulting to the *current
 published version only*, auto-widening to every version if there isn't enough recent evidence yet)
 and worst-scoring Online Evaluator ratings from a recent time window - feeds the worst-rated
 examples to a judge, and shows a full rewrite plus reasoning. **Nothing is saved until a human
-clicks Publish as new version** - there is no `publish()` on this client; a rewrite only ever
-reaches your agent through that one explicit, dashboard-only write. Your agent's next
+approves it as a new version.** The same propose loop is scriptable: `prompts.examples(prompt.id)`
+returns the evidence, `prompts.propose(prompt.id)` asks the judge for a rewrite (returns
+`revisedText`/`reasoning` without saving anything), and `prompts.publish_version(prompt.id,
+text=...)` is the explicit human-approval write. Your agent's next
 `client.evaluations.prompts.get(name)` call picks up the new version immediately. Tagging
 `metadata.version` as `<promptName>@v<N>` (shown above) means the dataset's **Compare versions**
 dialog also tells you whether the published rewrite actually scored better, no separate comparison
@@ -737,11 +745,13 @@ report = (
 
 Expected endpoint contract:
 ```
-POST /your-endpoint
+POST /your-endpoint            (method="..." on the adapter overrides the verb)
 Content-Type: application/json
-Body: { "query": "..." }
-Response: { "output": "..." }
+Body:     { "query": "...", "case_id": "...", "question_index": 0, "run_number": 1 }
+Response: { "output": "..." }  (or "text"; optional "metadata" and "trace")
 ```
+
+A non-2xx response or a timeout is recorded as that case's error instead of aborting the run.
 
 Full example: [`examples/evaluations/http_endpoint_eval.py`](examples/evaluations/http_endpoint_eval.py)
 
@@ -755,11 +765,19 @@ Submit outputs you already have without running any agent during evaluation:
 from agentx.evaluations.adapters.precomputed import PrecomputedAdapter
 
 outputs = {
-    0: "To reset your password, go to Login → Forgot Password.",
+    0: "To reset your password, go to Login > Forgot Password.",
     1: "We accept Visa, Mastercard, PayPal, and bank transfers.",
 }
 
 adapter = PrecomputedAdapter(outputs)
+```
+
+Keys are matched against the case's `case_id` first, then its question index; a plain list works
+too (one entry per question, in order). Values can be strings or `{"output": ..., "metadata":
+...}` dicts:
+
+```python
+adapter = PrecomputedAdapter(["First answer.", "Second answer."])
 
 report = (
     client.evaluations
@@ -778,12 +796,15 @@ Full example: [`examples/evaluations/csv_import_eval.py`](examples/evaluations/c
 
 | Field | Values | Description |
 |---|---|---|
-| `kind` | `custom_agent` | Always `custom_agent` for external agents |
+| `kind` | `custom_agent` (default), `agentx_agent`, `agentx_team` | `custom_agent` for external agents |
 | `displayName` | any string | Human-readable name shown in the dashboard |
 | `framework` | `raw_python`, `openai`, `anthropic`, `google`, `langchain`, `llamaindex`, `crewai`, `autogen`, `n8n`, `flowise`, `other` | Framework used |
-| `runtime` | `local`, `ci`, `customer_hosted`, `low_code` | Where the agent runs |
-| `version` | any string | Optional version tag for the agent |
-| `endpoint` | URL | Optional, for HTTP-based agents |
+| `frameworkVersion` | any string | Optional framework version tag |
+| `runtime` | `local` (default), `ci`, `customer_hosted`, `low_code` | Where the agent runs |
+| `agentInstructions` | any string | The agent's own system instructions - what the report's instruction-adherence section grades against |
+| `metadata` | `dict[str, str \| int \| bool]` | Free-form tags, e.g. `{"promptName": ..., "version": ...}` (see [Prompt registry](#prompt-registry)) |
+
+Unknown fields are silently dropped, so a typo here fails quietly - stick to the fields above.
 
 ### Similarity metrics (optional)
 
@@ -792,7 +813,7 @@ Each scored result can be enriched with reference-based similarity scores compar
 | Metric | What it measures | Cost |
 |---|---|---|
 | **Cosine** (vector similarity) | Cosine of OpenAI embeddings of `expected_results` vs the actual response. Captures semantic similarity. | One embedding API call per case. |
-| **Jaccard** | Token-set overlap `|A ∩ B| / |A ∪ B|` over lowercased word tokens. Pure lexical match. | Free - no API calls. |
+| **Jaccard** | Token-set overlap `\|A ∩ B\| / \|A ∪ B\|` over lowercased word tokens. Pure lexical match. | Free - no API calls. |
 | **BLEU** | Sentence-level BLEU-4 (n-gram precision, up to 4-grams, with brevity penalty). Standard machine-translation-style metric - rewards responses that reuse the expected result's exact phrasing. | Free - no API calls. |
 | **ROUGE-L** | F1 over the longest common (in-order) subsequence of tokens. Standard summarization-style metric - more tolerant of reordering/insertions than BLEU. | Free - no API calls. |
 
@@ -828,10 +849,10 @@ report = client.evaluations.run(...).execute(my_agent).finalize().analyze()
 # Top-level convenience accessors - return None when the metric was not
 # enabled on the dataset, or no case has a value yet.
 report.average_rating       # float | None  - same as report.statistics.average_rating
-report.cosine_similarity    # float | None  - averaged across cases (0–1)
-report.jaccard_similarity   # float | None  - averaged across cases (0–1)
-report.bleu_score           # float | None  - averaged across cases (0–1)
-report.rouge_score          # float | None  - averaged across cases (0–1), ROUGE-L F1
+report.cosine_similarity    # float | None  - averaged across cases (0-1)
+report.jaccard_similarity   # float | None  - averaged across cases (0-1)
+report.bleu_score           # float | None  - averaged across cases (0-1)
+report.rouge_score          # float | None  - averaged across cases (0-1), ROUGE-L F1
 
 # Same values are also available nested under the statistics block:
 report.statistics.cosine_similarity
@@ -869,7 +890,9 @@ sys.exit(gate.exit_code)   # 0 = merge, 1 = block
 | `tolerance` | `float` | `0.5` | Slack for `no_regression` - judge scores are noisy, and an exact comparison would flake builds on variance rather than regressions |
 | `caller` | `str` | `"sdk"` | Free label shown in the dashboard's CI Gates history ("github-actions", ...) |
 
-At least one of `fail_under` / `no_regression` is required. `GateResult` exposes `.passed`, `.exit_code` (0/1), `.average_rating`, `.baseline_average`, `.baseline_run_id`, and `.checks` (the per-check verdict list). Every `gate()` call is recorded into the dashboard's CI Gates tab by default; use the lower-level `client.evaluations.gate_run(run_id, ..., record=False)` for an unrecorded check. See [self-host's CI docs](https://docs.agentx.so/integrations/self-host-ci) for the GitHub Actions recipe.
+At least one of `fail_under` / `no_regression` is required. `GateResult` exposes `.passed`, `.exit_code` (0/1), `.average_rating`, `.baseline_average`, `.baseline_run_id`, and `.checks` (the per-check verdict list). Every `gate()` call is recorded into the dashboard's CI Gates tab by default; use the lower-level `client.evaluations.gate_run(run_id, ..., record=False)` for an unrecorded check, or to gate a run created elsewhere by id. Set `AGENTX_EVAL_QUIET=1` in CI to silence the interactive progress UI while keeping results and gate verdicts. See [self-host's CI docs](https://docs.agentx.so/integrations/self-host-ci) for the GitHub Actions recipe.
+
+This run + gate flow is the **self-host CI path**. The separate CI-runs API in [CICD_EVAL.md](CICD_EVAL.md) (`tracer.run_eval()` and friends) targets the hosted platform only.
 
 ### AI analysis report
 
@@ -877,8 +900,8 @@ At least one of `fail_under` / `no_regression` is required. `GateResult` exposes
 
 ```python
 report = client.evaluations.run(...).execute(my_agent).finalize().analyze(
-    mode="auto",                                    # "auto" (default) | "sync" | "batch"
-    quality_mode="quality_first",                   # "quality_first" (default) | "balanced"
+    mode="auto",                                    # "auto" | "sync" | "batch"
+    quality_mode="quality_first",                   # "quality_first" | "balanced"
     judges=["gpt-5.5", "claude-opus-4-8"],           # 1-3 model ids; omit for a single gpt-5.5 judge
 )
 
@@ -914,6 +937,8 @@ This is separate from, and available even without, the numeric `average_rating`/
 | `poll_interval` | seconds, default `5.0` | How often to check job status while waiting |
 | `timeout` | seconds, default `1800.0` | Give up waiting after this long (the job keeps running server-side; call `get_report()` later to check on it) |
 
+`mode` and `quality_mode` default server-side (omitting them keeps the server's behavior). On self-host, the analysis runs synchronously on the engine: `judges` is honored, `mode`/`quality_mode` are accepted but ignored, and the polling loop sees a terminal status on its first check.
+
 ```python
 # Check on a long-running analysis without calling .analyze() again, even from a
 # separate script execution:
@@ -928,8 +953,8 @@ Your callable can return any of:
 | Return type | Behavior |
 |---|---|
 | `str` | Used directly as the output text |
-| `dict` with `"output"` key | Output text from `output`, rest stored as metadata |
-| `EvaluationResult` | Full control - pass rating, justification, trace, timings |
+| `dict` | Recognized keys: `output` (or `text`/`response`), `metadata` (a dict), `trace_id`, `input_tokens`/`output_tokens` (also read from metadata), `retrieval_context`, `trace`, `error`. Unrecognized keys are dropped - put extra data under `metadata` |
+| `EvaluationResult` | Full control - pass error, trace, timings, metadata, retrieval context |
 
 ### What gets uploaded
 

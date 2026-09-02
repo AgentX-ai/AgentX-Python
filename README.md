@@ -45,11 +45,13 @@ pip install --upgrade agentx-python
 
 Requires Python 3.9 or newer.
 
-#### Run self host eval framework locally
+#### Run the self-host governance suite locally
 
+```bash
+agentx-trace-eval --dev
 ```
-agentx-trace-eval --dev --update
-```
+
+(See [Self-host](#self-host) below for what this downloads and how to point the SDK at it.)
 
 ---
 
@@ -73,7 +75,7 @@ report = (
     .analyze()
 )
 
-print(report.average_rating)   # LLM-graded score, 0–10
+print(report.average_rating)   # LLM-graded score, 0-10
 print(report.summary)          # AI-generated narrative from .analyze()
 ```
 
@@ -94,9 +96,9 @@ report = (
     .analyze()
 )
 
-print(report.average_rating)       # LLM-graded score, 0–10
-print(report.cosine_similarity)    # embedding cosine, 0–1 (None if not enabled)
-print(report.jaccard_similarity)   # token-set overlap, 0–1 (None if not enabled)
+print(report.average_rating)       # LLM-graded score, 0-10
+print(report.cosine_similarity)    # embedding cosine, 0-1 (None if not enabled)
+print(report.jaccard_similarity)   # token-set overlap, 0-1 (None if not enabled)
 
 print(report.summary)              # AI-generated narrative from .analyze()
 print(report.recommendations)      # list of prioritized, actionable fixes
@@ -120,7 +122,7 @@ client.evaluations.run(
 
 See [Prompt registry](EVALUATIONS.md#prompt-registry) in the full guide, or [self-host's docs](https://docs.agentx.so/improve/prompt-management) for the "Suggest improvement" dashboard flow (self-host only - no hosted-SaaS equivalent yet).
 
-On self-host, a finalized run can also **gate a CI job**: `run.gate(fail_under=7, no_regression=True)` (on the run context `.execute()` returns) checks the run's average rating against an absolute floor and/or the dataset's previous run, prints per-check verdicts into the CI log, and returns an exit code - `sys.exit(gate.exit_code)` blocks the merge on regression. Recorded gates appear in the dashboard's CI Gates tab. See [self-host's CI docs](https://docs.agentx.so/integrations/self-host-ci) for the GitHub Actions recipe.
+On self-host, a finalized run can also **gate a CI job**: `run.gate(fail_under=7, no_regression=True)` (on the run context `.execute()` returns) checks the run's average rating against an absolute floor and/or the dataset's previous run, prints per-check verdicts into the CI log, and returns a `GateResult` - `sys.exit(gate.exit_code)` blocks the merge on regression. Recorded gates appear in the dashboard's CI Gates tab. See [self-host's CI docs](https://docs.agentx.so/integrations/self-host-ci) for the GitHub Actions recipe.
 
 See **[EVALUATIONS.md](EVALUATIONS.md)** for the full guide - dataset builder, framework adapters, similarity metrics, smoke testing, judge configuration, prompt registry, and the complete API reference.
 
@@ -188,6 +190,10 @@ extra:
 | LlamaIndex            | `pip install "agentx-python[llamaindex]"`    | `AgentXLlamaIndexHandler` |
 | AutoGen               | `pip install "agentx-python[autogen]"`       | `AgentXAutoGenObserver`   |
 
+Two more platforms are covered by **pull importers** rather than in-process hooks, each with its
+own CLI: `agentx-moveworks` (Moveworks Data API sync, no extra needed) and `agentx-databricks`
+(`pip install "agentx-python[databricks]"`, MLflow/Databricks trace sync).
+
 Or plain Python - wrap any function with `@tracer.trace(...)` and it just works, no framework
 required. Tracing is **platform agnostic**: each integration stamps its platform label
 automatically, a plain trace auto-detects the one orchestration framework imported in the
@@ -228,11 +234,13 @@ for signal in client.monitor.signals.list(severity="high"):
     print(signal.summary, signal.occurrence_count)
 ```
 
-Per-agent coverage/threshold settings (sample rate, retention, and threshold overrides like the built-in "Latency regression" pattern's threshold) are `client.monitor.profile.get()`/`.update()`:
+Per-agent monitoring settings (enable/disable, detection categories, notification channels) are `client.monitor.profile.get()`/`.update()`:
 
 ```python
-client.monitor.profile.update("agent_123", threshold_overrides={"latencyMs": 15000})
+client.monitor.profile.update("agent_123", info_detection_enabled=False)
 ```
+
+On self-host, coverage mode, sample rate, retention, and the built-in latency threshold are project-level defaults set in the dashboard's Platform Settings; `update()` still accepts them for wire compatibility, but only the per-agent fields above take effect there.
 
 Self-host also has **online evaluators**: a real LLM judge scoring a sample of live traffic continuously, distinct from a pattern's rule-matching. A score below `alert_threshold` raises a signal the same way a failing pattern does, deduped and triage-ready in `client.monitor.signals`.
 
@@ -307,7 +315,7 @@ export AGENTX_API_BASE_URL=http://localhost:4700/api/v1
 export AGENTX_API_KEY=<printed by agentx-trace-eval on first run>
 ```
 
-`agentx-trace-eval` isn't this SDK's own code - the engine itself is a separate, compiled binary, downloaded on demand rather than bundled into this package, so installing `agentx-python` doesn't get any heavier for the (much more common) case of just talking to the hosted AgentX API. See that repo's README for what's included, and `AGENTX_INSTALL_DIR`/`AGENTX_TRACE_EVAL_VERSION`/`AGENTX_TRACE_EVAL_SKIP_WEB` env vars to control where/what it installs.
+`agentx-trace-eval` isn't this SDK's own code - the engine itself is a separate, compiled binary, downloaded on demand rather than bundled into this package, so installing `agentx-python` doesn't get any heavier for the (much more common) case of just talking to the hosted AgentX API. Each SDK release pins the engine release it was tested against and converges the install to that pin, so upgrading the SDK upgrades the engine too. Two flags to know: `--update` (consumed by this launcher) force-reinstalls the resolved engine release, while `--upgrade` passes through to `agentx-server` and re-downloads the dashboard bundle before serving. See that repo's README for what's included, and the `AGENTX_INSTALL_DIR`/`AGENTX_TRACE_EVAL_VERSION`/`AGENTX_TRACE_EVAL_SKIP_WEB` env vars to control where/what it installs.
 
 ---
 
