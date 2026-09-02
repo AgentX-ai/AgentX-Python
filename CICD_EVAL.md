@@ -6,7 +6,12 @@ The AgentX CI/CD evaluation SDK lets you **gate agent releases** in any CI pipel
 
 If the gate fails, the SDK raises `CIGateFailure` (or returns the result so you can `sys.exit(1)`), blocking the pipeline.
 
-> **Status:** This feature is in the design phase. The API and SDK interfaces described here reflect the planned implementation.
+> **Hosted platform only.** `tracer.run_eval()` and the low-level methods below call the hosted
+> API's `/ingest/ci-runs` routes. The self-host engine does not serve them - against a self-host
+> base URL they return 404, which the SDK surfaces as `DatasetNotFound`. On self-host, gate CI
+> with the run + gate flow instead: `client.evaluations.run(...).execute(...).finalize().gate(...)`
+> (or `pytest` + `assert_evaluation`, below) - see
+> [CI gate (self-host)](EVALUATIONS.md#ci-gate-self-host).
 
 ---
 
@@ -72,7 +77,7 @@ result = tracer.run_eval(
 | `dataset_id` | `str` | - | ID of the evaluation dataset (must have `ci.enabled: true`) |
 | `agent_fn` | `Callable[[str], str]` | - | Function that takes a query string and returns the agent's response |
 | `agent_name` | `str` | `None` | Label for this agent (used to create/reuse a reference agent in AgentX) |
-| `pass_rate_threshold` | `float` | `None` | Override the dataset's `passRateThreshold` for this run (0.0–1.0) |
+| `pass_rate_threshold` | `float` | `None` | Override the dataset's `passRateThreshold` for this run (0.0-1.0) |
 | `git_context` | `dict` | `None` | Git metadata (see [Git context](#git-context)) |
 | `concurrency` | `int` | `1` | Number of questions to run in parallel (use with caution for rate-limited agents) |
 | `fail_on_gate` | `bool` | `False` | Raise `CIGateFailure` if gate is `"fail"` instead of returning the result |
@@ -85,23 +90,24 @@ result = tracer.run_eval(
 class CIRunResult:
     run_id: str
     gate: Literal["pass", "fail"]
-    pass_rate: float                    # 0.0–1.0
+    pass_rate: float                    # 0.0-1.0
     total_questions: int
     passed_questions: int
     scores: list[CIQuestionScore]
     violations: list[ThresholdViolation]
     git_context: dict | None
-    finalized_at: str                   # ISO 8601
+    finalized_at: str | None            # ISO 8601
 ```
 
 ```python
 @dataclass
 class CIQuestionScore:
     question_index: int
-    rating: int            # 1–5
+    rating: int            # 0-10
     justification: str
     passed: bool
-    input: Any | None
+    gate_fired: bool       # True if failFast triggered early finalization
+    input: Any | None      # populated on finalize; None on submit_result()
     output: Any | None
 ```
 
@@ -137,7 +143,7 @@ print(f"{'='*50}\n")
 
 for score in result.scores:
     icon = "✓" if score.passed else "✗"
-    print(f"  [{icon}] Q{score.question_index}  rating={score.rating}/5")
+    print(f"  [{icon}] Q{score.question_index}  rating={score.rating}/10")
     print(f"       {score.justification[:100]}")
 
 if result.violations:
@@ -176,7 +182,7 @@ class CIRun:
     run_id: str
     dataset_id: str
     total_questions: int
-    test_cases: list[CITestCase]    # empty if ci.exposeTestInputs is false
+    test_cases: list[CITestCase]
     expires_at: str                 # ISO 8601
 ```
 
@@ -213,22 +219,13 @@ score = tracer.submit_result(
     question_index: int,
     output: Any,
     *,
-    input: Any | None = None,      # Actual input sent to agent (defaults to test case query)
+    input: Any | None = None,      # the actual input sent to the agent, recorded with the result
     latency_ms: int | None = None,
 )
 ```
 
-**Returns: `CIQuestionScore`**
-
-```python
-@dataclass
-class CIQuestionScore:
-    question_index: int
-    rating: int
-    justification: str
-    passed: bool
-    gate_fired: bool   # True if failFast triggered early finalization
-```
+**Returns: `CIQuestionScore`** (see [above](#return-type-cirunresult); `gate_fired=True` means
+failFast finalized the run early).
 
 **Example:**
 
@@ -241,7 +238,7 @@ for case in run.test_cases:
         output=output,
         input=case.query,
     )
-    print(f"Q{case.index}: {score.rating}/5 - {score.justification[:60]}")
+    print(f"Q{case.index}: {score.rating}/10 - {score.justification[:60]}")
     if score.gate_fired:
         print("Gate fired (failFast) - stopping early")
         break
@@ -449,7 +446,8 @@ sys.exit(0 if result.gate == "pass" else 1)
 
 `agentx.testing` turns a run into a plain pytest failure, so quality checks live in the same
 suite as everything else. Both helpers raise `AssertionError` subclasses - no plugin, no
-registration, works in any runner.
+registration, works in any runner. Unlike the CI-runs API above, these ride the run + gate flow,
+so they **work on self-host** as well as hosted.
 
 ### `assert_evaluation` - does it clear the bar
 
@@ -641,7 +639,7 @@ print(f"\nAgentX Eval Gate: {result.gate.upper()}")
 print(f"Pass rate: {result.pass_rate:.0%}  ({result.passed_questions}/{result.total_questions})\n")
 for score in result.scores:
     icon = "✓" if score.passed else "✗"
-    print(f"  [{icon}] Q{score.question_index}: {score.rating}/5  {score.justification[:80]}")
+    print(f"  [{icon}] Q{score.question_index}: {score.rating}/10  {score.justification[:80]}")
 
 sys.exit(0 if result.gate == "pass" else 1)
 ```
@@ -667,7 +665,7 @@ test_case = run.test_cases[2]   # pick question index 2
 
 output = my_agent(test_case.query)
 score = tracer.submit_result(run.run_id, test_case.index, output)
-print(f"Q{test_case.index}: {score.rating}/5 - {score.justification}")
+print(f"Q{test_case.index}: {score.rating}/10 - {score.justification}")
 
 # No need to finalize - just abandon the run (it expires automatically)
 ```
@@ -679,8 +677,9 @@ print(f"Q{test_case.index}: {score.rating}/5 - {score.justification}")
 ```python
 client = AgentX(
     api_key="ax_live_xxxxxxxxxxxxxxxx",   # or set AGENTX_API_KEY
-    workspace_id="...",                    # optional workspace override
-    base_url="https://api.agentx.so",     # optional for self-hosted
-    timeout=30,                            # HTTP timeout per request (seconds)
+    workspace_id="...",                    # optional - or set AGENTX_WORKSPACE_ID
+    base_url="...",                        # optional - or set AGENTX_API_BASE_URL;
+                                           # defaults to the hosted API, which is where
+                                           # the CI-runs routes on this page live
 )
 ```

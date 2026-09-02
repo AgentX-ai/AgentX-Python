@@ -14,7 +14,7 @@ Or as a context manager around your own kickoff::
         result = crew.kickoff(inputs={"topic": "AI"})
         span.output = result.raw
 
-Requires: ``pip install agentx[crewai]``
+Requires: ``pip install "agentx-python[crewai]"``
 """
 from __future__ import annotations
 
