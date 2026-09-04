@@ -67,6 +67,22 @@ class CalibrationSummary(dict):
     def review_label_count(self) -> int:
         return int(self.get("reviewLabelCount") or 0)
 
+    @property
+    def alpha(self):
+        """Chance-corrected agreement (Krippendorff's alpha over the binary verdict pair) -
+        the raw ``agreement_rate`` corrected for what a weighted coin would score on this
+        label mix. ``None`` below the server's sample floor (``alphaMinItems`` labeled pairs)
+        or when every label is identical: withheld, never fabricated. 1 = perfect, 0 = no
+        better than chance, negative = systematically opposed."""
+        return self.get("alpha")
+
+    @property
+    def alpha_band(self):
+        """Human-readable band for ``alpha`` (poor/slight/fair/moderate/substantial/
+        near-perfect), computed server-side so every surface reads the same alpha the
+        same way."""
+        return self.get("alphaBand")
+
 
 class MonitorClient:
     """Low-level HTTP client for the Monitor API (``/monitor``). Accessed via
@@ -131,6 +147,11 @@ class MonitorClient:
         # surface that matches the product; evaluations.settings and online_evaluators below
         # remain as its profile-level views.
         self.judge_scorers = JudgeScorersClient(api_key=api_key, base_url=self._api_root())
+        from agentx.monitor.improvement_groups import ImprovementGroupsClient
+
+        # Auto-improve: confirmed production failures -> improvement report -> code fix (via
+        # the AgentX-Eval-Skill auto-improve skill). Self-host only.
+        self.improvement_groups = ImprovementGroupsClient(api_key=api_key, base_url=self._api_root())
         self.profile = MonitorProfileClient(self)
         # Legacy view of an LLM Judge Scorer's online profile - constructed lazily so its
         # DeprecationWarning fires on first USE, not for every client that never touches it.
@@ -317,8 +338,12 @@ class MonitorClient:
         AgentX's own verdicts agreed with real-world ground truth reported later (ops outcomes
         via ``client.outcomes``, end-user downvotes, and human review labels). Returns the
         dashboard's Judge Calibration numbers with these exact keys: ``comparedCount``,
-        ``agreementRate``, ``falsePositiveRate``, ``falseNegativeRate`` (plus
-        ``reportedCount``/``reviewLabelCount``/``noVerdictCount``). Per-scorer calibration
+        ``agreementRate``, ``falsePositiveRate``, ``falseNegativeRate``, ``alpha``,
+        ``alphaBand``, ``alphaMinItems`` (plus
+        ``reportedCount``/``reviewLabelCount``/``noVerdictCount``). ``agreementRate`` is raw
+        agreement and inflates under class imbalance; ``alpha`` is the chance-corrected
+        version (Krippendorff's alpha - null until ``alphaMinItems`` labeled pairs exist).
+        Per-scorer calibration
         lives on ``client.monitor.judge_scorers.calibration(scorer_id)``."""
         return CalibrationSummary(
             self._request(
