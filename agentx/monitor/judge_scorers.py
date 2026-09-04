@@ -258,11 +258,19 @@ class JudgeScorersClient:
 
     def calibration(self, scorer_id: str, window: str = "7d") -> dict:
         """How this scorer's verdicts compare against recorded ground truth (triage
-        corrections, outcomes, end-user votes) over the window."""
+        corrections, outcomes, end-user votes) over the window. Beyond the raw
+        ``agreementRate``, the response carries ``alpha``/``alphaBand`` (chance-corrected
+        agreement - Krippendorff's alpha, null until ``alphaMinItems`` labeled pairs exist)
+        and ``ratingMae`` (mean absolute error against human re-scores, over the
+        ``withCorrectedScore`` pairs that carry a number). ``window`` accepts "24h", "7d",
+        "30d", or "rubric" - only verdicts produced by the CURRENT rubric (since its criteria
+        were last edited, clamped to 30 days), which is what the dashboard's Tune Judge flow
+        uses by default; the response's ``window``/``since`` echo the boundary applied."""
         return self._request("GET", f"/online-evaluators/{self._profile_id(scorer_id)}/calibration?window={window}")
 
     def tune(self, scorer_id: str, window: str = "7d") -> dict:
-        """Propose a rewrite of the rubric from calibration disagreements (LLM call, slow)."""
+        """Propose a rewrite of the rubric from calibration disagreements (LLM call, slow).
+        ``window`` accepts the same values as :meth:`calibration`, including "rubric"."""
         data = self._request(
             "POST", f"/online-evaluators/{self._profile_id(scorer_id)}/tune", json={"window": window}, timeout=300
         )
