@@ -429,6 +429,24 @@ class MonitorClient:
         data = self._request("GET", f"/ingest/sessions/{session_id}/spans", base=self._api_root())
         return data.get("spans", []) if isinstance(data, dict) else data
 
+    def list_session_scores(self, session_id: str) -> List[dict]:
+        """Every session-level verdict on the session, newest first: session-scoped online
+        evaluators (kind ``online-eval:<id>``), session-scoped scorer groups
+        (``scorer-group:<id>``), and legacy coherence rows."""
+        data = self._request(
+            "GET", f"/agent-monitoring/sessions/{session_id}/scores", base=self._api_root()
+        )
+        return data.get("scores", []) if isinstance(data, dict) else data
+
+    def run_session_sweep(self) -> dict:
+        """Run the idle-session sweep once, now - the tick that scores quiet multi-turn
+        sessions with every enabled session-scoped evaluator and scorer group. Production
+        engines run this automatically every minute; the manual trigger exists for demos,
+        tests, and backfills. Returns ``{"judged": n}``."""
+        return self._request(
+            "POST", "/agent-monitoring/session-sweep/run", base=self._api_root(), timeout=300
+        )
+
     # ------------------------------------------------------------------
     # Model portability (self-host): replay a trace's input against other models
     # ------------------------------------------------------------------

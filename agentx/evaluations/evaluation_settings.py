@@ -45,7 +45,7 @@ class EvaluationSettingsBuilder:
             "evaluationCriteria": evaluation_criteria,
         }
         # LLM-as-judge overrides. Omit either to keep the server default (raw prompt template /
-        # OpenAI gpt-5.5, see EVALUATIONS.md). judge_model must be one of
+        # gpt-5.6-luna, see EVALUATIONS.md). judge_model must be one of
         # client.evaluations.list_models() (OpenAI or Anthropic).
         if judge_prompt is not None:
             self._payload["judgePrompt"] = judge_prompt

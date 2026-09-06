@@ -432,7 +432,7 @@ Score strictly: any missing policy detail is a failing response.""",
 ```
 
 - `judge_prompt` is a raw template. `{input}`, `{output}`, and `{expected}` are substituted in; everything else (chain of thought, capabilities/references, criteria, per-question `judge_guideline`, delegation notes) is appended automatically after it, so a custom prompt can restructure the grading philosophy without ever losing that context. Omit it to keep the default rubric.
-- `judge_model` accepts any OpenAI or Anthropic model id (`client.evaluations.list_models(provider="Anthropic")` to discover valid ones). Omit it to keep the default (`gpt-5.5`).
+- `judge_model` accepts any OpenAI or Anthropic model id (`client.evaluations.list_models(provider="Anthropic")` to discover valid ones). Omit it to keep the engine default (`gpt-5.6-luna`).
 - `list_models()` is **hosted platform only**: it calls the hosted API's `/custom-agent-evaluations/models` registry, which the self-host engine does not serve (404, surfaced as `AgentXEvaluationsError`). On self-host, pass any model id your engine's judge keys can reach.
 
 ---
@@ -902,7 +902,7 @@ This run + gate flow is the **self-host CI path**. The separate CI-runs API in [
 report = client.evaluations.run(...).execute(my_agent).finalize().analyze(
     mode="auto",                                    # "auto" | "sync" | "batch"
     quality_mode="quality_first",                   # "quality_first" | "balanced"
-    judges=["gpt-5.5", "claude-opus-4-8"],           # 1-3 model ids; omit for a single gpt-5.5 judge
+    judges=["gpt-5.6-luna", "claude-opus-4-8"],      # 1-3 model ids; omit for the platform default judge
 )
 
 report.summary                 # str | None, overall narrative summary
@@ -933,7 +933,7 @@ This is separate from, and available even without, the numeric `average_rating`/
 |---|---|---|
 | `mode` | `"auto"` (default), `"sync"`, `"batch"` | How item scoring executes server-side; `"auto"` picks based on run size |
 | `quality_mode` | `"quality_first"`, `"balanced"` | `"quality_first"` runs a second judge on every item; `"balanced"` samples based on risk |
-| `judges` | 1-3 model ids | Which LLM(s) score each response. The first always runs; a second confirms, a third only breaks a tie between the first two. Defaults to a single judge, `["gpt-5.5"]`, if omitted. |
+| `judges` | 1-3 model ids | Which LLM(s) score each response. The first always runs; a second confirms, a third only breaks a tie between the first two. Omit to score with a single judge, the engine's platform default model. |
 | `poll_interval` | seconds, default `5.0` | How often to check job status while waiting |
 | `timeout` | seconds, default `1800.0` | Give up waiting after this long (the job keeps running server-side; call `get_report()` later to check on it) |
 

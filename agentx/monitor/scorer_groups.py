@@ -65,7 +65,9 @@ class ScorerGroupsClient:
         online: Optional[Dict[str, Any]] = None,
     ) -> ScorerGroup:
         """``members``: [{"kind": "judge"|"pattern"|"custom", "refId": ..., "weight": 1, "gate": False}].
-        ``online``: {"enabled": True, "sampleRate": 0.1, "alertThreshold": 5, "severity": "medium"}
+        ``online``: {"enabled": True, "sampleRate": 0.1, "alertThreshold": 5, "severity": "medium"}.
+        Add ``"scope": "session", "idleSeconds": 120`` to score whole multi-turn sessions once
+        idle, instead of each sampled trace.
         or None for offline-only."""
         payload: Dict[str, Any] = {"name": name, "members": members}
         if description is not None:

@@ -113,8 +113,8 @@ class EvaluationSettings(BaseModel):
     evaluation_criteria: Optional[str] = Field(default=None, alias="evaluationCriteria")
     # Custom code scorers on this scorer's offline profile - [{ id, name, code, enabled }].
     code_scorers: Optional[List[Dict[str, Any]]] = Field(default=None, alias="codeScorers")
-    # LLM-as-judge overrides. None means "use the server default" (raw prompt template / OpenAI
-    # gpt-5.5). See client.evaluations.settings.builder(judge_prompt=..., judge_model=...).
+    # LLM-as-judge overrides. None means "use the server default" (raw prompt template /
+    # gpt-5.6-luna). See client.evaluations.settings.builder(judge_prompt=..., judge_model=...).
     judge_prompt: Optional[str] = Field(default=None, alias="judgePrompt")
     judge_model: Optional[str] = Field(default=None, alias="judgeModel")
     status: str = "published"

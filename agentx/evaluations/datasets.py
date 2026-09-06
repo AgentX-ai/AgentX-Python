@@ -48,7 +48,7 @@ class DatasetBuilder:
             "questions": [],
         }
         # LLM-as-judge overrides for this dataset's own grading config. Omit either to keep the
-        # server default (raw prompt template / OpenAI gpt-5.5, see EVALUATIONS.md). judge_model
+        # server default (raw prompt template / gpt-5.6-luna, see EVALUATIONS.md). judge_model
         # must be one of client.evaluations.list_models() (OpenAI or Anthropic).
         if judge_prompt is not None:
             self._payload["judgePrompt"] = judge_prompt
