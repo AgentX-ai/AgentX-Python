@@ -75,6 +75,9 @@ class Dataset(BaseModel):
     rejection_criteria: Optional[str] = Field(default=None, alias="rejectionCriteria")
     evaluation_criteria: Optional[str] = Field(default=None, alias="evaluationCriteria")
     questions: List[DatasetQuestion] = Field(default_factory=list)
+    # Custom code scorers attached to this dataset - [{ id, name, code, enabled }]. Retrievable,
+    # so a fetched dataset round-trips them (import_dataset copies them to the new dataset).
+    code_scorers: Optional[List[Dict[str, Any]]] = Field(default=None, alias="codeScorers")
     status: str = "published"
     version_id: Optional[str] = Field(default=None, alias="versionId")
     # Sovereignty & Portability - models selected to compare on this dataset.
@@ -108,6 +111,8 @@ class EvaluationSettings(BaseModel):
     acceptance_criteria: Optional[str] = Field(default=None, alias="acceptanceCriteria")
     rejection_criteria: Optional[str] = Field(default=None, alias="rejectionCriteria")
     evaluation_criteria: Optional[str] = Field(default=None, alias="evaluationCriteria")
+    # Custom code scorers on this scorer's offline profile - [{ id, name, code, enabled }].
+    code_scorers: Optional[List[Dict[str, Any]]] = Field(default=None, alias="codeScorers")
     # LLM-as-judge overrides. None means "use the server default" (raw prompt template / OpenAI
     # gpt-5.5). See client.evaluations.settings.builder(judge_prompt=..., judge_model=...).
     judge_prompt: Optional[str] = Field(default=None, alias="judgePrompt")
@@ -435,6 +440,8 @@ class RunResultRow(BaseModel):
     bleu_score: Optional[float] = Field(default=None, alias="bleuScore")
     rouge_score: Optional[float] = Field(default=None, alias="rougeScore")
     code_scorer_results: Optional[List[Dict[str, Any]]] = Field(default=None, alias="codeScorerResults")
+    # Verdicts from the run's ADDITIONAL judge scorers: [{scorerId, name, rating, justification}].
+    judge_scorer_results: Optional[List[Dict[str, Any]]] = Field(default=None, alias="judgeScorerResults")
     raw: Dict[str, Any] = Field(default_factory=dict)
 
     class Config:

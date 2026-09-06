@@ -147,6 +147,11 @@ class MonitorClient:
         # surface that matches the product; evaluations.settings and online_evaluators below
         # remain as its profile-level views.
         self.judge_scorers = JudgeScorersClient(api_key=api_key, base_url=self._api_root())
+        from agentx.monitor.scorer_groups import ScorerGroupsClient
+
+        # Scorer groups: mixed-kind scorers composed into one 0-10 score (weights + must-pass
+        # gates) - a group grades dataset runs (scorer_group_id) and, when online, live traffic.
+        self.scorer_groups = ScorerGroupsClient(api_key=api_key, base_url=self._api_root())
         from agentx.monitor.improvement_groups import ImprovementGroupsClient
 
         # Auto-improve: confirmed production failures -> improvement report -> code fix (via

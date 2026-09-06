@@ -314,10 +314,15 @@ class EvaluationsClient:
         scorer_id: Optional[str] = None,
         evaluation_settings_id: Optional[str] = None,
         split: Optional[str] = None,
+        additional_scorer_ids: Optional[List[str]] = None,
+        scorer_group_id: Optional[str] = None,
     ) -> EvaluationRun:
         """``scorer_id`` names the LLM Judge Scorer grading this run (its id doubles as the
         wire's ``evaluationSettingsId``). ``evaluation_settings_id`` is the pre-consolidation
-        alias and keeps working. ``split`` records the named case subset this run covers."""
+        alias and keeps working. ``split`` records the named case subset this run covers.
+        ``additional_scorer_ids`` (self-host): extra judge scorers that each pass their own
+        verdict on every result from the same single agent execution - verdicts land in each
+        result row's ``judgeScorerResults`` and the run's ``scorerBreakdown``."""
         from agentx.version import VERSION
 
         grader_id = _resolve_scorer_id(scorer_id, evaluation_settings_id)
@@ -335,6 +340,12 @@ class EvaluationsClient:
         }
         if grader_id:
             payload["evaluationSettingsId"] = grader_id
+        if additional_scorer_ids:
+            payload["additionalScorerIds"] = additional_scorer_ids
+        # Scorer group grading (self-host): the group's weighted 0-10 aggregate fills the rating
+        # column and member verdicts land per row. Mutually exclusive with scorer_id (group wins).
+        if scorer_group_id:
+            payload["scorerGroupId"] = scorer_group_id
         if split:
             payload["split"] = split
         data = self._request("POST", "/runs", json=self._with_workspace(payload))
@@ -372,6 +383,7 @@ class EvaluationsClient:
         tolerance: Optional[float] = None,
         record: bool = True,
         caller: Optional[str] = "sdk",
+        scorer: Optional[str] = None,
     ) -> Dict[str, Any]:
         # CI gate (self-host): pass/fail a finalized run against an absolute rating floor and/or
         # the dataset's previous completed run. Recorded into gate history by default (the
@@ -389,6 +401,11 @@ class EvaluationsClient:
             params["record"] = "true"
             if caller:
                 params["caller"] = caller
+        # Multi-judge runs (self-host): gate a named additional scorer (id or name, e.g.
+        # scorer="Safety") instead of the primary - failUnder/noRegression then use that
+        # scorer's own per-result verdicts. Unknown names are a hard 400 from the engine.
+        if scorer:
+            params["scorer"] = scorer
         return self._request("GET", f"/runs/{run_id}/gate", params=params)
 
     def analyze_run(
