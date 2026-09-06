@@ -63,9 +63,6 @@ _ANALYSIS_LEVEL_LABELS = {
     "l4_final_reduce": "writing final report",
 }
 
-_DEFAULT_JUDGE_MODEL = "gpt-5.5"
-
-
 class GateResult:
     """Wire result of the CI gate (GET /runs/:id/gate) with attribute access for the fields a
     CI script actually branches on."""
@@ -456,16 +453,16 @@ class EvaluationRunContext:
         Args:
             mode: "auto" (default), "sync", or "batch" - how item scoring executes server-side.
             quality_mode: "quality_first" or "balanced" - how many items get a second/third judge.
-            judges: 1-3 model ids, e.g. ``["gpt-5.5", "claude-opus-4-8"]``. Defaults to a single
-                judge, ``["gpt-5.5"]``, rather than the dashboard's 3-judge default - SDK runs are
-                typically lighter-weight, quick-start evaluations.
+            judges: 1-3 model ids from ``client.evaluations.list_models()``, e.g.
+                ``["gpt-5.6-luna", "claude-opus-4-8"]``. Omit to let the engine score with its
+                platform default model (a single judge, rather than the dashboard's 3-judge
+                default - SDK runs are typically lighter-weight, quick-start evaluations).
             poll_interval: seconds between status checks while waiting.
             timeout: give up waiting after this many seconds (the job keeps running server-side;
                 call ``get_report()`` later to check on it).
         """
         if judges is not None and not (1 <= len(judges) <= 3):
             raise ValueError("judges must contain 1-3 model ids")
-        resolved_judges = judges if judges is not None else [_DEFAULT_JUDGE_MODEL]
 
         _say()
         with Spinner("Analyzing - AI is reviewing your results") as spinner:
@@ -474,7 +471,7 @@ class EvaluationRunContext:
                     self._run.run_id,
                     mode=mode,
                     quality_mode=quality_mode,
-                    judges=resolved_judges,
+                    judges=judges,
                 )
                 deadline = time.monotonic() + timeout
                 status = self._client.get_analysis_status(self._run.run_id)

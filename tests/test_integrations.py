@@ -599,7 +599,9 @@ def test_crewai_captures_real_per_task_timing_via_event_bus():
     durations are provably unequal — the old "divide latency evenly across
     tasks" approximation would have reported them as identical.
     """
-    crewai = pytest.importorskip("crewai")
+    # exc_type=Exception: on older Pythons crewai can raise TypeError (PEP 604 syntax) at
+    # import time, and a broken optional integration should skip this test, not fail it.
+    crewai = pytest.importorskip("crewai", exc_type=Exception)
     from crewai.events.event_bus import crewai_event_bus
     from crewai.events.types.task_events import TaskCompletedEvent, TaskStartedEvent
     from crewai.tasks.task_output import TaskOutput

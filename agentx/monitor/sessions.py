@@ -19,3 +19,15 @@ class MonitorSessionClient:
     def spans(self, session_id: str) -> List[dict]:
         """Every span in the session (roots and children), oldest first."""
         return self._client.list_session_spans(session_id)
+
+    def scores(self, session_id: str) -> List[dict]:
+        """Session-level verdicts, newest first. ``kind`` says who scored: a session-scoped
+        online evaluator (``online-eval:<id>``) or a session-scoped scorer group
+        (``scorer-group:<id>``)."""
+        return self._client.list_session_scores(session_id)
+
+    def run_sweep(self) -> dict:
+        """Trigger the idle-session sweep once (normally automatic, every minute) - scores
+        idle multi-turn sessions with every enabled session-scoped evaluator and scorer
+        group. Returns ``{"judged": n}``."""
+        return self._client.run_session_sweep()
