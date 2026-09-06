@@ -268,3 +268,34 @@ def test_validate_and_publish_send_criteria_at_top_level(monkeypatch):
     assert captured["validate"]["window"] == "24h"
     assert "criteria" not in captured["validate"]
     assert captured["publish"]["acceptanceCriteria"] == "a"
+
+
+def test_code_scorers_are_retrievable_from_the_wire_object():
+    """The wire rows may lack ids (SDK-created scorers) - retrieval must hand them back as-is."""
+    from agentx.monitor.judge_scorers import JudgeScorer
+
+    scorer = JudgeScorer(
+        {
+            "_id": "s1",
+            "name": "Blend",
+            "offline": {"codeScorers": [{"name": "Final score", "code": "return 1;", "enabled": True}]},
+        }
+    )
+    assert scorer.code_scorers == [{"name": "Final score", "code": "return 1;", "enabled": True}]
+    # And an offline profile without any stays an empty list, not a KeyError.
+    assert JudgeScorer({"_id": "s2", "name": "Plain", "offline": {}}).code_scorers == []
+
+
+def test_dataset_model_round_trips_code_scorers():
+    """extra="ignore" used to silently drop codeScorers on read - import_dataset lost them."""
+    from agentx.evaluations.models import Dataset
+
+    wire = {
+        "_id": "d1",
+        "name": "Guarded",
+        "questions": [],
+        "codeScorers": [{"id": "cs1", "name": "gate", "code": "return 0;", "enabled": True}],
+    }
+    parsed = Dataset(**wire)
+    assert parsed.code_scorers == wire["codeScorers"]
+    assert parsed.model_dump(by_alias=True)["codeScorers"] == wire["codeScorers"]

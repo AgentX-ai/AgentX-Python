@@ -37,6 +37,11 @@ class JudgeScorer(dict):
         return self.get("offline", {})
 
     @property
+    def code_scorers(self) -> List[Dict[str, Any]]:
+        """Custom code scorers on the offline profile - [{ id, name, code, enabled }]."""
+        return list(self.offline.get("codeScorers") or [])
+
+    @property
     def online(self) -> Optional[Dict[str, Any]]:
         return self.get("online")
 

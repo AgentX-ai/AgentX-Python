@@ -77,6 +77,9 @@ class GateResult:
         self.baseline_average: Optional[float] = data.get("baselineAverage")
         self.baseline_run_id: Optional[str] = data.get("baselineRunId")
         self.checks: List[Dict[str, Any]] = data.get("checks", [])
+        # Multi-judge runs: {"id", "name"} of the additional scorer being gated when the gate
+        # ran with scorer=..., None when gating the primary.
+        self.gated_scorer: Optional[Dict[str, Any]] = data.get("gatedScorer")
 
     @property
     def exit_code(self) -> int:
@@ -354,13 +357,16 @@ class EvaluationRunContext:
         no_regression: bool = False,
         tolerance: Optional[float] = None,
         caller: str = "sdk",
+        scorer: Optional[str] = None,
     ) -> "GateResult":
         """CI gate (self-host): pass/fail this finalized run so a CI job can block a merge.
 
         ``fail_under`` fails the gate when the run's average rating is below the floor;
         ``no_regression=True`` fails it when the average dropped more than ``tolerance``
         (default 0.5, judge scores are noisy) below the dataset's previous completed run.
-        At least one check is required. Prints a CI-log-friendly verdict and returns a
+        At least one check is required. On a multi-judge run, ``scorer`` (an additional
+        scorer's id or name, e.g. ``scorer="Safety"``) gates that scorer's own average
+        instead of the primary's - "fail if Safety is low even when the average looks fine". Prints a CI-log-friendly verdict and returns a
         :class:`GateResult` - the caller decides the exit code::
 
             report = client.evaluations.run(...).execute(my_agent).finalize()
@@ -374,6 +380,7 @@ class EvaluationRunContext:
             no_regression=no_regression,
             tolerance=tolerance,
             caller=caller,
+            scorer=scorer,
         )
         result = GateResult(data)
         _say()
@@ -589,6 +596,7 @@ class EvaluationsRunner:
         tolerance: Optional[float] = None,
         record: bool = True,
         caller: Optional[str] = "sdk",
+        scorer: Optional[str] = None,
     ) -> GateResult:
         """CI-gate any finalized run by id - the standalone form of
         ``EvaluationRunContext.gate()``, for gating a run created elsewhere or
@@ -603,6 +611,7 @@ class EvaluationsRunner:
                 tolerance=tolerance,
                 record=record,
                 caller=caller,
+                scorer=scorer,
             )
         )
 
@@ -613,6 +622,8 @@ class EvaluationsRunner:
         scorer_id: Optional[str] = None,
         evaluation_settings_id: Optional[str] = None,
         split: Optional[str] = None,
+        additional_scorer_ids: Optional[List[str]] = None,
+        scorer_group_id: Optional[str] = None,
     ) -> EvaluationRunContext:
         """Start a run of ``dataset_id`` against ``subject``. Pass ``scorer_id`` (an LLM Judge
         Scorer's id, e.g. from ``client.monitor.judge_scorers``) to grade with a specific
@@ -632,7 +643,14 @@ class EvaluationsRunner:
         evaluation_settings = (
             self._client.get_evaluation_settings(grader_id) if grader_id else None
         )
-        run = self._client.init_run(dataset_id, subject, scorer_id=grader_id, split=split)
+        run = self._client.init_run(
+            dataset_id,
+            subject,
+            scorer_id=grader_id,
+            split=split,
+            additional_scorer_ids=additional_scorer_ids,
+            scorer_group_id=scorer_group_id,
+        )
         case_count = (
             sum(1 for q in dataset.questions if split in (q.main_question.splits or []))
             if split
