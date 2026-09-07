@@ -217,6 +217,12 @@ def test_the_fallback_request_gets_the_long_analysis_timeout():
     assert kwargs["timeout"] > 60, "a synchronous judge pass needs more than the 30s default"
     assert kwargs["json"]["judges"] == [{"model": "gpt-5.6-luna"}]
 
+    # judges=None must OMIT the key - the engine then scores with its platform default model;
+    # injecting a hosted-only default (the old "gpt-5.5") produced uncallable judges.
+    client.analyze_run(RUN)
+    _, _, kwargs = session.calls[-1]
+    assert "judges" not in kwargs["json"]
+
 
 # ---------------------------------------------------------------------------
 # Only a 404 means "wrong engine"

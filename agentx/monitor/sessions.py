@@ -22,8 +22,9 @@ class MonitorSessionClient:
 
     def scores(self, session_id: str) -> List[dict]:
         """Session-level verdicts, newest first. ``kind`` says who scored: a session-scoped
-        online evaluator (``online-eval:<id>``) or a session-scoped scorer group
-        (``scorer-group:<id>``)."""
+        online evaluator (``online-eval:<id>``), a session-scoped scorer group
+        (``scorer-group:<id>``), or legacy ``"coherence"`` rows written before the Session
+        Baseline Judge existed - branch defensively on unknown kinds."""
         return self._client.list_session_scores(session_id)
 
     def run_sweep(self) -> dict:

@@ -114,6 +114,10 @@ class MonitorPatternClient:
             agent_ids=agent_ids,
         )
 
+    def delete(self, pattern_id: str) -> None:
+        """Delete a pattern. Its historical signals remain as history."""
+        self._client._request("DELETE", f"/agent-monitoring/patterns/{pattern_id}", base=self._client._api_root())
+
     def get(self, pattern_id: str) -> MonitorPattern:
         return self._client.get_pattern(pattern_id)
 

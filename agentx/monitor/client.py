@@ -187,10 +187,17 @@ class MonitorClient:
             return self._base_url[: -len(suffix)]
         return self._base_url
 
-    def _request(self, method: str, path: str, timeout: int = 30, base: Optional[str] = None, **kwargs) -> Any:
+    def _request(
+        self, method: str, path: str, timeout: int = 30, base: Optional[str] = None, retry: bool = True, **kwargs
+    ) -> Any:
+        # retry=False for non-idempotent judge-spending POSTs (sweep, coherence, portability,
+        # tuning): a client-side timeout must not fire the same LLM-billing work a second time
+        # while the first invocation is still running server-side. Same precedent as
+        # EvaluationsClient._request / analyze_run.
         url = f"{base or self._base_url}{path}"
         last_exc: Optional[Exception] = None
-        for attempt, wait in enumerate([0.0] + _RETRY_BACKOFF):
+        schedule = [0.0] + _RETRY_BACKOFF if retry else [0.0]
+        for attempt, wait in enumerate(schedule):
             if wait:
                 time.sleep(wait)
             try:
@@ -204,7 +211,7 @@ class MonitorClient:
                 raise AgentXAuthError("Invalid or missing API key")
             if resp.status_code == 422:
                 raise AgentXValidationError(resp.text)
-            if resp.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES - 1:
+            if retry and resp.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES - 1:
                 logger.debug(
                     "Retryable status %d (attempt %d)", resp.status_code, attempt + 1
                 )
@@ -421,7 +428,7 @@ class MonitorClient:
         button. Raises AgentXMonitorError if the engine has no judge key configured."""
         data = self._request(
             "POST", f"/agent-monitoring/sessions/{session_id}/coherence-check",
-            base=self._api_root(), timeout=180,
+            base=self._api_root(), timeout=180, retry=False,
         )
         return data.get("score", data) if isinstance(data, dict) else data
 
@@ -444,7 +451,7 @@ class MonitorClient:
         engines run this automatically every minute; the manual trigger exists for demos,
         tests, and backfills. Returns ``{"judged": n}``."""
         return self._request(
-            "POST", "/agent-monitoring/session-sweep/run", base=self._api_root(), timeout=300
+            "POST", "/agent-monitoring/session-sweep/run", base=self._api_root(), timeout=300, retry=False
         )
 
     # ------------------------------------------------------------------
@@ -457,7 +464,7 @@ class MonitorClient:
         plus judging, so expect tens of seconds."""
         return self._request(
             "POST", f"/agent-monitoring/traces/{trace_id}/portability",
-            base=self._api_root(), json={"modelIds": model_ids}, timeout=300,
+            base=self._api_root(), json={"modelIds": model_ids}, timeout=300, retry=False,
         )
 
     # ------------------------------------------------------------------
