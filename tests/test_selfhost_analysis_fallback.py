@@ -210,12 +210,12 @@ def test_the_fallback_request_gets_the_long_analysis_timeout():
         {("POST", f"{API_ROOT}/evaluate/analyze/{RUN}"): FakeResponse(200, {"status": "completed"})}
     )
 
-    client.analyze_run(RUN, judges=["gpt-5.5"])
+    client.analyze_run(RUN, judges=["gpt-5.6-luna"])
 
     method, url, kwargs = session.calls[-1]
     assert url == f"{API_ROOT}/evaluate/analyze/{RUN}"
     assert kwargs["timeout"] > 60, "a synchronous judge pass needs more than the 30s default"
-    assert kwargs["json"]["judges"] == [{"model": "gpt-5.5"}]
+    assert kwargs["json"]["judges"] == [{"model": "gpt-5.6-luna"}]
 
 
 # ---------------------------------------------------------------------------
