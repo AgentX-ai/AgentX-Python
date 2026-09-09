@@ -581,6 +581,14 @@ class _RetrievalRecorder:
         self.output: Any = None
 
 
+class _MemoryOpRecorder:
+    """Handle yielded by ``Tracer.trace_memory()`` - set ``output`` (what was recalled or
+    stored) inside the block."""
+
+    def __init__(self) -> None:
+        self.output: Any = None
+
+
 class _ToolCallRecorder:
     """Handle yielded by ``Tracer.trace_tool_call()`` - set ``output`` inside the block.
     ``success``/``error`` may be set manually; an exception escaping the block sets them
@@ -831,6 +839,66 @@ class Tracer:
             metadata={"kind": "retrieval"},
             span_kind="retrieval",
         )
+
+    def record_memory(
+        self,
+        name: str = "Memory",
+        *,
+        operation: Optional[str] = None,
+        query: Optional[str] = None,
+        output: Any = None,
+        duration_ms: Optional[float] = None,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
+    ) -> None:
+        """
+        Manually record a long-term-memory operation (a Mem0/Zep/Letta-style recall or store)
+        as a ``span_kind="memory"`` child span of the active span. ``operation`` is free text -
+        conventionally ``"read"`` or ``"write"`` - carried in the span's metadata; the kind
+        itself stays one value so dashboards and scorers can select all memory activity at once.
+        Deliberately NOT a retrieval: retrieval spans feed the RAG judges' ``{context}``
+        (knowledge grounding), while memory is recalled state - see the engine's spanKind.ts.
+        """
+        active_span = self.current_span
+        if active_span is None:
+            return
+        active_span.child_span(
+            name,
+            start_time=start_time,
+            end_time=end_time,
+            duration_ms=duration_ms,
+            input=query,
+            output=output,
+            metadata={"kind": "memory", **({"operation": operation} if operation else {})},
+            span_kind="memory",
+        )
+
+    @contextmanager
+    def trace_memory(
+        self, name: str = "Memory", *, operation: Optional[str] = None, query: Optional[str] = None
+    ) -> Iterator["_MemoryOpRecorder"]:
+        """
+        Context manager that times a memory operation and records it via
+        :meth:`record_memory` on exit::
+
+            with tracer.trace_memory("user prefs", operation="read", query=user_id) as m:
+                m.output = memory.search(user_id, question)
+        """
+        start_t = time.time()
+        recorder = _MemoryOpRecorder()
+        try:
+            yield recorder
+        finally:
+            end_t = time.time()
+            self.record_memory(
+                name,
+                operation=operation,
+                query=query,
+                output=recorder.output,
+                duration_ms=(end_t - start_t) * 1000,
+                start_time=start_t,
+                end_time=end_t,
+            )
 
     @contextmanager
     def trace_retrieval(self, name: str = "Retrieval", *, query: Optional[str] = None) -> Iterator["_RetrievalRecorder"]:

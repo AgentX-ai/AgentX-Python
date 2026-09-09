@@ -594,6 +594,22 @@ def test_trace_tool_call_emits_real_child_span():
     assert root["tool_calls"][0]["output"] == "digital purchases are final"
 
 
+def test_trace_memory_emits_a_memory_kind_child_span():
+    tracer = make_tracer()
+    with tracer.trace("agent") as span:
+        with tracer.trace_memory("user prefs", operation="read", query="u-42") as m:
+            m.output = ["prefers window seats"]
+
+    wires = enqueued_wires(tracer)
+    child = wires[0]
+    assert child["name"] == "user prefs"
+    assert child["span_kind"] == "memory"
+    assert child["metadata"]["kind"] == "memory"
+    assert child["metadata"]["operation"] == "read"
+    assert child["input"] == "u-42"
+    assert child["output"] == ["prefers window seats"]
+
+
 def test_trace_retrieval_emits_real_child_span():
     tracer = make_tracer()
     with tracer.trace("agent") as span:
