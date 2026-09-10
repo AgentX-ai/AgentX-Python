@@ -127,6 +127,16 @@ class AgentXCrewObserver:
         except ImportError:
             return task_timings, lambda: None
 
+        # Double-instrumentation guard (bus-keyed latch, the same idea as the
+        # other integrations' _agentx_patched flag): the event bus is a global
+        # singleton, so a notebook re-run or an overlapping kickoff that
+        # already has AgentX listeners registered would otherwise get a second
+        # set and duplicate every task span. When already attached, this
+        # kickoff just falls back to the evenly-divided timing approximation.
+        if getattr(crewai_event_bus, "_agentx_attached", False):
+            return task_timings, lambda: None
+        crewai_event_bus._agentx_attached = True
+
         def on_task_started(source: Any, event: Any) -> None:
             task_id = getattr(event, "task_id", None)
             if task_id is None:
@@ -154,9 +164,14 @@ class AgentXCrewObserver:
         crewai_event_bus.on(TaskFailedEvent)(on_task_failed)
 
         def unregister() -> None:
-            crewai_event_bus.off(TaskStartedEvent, on_task_started)
-            crewai_event_bus.off(TaskCompletedEvent, on_task_completed)
-            crewai_event_bus.off(TaskFailedEvent, on_task_failed)
+            try:
+                crewai_event_bus.off(TaskStartedEvent, on_task_started)
+                crewai_event_bus.off(TaskCompletedEvent, on_task_completed)
+                crewai_event_bus.off(TaskFailedEvent, on_task_failed)
+            finally:
+                # Clear the latch even if .off() raises, so a later kickoff
+                # can re-attach instead of being locked out forever.
+                crewai_event_bus._agentx_attached = False
 
         return task_timings, unregister
 

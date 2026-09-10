@@ -4,6 +4,7 @@ import asyncio
 import concurrent.futures
 import functools
 import inspect
+import contextvars
 import threading
 import time
 from contextlib import contextmanager
@@ -70,7 +71,7 @@ class _TraceSpan:
         model: Optional[str] = None,
         session_id: Optional[str] = None,
         sync: bool = False,
-        monitor: bool = False,
+        monitor: Optional[bool] = None,
         pattern_ids: Optional[List[str]] = None,
         agent_id: Optional[str] = None,
         span_kind: Optional[str] = None,
@@ -104,6 +105,11 @@ class _TraceSpan:
         # __enter__/_merge_child_run/child_span.
         self._span_id = uuid4().hex
         self._parent_span_id: Optional[str] = None
+        # Set on first __enter__ - a re-entered span object regenerates its
+        # span_id there so each `with span:` re-use sends a fresh identity
+        # (the server dedupes on span_id, so a reused id would silently
+        # collapse the second run into the first).
+        self._entered = False
         # Numbers auto-named "LLM Call N"/"Retrieval N" child spans - see _merge_child_run.
         self._child_span_count = 0
         # Monitor: True checks this trace against patterns immediately on ingest, no dashboard
@@ -145,6 +151,13 @@ class _TraceSpan:
     # ------------------------------------------------------------------
 
     def __enter__(self) -> "_TraceSpan":
+        if self._entered:
+            # Re-using one span object for another `with` block: regenerate the
+            # identity so this run sends its own span row instead of being
+            # deduped server-side against the first entry's span_id.
+            self._span_id = uuid4().hex
+            self._trace_id = None
+        self._entered = True
         self._start = time.time()
         # Resolve real span hierarchy against whatever's currently active on this thread, before
         # pushing self (so `parent` here is the actual enclosing span, not self).
@@ -627,36 +640,39 @@ class Tracer:
         self._client = ingest_client
         self._pending_tool_calls: List[Dict[str, Any]] = []
         self._pending_retrievals: List[Dict[str, Any]] = []
-        self._local = threading.local()
+        # Context-local, not thread-local: two coroutines interleaving on one event loop each
+        # get their own asyncio task Context, so concurrent `async def` agents no longer
+        # mis-parent each other's spans (a thread-local stack merged them into one fabricated
+        # tree). Bare threads keep the old behavior - each starts an empty Context. Stored
+        # immutably (tuple, copy-on-write) so a child task's pushes never leak into siblings.
+        self._span_stack_var: "contextvars.ContextVar[tuple]" = contextvars.ContextVar(
+            f"agentx_span_stack_{id(self)}", default=()
+        )
 
     # ------------------------------------------------------------------
-    # Active-span stack (per thread) - lets auto-instrumented integrations
+    # Active-span stack (per context) - lets auto-instrumented integrations
     # (e.g. patch_anthropic_client) detect they're running inside a
     # `with tracer.trace(...)` block and attach to it as an LLM-call step
     # instead of sending their own independent trace.
     # ------------------------------------------------------------------
 
-    def _get_span_stack(self) -> List["_TraceSpan"]:
-        stack = getattr(self._local, "span_stack", None)
-        if stack is None:
-            stack = []
-            self._local.span_stack = stack
-        return stack
+    def _get_span_stack(self) -> tuple:
+        return self._span_stack_var.get()
 
     def _push_active_span(self, span: "_TraceSpan") -> None:
-        self._get_span_stack().append(span)
+        self._span_stack_var.set(self._span_stack_var.get() + (span,))
 
     def _pop_active_span(self, span: "_TraceSpan") -> None:
-        stack = self._get_span_stack()
+        stack = self._span_stack_var.get()
         if stack and stack[-1] is span:
-            stack.pop()
+            self._span_stack_var.set(stack[:-1])
         elif span in stack:
-            stack.remove(span)
+            self._span_stack_var.set(tuple(item for item in stack if item is not span))
 
     @property
     def current_span(self) -> Optional["_TraceSpan"]:
-        """The innermost ``with tracer.trace(...)`` span active on this thread, if any."""
-        stack = self._get_span_stack()
+        """The innermost ``with tracer.trace(...)`` span active in this context, if any."""
+        stack = self._span_stack_var.get()
         return stack[-1] if stack else None
 
     @contextmanager
@@ -861,6 +877,24 @@ class Tracer:
         """
         active_span = self.current_span
         if active_span is None:
+            # Same posture as record_retrieval: queue and merge into the next trace this
+            # tracer sends (the patched-client flow where the memory op runs just before a
+            # standalone completions call) instead of silently dropping the record.
+            latency_ms = (
+                int(duration_ms)
+                if duration_ms is not None
+                else int((end_time - start_time) * 1000)
+                if start_time is not None and end_time is not None
+                else None
+            )
+            self._pending_retrievals.append({
+                "name": name,
+                "query": _safe_serialize(query) if query is not None else None,
+                "output": _safe_serialize(output) if output is not None else None,
+                "duration_ms": latency_ms,
+                "kind": "memory",
+                **({"operation": operation} if operation else {}),
+            })
             return
         active_span.child_span(
             name,
@@ -886,10 +920,18 @@ class Tracer:
         """
         start_t = time.time()
         recorder = _MemoryOpRecorder()
+        error: Optional[str] = None
         try:
             yield recorder
+        except Exception as exc:
+            # A memory op that raised must not be recorded as a clean span (trace_tool_call
+            # precedent) - fold the error into the output and re-raise.
+            error = str(exc)
+            raise
         finally:
             end_t = time.time()
+            if error is not None and recorder.output is None:
+                recorder.output = f"ERROR: {error}"
             self.record_memory(
                 name,
                 operation=operation,

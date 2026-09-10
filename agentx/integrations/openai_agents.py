@@ -16,6 +16,8 @@ Requires: ``pip install "agentx-python[openai-agents]"``
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import time
+from uuid import uuid4
 from typing import Any, Dict, List, Optional
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
@@ -145,7 +147,15 @@ class AgentXTracingProcessor:
             metadata=self._metadata,
             session_id=self._session_id,
         )
-        root_span.__enter__()
+        # Deliberately NOT root_span.__enter__(): enter pushes onto the CALLING thread's
+        # active-span stack, but the Agents SDK fires on_trace_end on whatever thread it
+        # likes - the pop then no-ops there, the entry never drains, and every later
+        # unrelated trace on this thread is mis-filed as a child of this dead run (and
+        # inherits its session). Start time and session are set by hand instead; on_span_end
+        # already parents via child_span() on this exact reference, no stack involved.
+        root_span._start = time.time()
+        if root_span._session_id is None:
+            root_span._session_id = f"sdk_{uuid4().hex}"
         self._spans[trace_id] = {
             "root_span": root_span,
             "llm_call_count": 0,
@@ -173,6 +183,9 @@ class AgentXTracingProcessor:
         root_span._output_tokens = state["output_tokens"]
         if state.get("error"):
             root_span.set_error(state["error"])
+        # Close WITHOUT touching the thread-local stack (see on_trace_start). __exit__'s only
+        # stack interaction is the pop, which is a no-op for a never-pushed span - safe to call
+        # directly for its send/flush behavior.
         root_span.__exit__(None, None, None)
 
     def on_span_start(self, span: Any) -> None:

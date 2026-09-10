@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional
+
 from agentx.evaluations.models import Report
 from agentx.evaluations._term import (
     bold,
@@ -21,14 +23,14 @@ _RATING_ICONS = {"high": "●", "medium": "◑", "low": "○"}
 _PRI_COLORS = {"high": red, "medium": yellow, "low": dim}
 
 
-def _rating_badge(rating: str | None) -> str:
+def _rating_badge(rating: Optional[str]) -> str:
     icon = _RATING_ICONS.get(rating or "", "·")
     color = _RATING_COLORS.get(rating or "", dim)
     label = (rating or "").upper()
     return color(f"{icon} {label}") if label else dim(icon)
 
 
-def _section(title: str, rating: str | None = None) -> None:
+def _section(title: str, rating: Optional[str] = None) -> None:
     badge = f"  {_rating_badge(rating)}" if rating else ""
     print(f"\n{bold(title)}{badge}")
     print(dim(_THIN))

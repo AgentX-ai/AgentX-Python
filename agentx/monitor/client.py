@@ -28,7 +28,12 @@ _RETRY_BACKOFF = [1.0, 2.0, 4.0]
 
 
 class AgentXMonitorError(Exception):
-    pass
+    """``status_code`` carries the HTTP status when the error came from a server
+    response; it is ``None`` for transport-level failures and retry exhaustion."""
+
+    def __init__(self, message: str, status_code: Optional[int] = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class AgentXAuthError(AgentXMonitorError):
@@ -208,17 +213,17 @@ class MonitorClient:
                 continue
 
             if resp.status_code == 401:
-                raise AgentXAuthError("Invalid or missing API key")
+                raise AgentXAuthError("Invalid or missing API key", status_code=401)
             if resp.status_code == 422:
-                raise AgentXValidationError(resp.text)
+                raise AgentXValidationError(resp.text, status_code=422)
             if retry and resp.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES - 1:
                 logger.debug(
                     "Retryable status %d (attempt %d)", resp.status_code, attempt + 1
                 )
-                last_exc = AgentXMonitorError(f"HTTP {resp.status_code}")
+                last_exc = AgentXMonitorError(f"HTTP {resp.status_code}", status_code=resp.status_code)
                 continue
             if not resp.ok:
-                raise AgentXMonitorError(f"HTTP {resp.status_code}: {resp.text}")
+                raise AgentXMonitorError(f"HTTP {resp.status_code}: {resp.text}", status_code=resp.status_code)
             try:
                 return resp.json()
             except Exception:
@@ -481,7 +486,7 @@ class MonitorClient:
     def propose_online_evaluator_tuning(self, evaluator_id: str, window: str = "7d") -> dict:
         data = self._request(
             "POST", f"/agent-monitoring/online-evaluators/{evaluator_id}/tune",
-            base=self._api_root(), json={"window": window}, timeout=300,
+            base=self._api_root(), json={"window": window}, timeout=300, retry=False,
         )
         return data.get("proposal", data) if isinstance(data, dict) else data
 
@@ -490,7 +495,7 @@ class MonitorClient:
     ) -> dict:
         return self._request(
             "POST", f"/agent-monitoring/online-evaluators/{evaluator_id}/tune/validate",
-            base=self._api_root(), json={**criteria, "window": window}, timeout=600,
+            base=self._api_root(), json={**criteria, "window": window}, timeout=600, retry=False,
         )
 
     def publish_online_evaluator_tuning(
@@ -505,7 +510,7 @@ class MonitorClient:
             payload["force"] = True
         return self._request(
             "POST", f"/agent-monitoring/online-evaluators/{evaluator_id}/tune/publish",
-            base=self._api_root(), json=payload, timeout=60,
+            base=self._api_root(), json=payload, timeout=60, retry=False,
         )
 
     def update_profile(self, agent_id: str, payload: dict) -> MonitorProfile:

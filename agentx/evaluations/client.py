@@ -348,7 +348,9 @@ class EvaluationsClient:
             payload["scorerGroupId"] = scorer_group_id
         if split:
             payload["split"] = split
-        data = self._request("POST", "/runs", json=self._with_workspace(payload))
+        # Server-side write: a timeout after the run row was created would be
+        # retried into a duplicate run, so no transport retry.
+        data = self._request("POST", "/runs", json=self._with_workspace(payload), retry=False)
         return EvaluationRun(**data)
 
     def append_results(
@@ -432,8 +434,12 @@ class EvaluationsClient:
 
         if not self._analysis_on_dashboard_router:
             try:
+                # The self-host route runs the analysis SYNCHRONOUSLY (engine
+                # routes/evaluations.ts) - a short timeout with retries re-billed the whole
+                # multi-judge analysis up to 4x while the first was still running. Full
+                # analysis timeout, no transport retry.
                 return self._request(
-                    "POST", f"/runs/{run_id}/analyze", json=payload, timeout=30
+                    "POST", f"/runs/{run_id}/analyze", json=payload, timeout=1800, retry=False
                 )
             except AgentXEvaluationsError as exc:
                 if not self._note_missing_analysis_route(exc, "analyze"):
@@ -554,13 +560,17 @@ class EvaluationsClient:
         if isinstance(dataset_id, dict):  # populated reference, not a bare id
             dataset_id = dataset_id.get("_id") or dataset_id.get("id")
 
-        return Report(
-            runId=run_id,
-            datasetId=dataset_id or "",
-            status=envelope.get("status") or "completed",
-            statistics=envelope.get("statistics"),
+        # Built as one merged dict (explicit keys last, so they win) - passing the
+        # explicit keys as keyword arguments alongside **body raises "got multiple
+        # values" whenever the analysis body itself carries runId/datasetId/status/
+        # statistics.
+        return Report(**{
             **body,
-        )
+            "runId": run_id,
+            "datasetId": dataset_id or "",
+            "status": envelope.get("status") or "completed",
+            "statistics": envelope.get("statistics"),
+        })
 
     # ------------------------------------------------------------------
     # Prompt improvement loop (examples -> propose -> publish). These ride the engine's
@@ -589,8 +599,11 @@ class EvaluationsClient:
             payload["reasoning"] = reasoning
         if based_on_version is not None:
             payload["basedOnVersion"] = based_on_version
+        # Server-side write: a timeout after the version was stored would be
+        # retried into a duplicate version, so no transport retry.
         return self._request(
-            "POST", f"/evaluate/prompts/{prompt_id}/versions", base=self._api_root, json=payload
+            "POST", f"/evaluate/prompts/{prompt_id}/versions", base=self._api_root, json=payload,
+            retry=False,
         )
 
     # ------------------------------------------------------------------
@@ -628,7 +641,7 @@ class EvaluationsClient:
             payload["judgeModel"] = judge_model
         if both_orders:
             payload["bothOrders"] = True
-        response = self._request("POST", "/evaluate/runs/pairwise", json=payload, base=self._api_root)
+        response = self._request("POST", "/evaluate/runs/pairwise", json=payload, base=self._api_root, timeout=900, retry=False,)
         return PairwiseComparison(**response["comparison"])
 
     def get_pairwise(self, batch_id: str) -> PairwiseComparison:
@@ -662,7 +675,8 @@ class EvaluationsClient:
         payload: dict = {"name": name, "definition": definition}
         if description is not None:
             payload["description"] = description
-        return self._request("POST", "/evaluate/tool-schemas", base=self._api_root, json=payload)
+        # Server-side write - no transport retry (see init_run's comment).
+        return self._request("POST", "/evaluate/tool-schemas", base=self._api_root, json=payload, retry=False)
 
     def get_tool_schema_examples(self, tool_schema_id: str, window: Optional[str] = None) -> dict:
         params = {"window": window} if window else None
@@ -686,8 +700,10 @@ class EvaluationsClient:
             payload["reasoning"] = reasoning
         if based_on_version is not None:
             payload["basedOnVersion"] = based_on_version
+        # Server-side write - no transport retry (see init_run's comment).
         return self._request(
-            "POST", f"/evaluate/tool-schemas/{tool_schema_id}/versions", base=self._api_root, json=payload
+            "POST", f"/evaluate/tool-schemas/{tool_schema_id}/versions", base=self._api_root, json=payload,
+            retry=False,
         )
 
     # ------------------------------------------------------------------

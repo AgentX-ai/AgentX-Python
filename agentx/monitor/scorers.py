@@ -65,11 +65,18 @@ class ScorersClient:
         return [p for p in patterns if p.get("source") == "builtIn"]
 
     def _enabled_template_keys(self) -> List[str]:
-        return [p["key"] for p in self.templates() if p.get("enabled")]
+        # .get("key"): defensive against a template row missing its key (the wire owns this
+        # shape, not the SDK) - a keyless row is skipped rather than KeyError-ing the sweep.
+        return [p.get("key") for p in self.templates() if p.get("enabled") and p.get("key")]
 
     def enable(self, keys: Sequence[str]) -> List[str]:
         """Enable template scorers by key (e.g. ``["pii-in-response"]``), preserving what is
-        already on. Returns the resulting enabled-key list."""
+        already on. Returns the resulting enabled-key list.
+
+        Note: enable()/disable() are a read-modify-write over the project's single
+        enabledBuiltinPatterns list - two concurrent callers (or a dashboard edit racing an
+        SDK call) can lose one side's change. There is no engine-side merge; serialize
+        catalog edits if that matters."""
         merged = sorted(set(self._enabled_template_keys()) | set(keys))
         self._request("PUT", "/settings/monitoring-defaults", json={"enabledBuiltinPatterns": merged})
         return merged

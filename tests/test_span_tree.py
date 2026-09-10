@@ -139,6 +139,23 @@ def test_decorator_form_gets_a_real_span_per_call_and_no_performance_summary():
     assert_no_performance_summary(wires)
 
 
+def test_reentering_same_span_object_sends_fresh_span_identity():
+    """Re-using ONE span object for two sequential `with` blocks must send two distinct
+    span_ids - the server dedupes on span_id, so a reused identity would silently collapse
+    the second run into the first."""
+    tracer = make_tracer()
+    span = tracer.trace("agent")
+    with span:
+        pass
+    first_span_id = span.span_id
+    with span:
+        pass
+    wires = enqueued_wires(tracer)
+    assert len(wires) == 2
+    assert wires[0]["span_id"] == first_span_id
+    assert wires[1]["span_id"] != wires[0]["span_id"]
+
+
 # ---------------------------------------------------------------------------
 # langchain.py — AgentXCallbackHandler opens a real root span per top-level chain invocation (or
 # folds into an already-active enclosing span) and lets _merge_child_run explode it into real
@@ -592,6 +609,30 @@ def test_trace_tool_call_emits_real_child_span():
     # Asserted positively, and as exactly one entry, so a third write shows up here too.
     assert [tc["name"] for tc in root["tool_calls"]] == ["policy_lookup"]
     assert root["tool_calls"][0]["output"] == "digital purchases are final"
+
+
+def test_concurrent_async_agents_do_not_mis_parent():
+    """Two coroutines interleaving on one event loop must stay two independent trees -
+    the thread-local stack used to merge them (fabricated parent edge, shared session)."""
+    import asyncio
+
+    tracer = make_tracer()
+
+    @tracer.trace("agent-a")
+    async def a():
+        await asyncio.sleep(0.02)
+
+    @tracer.trace("agent-b")
+    async def b():
+        await asyncio.sleep(0.01)
+
+    async def main():
+        await asyncio.gather(a(), b())
+
+    asyncio.run(main())
+    wires = enqueued_wires(tracer)
+    assert all(w.get("parent_span_id") is None for w in wires)
+    assert len({w.get("session_id") for w in wires}) == 2
 
 
 def test_trace_memory_emits_a_memory_kind_child_span():

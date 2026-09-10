@@ -138,27 +138,42 @@ class IngestClient:
         """
         Send a trace payload synchronously and return the ingested trace's id, or ``None`` on
         failure. Used by ``Tracer.trace(..., sync=True)`` when the caller needs the trace_id back
-        immediately (e.g. to attach it to an evaluation result) - unlike ``enqueue()``, this blocks
-        and does not retry, trading the tracer's usual fire-and-forget guarantee for a same-call
-        result. Never raises; a failed send just means no trace_id (never blocks the caller's eval
-        run over a tracing hiccup).
+        immediately (e.g. to attach it to an evaluation result) - unlike ``enqueue()``, this
+        blocks, trading the tracer's usual fire-and-forget guarantee for a same-call result.
+        A 429/503 (engine shedding load or briefly unavailable) is retried up to 2 times,
+        honoring the server's Retry-After (capped at 5s per wait) - span ids make redelivery
+        idempotent server-side, so a retry can never double-ingest. Never raises; ``None``
+        means the trace was NOT stored (there is no local persistence or background retry
+        beyond those brief attempts), so no trace_id exists for it.
         """
         if self._workspace_id:
             payload = {**payload, "workspaceId": self._workspace_id}
-        try:
-            resp = self._session.post(self._endpoint, json=payload, timeout=10)
-        except requests.RequestException as exc:
-            self._warn_delivery(f"{exc.__class__.__name__}: {exc}")
-            logger.debug("agentx ingest sync send error: %s", exc)
-            return None
-        if not resp.ok:
-            self._warn_delivery(f"HTTP {resp.status_code}", status=resp.status_code)
-            logger.debug("agentx ingest sync HTTP %d: %s", resp.status_code, resp.text[:200])
-            return None
-        try:
-            return resp.json().get("trace_id")
-        except Exception:
-            return None
+        for attempt in range(3):  # 1 try + up to 2 bounded retries on 429/503
+            try:
+                resp = self._session.post(self._endpoint, json=payload, timeout=10)
+            except requests.RequestException as exc:
+                self._warn_delivery(f"{exc.__class__.__name__}: {exc}")
+                logger.debug("agentx ingest sync send error: %s", exc)
+                return None
+            if resp.status_code in (429, 503) and attempt < 2:
+                retry_after = resp.headers.get("Retry-After")
+                wait = 1.0
+                if retry_after:
+                    try:
+                        wait = min(5.0, float(retry_after))
+                    except ValueError:
+                        pass
+                time.sleep(wait)
+                continue
+            if not resp.ok:
+                self._warn_delivery(f"HTTP {resp.status_code}", status=resp.status_code)
+                logger.debug("agentx ingest sync HTTP %d: %s", resp.status_code, resp.text[:200])
+                return None
+            try:
+                return resp.json().get("trace_id")
+            except Exception:
+                return None
+        return None  # pragma: no cover - loop always returns
 
     def send_trace_sync_detailed(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """``send_trace_sync`` returning the full response body instead of just the id - the
@@ -418,16 +433,22 @@ class IngestClient:
 
     def _send(self, payload: Dict[str, Any]) -> None:
         last_exc: Optional[Exception] = None
-        for attempt, wait in enumerate([0.0] + _RETRY_BACKOFF):
-            if wait:
+        schedule = [0.0] + _RETRY_BACKOFF
+        skip_next_wait = False
+        for attempt, wait in enumerate(schedule):
+            if wait and not skip_next_wait:
                 time.sleep(wait)
+            skip_next_wait = False
             try:
                 resp = self._session.post(self._endpoint, json=payload, timeout=10)
             except requests.RequestException as exc:
                 last_exc = exc
                 continue
 
-            if resp.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES - 1:
+            # Gate on the schedule itself so HTTP-status retries walk the SAME full backoff
+            # schedule connection errors do (the old `attempt < _MAX_RETRIES - 1` gate left the
+            # schedule's last backoff entry unreachable for HTTP retries).
+            if resp.status_code in _RETRYABLE_STATUS and attempt < len(schedule) - 1:
                 # 429 = the engine's bounded ingest queue shedding load (its ADR-0005): honor
                 # Retry-After exactly instead of the generic backoff schedule, so the SDK backs
                 # off in step with the server's own flush cadence.
@@ -435,6 +456,9 @@ class IngestClient:
                 if resp.status_code == 429 and retry_after:
                     try:
                         time.sleep(min(30.0, float(retry_after)))
+                        # Retry-After REPLACES the schedule's next wait - sleeping both would
+                        # back off longer than either the server or the schedule asked for.
+                        skip_next_wait = True
                     except ValueError:
                         pass
                 last_exc = Exception(f"HTTP {resp.status_code}")
@@ -442,6 +466,9 @@ class IngestClient:
             if not resp.ok:
                 self._warn_delivery(f"HTTP {resp.status_code}", status=resp.status_code)
                 logger.debug("agentx ingest HTTP %d: %s", resp.status_code, resp.text[:200])
+                # Non-retryable failure still cost us this payload - never drop silently
+                # (same rule _drain and the retries-exhausted path below follow).
+                self._record_drop(f"HTTP {resp.status_code}")
                 return
             return
 

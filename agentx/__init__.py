@@ -12,11 +12,10 @@ from agentx.exceptions import (
     CIGateFailure,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S %Z",
-)
+# Library logging hygiene: a library must never call logging.basicConfig - it hijacks the
+# host application's root logger (format AND level) and turns the app's own later basicConfig
+# into a no-op. Consumers opt into our logs with logging.getLogger("agentx").setLevel(...).
+logging.getLogger("agentx").addHandler(logging.NullHandler())
 
 __all__ = [
     "AgentX",

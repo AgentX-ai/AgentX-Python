@@ -167,6 +167,9 @@ class AgentXAutoGenObserver:
                         "end_time": end_t,
                         "input": pending["input"] if pending else None,
                         "output": f"ERROR: {output}" if is_error else (str(output) if output is not None else None),
+                        # The engine's failure test is success === false; without
+                        # this a failed tool call would read as passing.
+                        "success": not is_error,
                     })
                 continue
 

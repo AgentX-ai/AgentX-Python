@@ -339,6 +339,16 @@ class AgentXCallbackHandler(BaseCallbackHandler):
             self._retrieval_starts.pop(run_id, None)
             self._parents.pop(run_id, None)
 
+        # Pre-run retrieval steps waiting for a top-level chain that never came
+        # (e.g. retriever.invoke() called but agent.invoke() aborted before
+        # on_chain_start). Each step carries its own start_time, so drop the
+        # pre-cutoff ones just like the run_id-keyed structures above.
+        with self._state_lock:
+            if self._pending_retrieval_steps:
+                self._pending_retrieval_steps[:] = [
+                    step for step in self._pending_retrieval_steps if step.get("start_time", 0) >= cutoff
+                ]
+
     # ------------------------------------------------------------------
     # Chain lifecycle
     # ------------------------------------------------------------------
@@ -359,8 +369,9 @@ class AgentXCallbackHandler(BaseCallbackHandler):
             self._prune_stale_entries()
             # Consume any retrieval steps that ran before this chain started
             # (pre-run RAG: retriever.invoke() called before agent.invoke())
-            pending = self._pending_retrieval_steps[:]
-            self._pending_retrieval_steps.clear()
+            with self._state_lock:
+                pending = self._pending_retrieval_steps[:]
+                self._pending_retrieval_steps.clear()
             self._runs[run_id] = {
                 "start": time.time(),
                 "input": _extract_input(inputs),
@@ -670,7 +681,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
             "input": _extract_llm_input(prompts=prompts, messages=messages),
         }
         top = self._find_top_ancestor(parent_run_id)
-        if top and not self._runs[top].get("model") and model:
+        if top and top in self._runs and not self._runs[top].get("model") and model:
             self._runs[top]["model"] = model
 
     def on_llm_start(
@@ -882,15 +893,16 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                 step["output"] = "\n\n---\n\n".join(contents)
 
         top = self._find_top_ancestor(parent_run_id)
-        if top and top in self._runs:
-            # Retriever ran inside an active chain - attach directly
-            retrievals = self._runs[top]["retrieval_steps"]
-            step["name"] = f"Retrieval {len(retrievals) + 1}"
-            retrievals.append(step)
-        else:
-            # Retriever ran before the chain started (pre-run RAG pattern)
-            step["name"] = f"Retrieval {len(self._pending_retrieval_steps) + 1}"
-            self._pending_retrieval_steps.append(step)
+        with self._state_lock:
+            if top and top in self._runs:
+                # Retriever ran inside an active chain - attach directly
+                retrievals = self._runs[top]["retrieval_steps"]
+                step["name"] = f"Retrieval {len(retrievals) + 1}"
+                retrievals.append(step)
+            else:
+                # Retriever ran before the chain started (pre-run RAG pattern)
+                step["name"] = f"Retrieval {len(self._pending_retrieval_steps) + 1}"
+                self._pending_retrieval_steps.append(step)
 
     def on_retriever_error(
         self,
@@ -918,15 +930,16 @@ class AgentXCallbackHandler(BaseCallbackHandler):
             step["query"] = query
 
         top = self._find_top_ancestor(parent_run_id)
-        if top and top in self._runs:
-            # Retriever ran inside an active chain - attach directly
-            retrievals = self._runs[top]["retrieval_steps"]
-            step["name"] = f"Retrieval {len(retrievals) + 1}"
-            retrievals.append(step)
-        else:
-            # Retriever ran before the chain started (pre-run RAG pattern)
-            step["name"] = f"Retrieval {len(self._pending_retrieval_steps) + 1}"
-            self._pending_retrieval_steps.append(step)
+        with self._state_lock:
+            if top and top in self._runs:
+                # Retriever ran inside an active chain - attach directly
+                retrievals = self._runs[top]["retrieval_steps"]
+                step["name"] = f"Retrieval {len(retrievals) + 1}"
+                retrievals.append(step)
+            else:
+                # Retriever ran before the chain started (pre-run RAG pattern)
+                step["name"] = f"Retrieval {len(self._pending_retrieval_steps) + 1}"
+                self._pending_retrieval_steps.append(step)
 
     # ------------------------------------------------------------------
     # Helpers
