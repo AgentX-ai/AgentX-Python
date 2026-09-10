@@ -140,7 +140,7 @@ with tracer.trace("orchestrator") as root:
     root.output = reply
 ```
 
-The active-span stack is **thread-local**. Work submitted to a `ThreadPoolExecutor` (or any other thread) doesn't see a span opened on the calling thread - wrap the worker body in `tracer.use_span(span)` to attach it:
+The active-span stack is **context-local** (a `ContextVar`): bare threads start with an empty stack, while asyncio tasks inherit a copy of their creator's. Work submitted to a `ThreadPoolExecutor` (or any other thread) doesn't see a span opened on the calling thread - wrap the worker body in `tracer.use_span(span)` to attach it:
 
 ```python
 with tracer.trace("orchestrator") as span:
@@ -380,7 +380,7 @@ with tracer.trace("support-agent") as span:
     span.output = answer
 ```
 
-`tracer.record_memory(name, operation=..., query=..., output=..., duration_ms=...)` is the after-the-fact form. `operation` is free text - conventionally `"read"` or `"write"` - carried in the span's metadata, while the kind itself stays one value so dashboards and scorers can select all memory activity at once. With no active span, both forms queue the record and merge it into the next trace this tracer sends (the patched-client flow where the memory op runs just before a standalone completions call) instead of silently dropping it.
+`tracer.record_memory(name, operation=..., query=..., output=..., duration_ms=...)` is the after-the-fact form. `operation` is free text - conventionally `"read"` or `"write"` - carried in the span's metadata, while the kind itself stays one value so dashboards and scorers can select all memory activity at once. With no active span the record is dropped (with a debug log) - the pending queue rides the next trace's retrieval steps, and memory content must never feed the RAG judges' retrieval context - so wrap the call in `tracer.trace()`.
 
 ---
 

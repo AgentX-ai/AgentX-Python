@@ -248,6 +248,10 @@ class LiveStatistics(BaseModel):
     min_rating: Optional[float] = Field(default=None, alias="minRating")
     max_rating: Optional[float] = Field(default=None, alias="maxRating")
     rated_count: int = Field(default=0, alias="ratedCount")
+    # Rows the judge could not score / rows submitted with an error - the difference between
+    # "everything rated 8" and "half the run never got a verdict".
+    skipped_count: int = Field(default=0, alias="skippedCount")
+    failed_count: int = Field(default=0, alias="failedCount")
 
     class Config:
         populate_by_name = True

@@ -207,6 +207,12 @@ class EvaluationsClient:
                 return resp.json()
             except Exception:
                 return resp.text
+        # A timeout keeps its type: runner._flush_batch catches requests.Timeout specifically
+        # (the engine may still be scoring the batch - a blind retry double-bills every judge
+        # call), and wrapping it in AgentXEvaluationsError here made that guard unreachable.
+        # Applies to retry=False calls too, where the single attempt lands straight here.
+        if isinstance(last_exc, requests.Timeout):
+            raise last_exc
         raise AgentXEvaluationsError(f"Request failed after retries: {last_exc}")
 
     # ------------------------------------------------------------------
@@ -227,7 +233,9 @@ class EvaluationsClient:
     # ------------------------------------------------------------------
 
     def create_dataset(self, payload: dict) -> Dataset:
-        data = self._request("POST", "/datasets", json=self._with_workspace(payload))
+        # Server-side write: a timeout after the dataset row was created would be
+        # retried into a duplicate dataset, so no transport retry.
+        data = self._request("POST", "/datasets", json=self._with_workspace(payload), retry=False)
         return Dataset(**data)
 
     def delete_dataset(self, dataset_id: str) -> None:
@@ -255,8 +263,9 @@ class EvaluationsClient:
     # ------------------------------------------------------------------
 
     def create_evaluation_settings(self, payload: dict) -> EvaluationSettings:
+        # Server-side write - no transport retry (see init_run's comment).
         data = self._request(
-            "POST", "/evaluation-settings", json=self._with_workspace(payload)
+            "POST", "/evaluation-settings", json=self._with_workspace(payload), retry=False
         )
         return EvaluationSettings(**data)
 
@@ -281,12 +290,14 @@ class EvaluationsClient:
 
     # ------------------------------------------------------------------
     # Prompt registry endpoints - see agentx.evaluations.prompts.PromptClient for the concept
-    # (the external-agent analog to native autotune). Deliberately read-mostly: no publish here,
-    # a new version only ever comes from the dashboard's human-approved propose/publish flow.
+    # (the external-agent analog to native autotune). propose_prompt never publishes;
+    # publish_prompt_version below IS the explicit approval step - call it only after a human
+    # reviewed the proposal.
     # ------------------------------------------------------------------
 
     def create_prompt(self, payload: dict) -> Prompt:
-        data = self._request("POST", "/prompts", json=self._with_workspace(payload))
+        # Server-side write - no transport retry (see init_run's comment).
+        data = self._request("POST", "/prompts", json=self._with_workspace(payload), retry=False)
         return Prompt(**data)
 
     def list_prompts(self) -> List[Prompt]:
@@ -322,7 +333,9 @@ class EvaluationsClient:
         alias and keeps working. ``split`` records the named case subset this run covers.
         ``additional_scorer_ids`` (self-host): extra judge scorers that each pass their own
         verdict on every result from the same single agent execution - verdicts land in each
-        result row's ``judgeScorerResults`` and the run's ``scorerBreakdown``."""
+        result row's ``judgeScorerResults`` and the run's ``scorerBreakdown``. When
+        ``scorer_group_id`` is set, the engine nulls ``additionalScorerIds`` on the run too -
+        the group is the whole grading story, not a layer on top of extra scorers."""
         from agentx.version import VERSION
 
         grader_id = _resolve_scorer_id(scorer_id, evaluation_settings_id)
@@ -343,7 +356,8 @@ class EvaluationsClient:
         if additional_scorer_ids:
             payload["additionalScorerIds"] = additional_scorer_ids
         # Scorer group grading (self-host): the group's weighted 0-10 aggregate fills the rating
-        # column and member verdicts land per row. Mutually exclusive with scorer_id (group wins).
+        # column and member verdicts land per row. Mutually exclusive with scorer_id (group
+        # wins), and the engine also nulls additionalScorerIds when a group grades the run.
         if scorer_group_id:
             payload["scorerGroupId"] = scorer_group_id
         if split:
@@ -408,7 +422,10 @@ class EvaluationsClient:
         # scorer's own per-result verdicts. Unknown names are a hard 400 from the engine.
         if scorer:
             params["scorer"] = scorer
-        return self._request("GET", f"/runs/{run_id}/gate", params=params)
+        # record=True is a server-side write despite the GET verb (it persists a gate-history
+        # row): a timeout after the row was stored would be retried into a duplicate verdict,
+        # so no transport retry - same precedent as init_run.
+        return self._request("GET", f"/runs/{run_id}/gate", params=params, retry=not record)
 
     def analyze_run(
         self,

@@ -46,7 +46,7 @@ class MonitorProfileClient:
         """Update (and enable, if not already) this agent's Monitor profile. Only fields passed
         here are changed; everything else on the existing profile is left as is.
 
-        Self-host only: ``coverage_mode``/``sample_rate``/``retention_days``,
+        Self-host only: ``coverage_mode``/``sample_rate``/``retention_days``, ``dataset_id``,
         and ``threshold_overrides["latencyMs"]`` are project-level defaults now (see
         ``MonitorProfile``'s docstring) - set them via the dashboard's Platform Settings screen
         instead, passing them here is accepted but has no effect. ``enabled``/

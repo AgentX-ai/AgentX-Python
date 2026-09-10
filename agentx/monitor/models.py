@@ -12,6 +12,11 @@ class MonitorPattern(BaseModel):
     A "failure" pattern (the default) raises a signal to triage; a "proper" pattern logs a
     healthy tally instead. Only one of ``include_terms``/``regex``/``semantic_prompt`` is
     meaningful at a time, selected by ``detector_kind``.
+
+    On self-host the engine stores a pattern as a list of ``conditions`` (each with its own
+    detector kind and match settings) - the flat ``include_terms``/``regex``/
+    ``semantic_prompt`` fields are display-only projections derived from the first condition;
+    ``conditions`` is the truth.
     """
 
     id: str = Field(alias="_id")
@@ -26,6 +31,8 @@ class MonitorPattern(BaseModel):
     exclude_terms: List[str] = Field(default_factory=list, alias="excludeTerms")
     regex: Optional[str] = None
     semantic_prompt: Optional[str] = Field(default=None, alias="semanticPrompt")
+    # The engine's stored detection rules (self-host) - see the class docstring.
+    conditions: List[Dict[str, Any]] = Field(default_factory=list)
     severity: str = "medium"
     polarity: str = "failure"
     enabled: bool = True

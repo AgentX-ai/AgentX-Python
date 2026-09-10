@@ -5,6 +5,7 @@ import concurrent.futures
 import functools
 import inspect
 import contextvars
+import logging
 import threading
 import time
 from contextlib import contextmanager
@@ -16,6 +17,8 @@ from agentx.tracing.ingest_client import IngestClient
 from agentx.tracing.ci_types import CIRun, CIRunResult, CIRunStatus, CIQuestionScore
 from agentx.tracing.eval_scope import EVAL_RUN_SOURCE, current_eval_run_id
 from agentx.tracing.framework_detect import detect_framework
+
+logger = logging.getLogger(__name__)
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -313,7 +316,7 @@ class _TraceSpan:
         their own real per-step identity and timing (LangChain's run_id/parent_run_id,
         LlamaIndex's parent_id, the OpenAI Agents SDK's own span objects) and want to parent a new
         child under a specific span they're holding a reference to - not just whatever's on top of
-        the tracer's thread-local active-span stack.
+        the tracer's context-local (ContextVar) active-span stack.
 
         Returns the child span (its ``.span_id`` can parent a further-nested grandchild via
         another ``child_span()`` call on it). The returned span is not pushed onto the
@@ -441,8 +444,10 @@ class _TraceSpan:
                     cache_read_tokens=step.get("cacheReadTokenSize"),
                     cache_write_tokens=step.get("cacheWriteTokenSize"),
                     # Stated, so a step named anything other than "LLM Call N" still classifies -
-                    # the backend's name regex was the only thing holding this together.
-                    span_kind="llm",
+                    # the backend's name regex was the only thing holding this together. Steps
+                    # may state their own kind (crewai.py's task steps carry "agent"); the
+                    # default stays "llm" for callers whose steps are model calls.
+                    span_kind=step.get("kind") or "llm",
                 )
             for tc in tool_calls or []:
                 # Some callers' tool_calls dicts (e.g. langchain.py's, which sets these on the
@@ -477,6 +482,7 @@ class _TraceSpan:
                 })
             for step in [] if not emit_steps else (retrieval_steps or []):
                 self._child_span_count += 1
+                doc_count = step.get("doc_count")
                 self.child_span(
                     step.get("name") or f"Retrieval {self._child_span_count}",
                     start_time=step.get("start_time"),
@@ -484,7 +490,7 @@ class _TraceSpan:
                     duration_ms=step.get("duration_ms"),
                     input=step.get("query"),
                     output=step.get("output"),
-                    metadata={"kind": "retrieval"},
+                    metadata={"kind": "retrieval", **({"doc_count": doc_count} if doc_count is not None else {})},
                     span_kind="retrieval",
                 )
 
@@ -680,9 +686,11 @@ class Tracer:
         """
         Make ``span`` (created on another thread) the active span for the
         duration of this block, on *this* thread. The active-span stack is
-        thread-local, so work submitted to a ``ThreadPoolExecutor`` or run on
-        any other thread doesn't automatically see a span opened on the
-        calling thread - wrap the worker function body in this to attach it::
+        context-local (a ContextVar): bare threads start with an empty stack,
+        while asyncio tasks inherit a copy of their creator's. Work submitted
+        to a ``ThreadPoolExecutor`` or run on any other thread therefore
+        doesn't automatically see a span opened on the calling thread - wrap
+        the worker function body in this to attach it::
 
             with tracer.trace("orchestrator") as span:
                 def worker():
@@ -719,7 +727,10 @@ class Tracer:
         loop where the tool executes in plain Python between two
         ``messages.create()`` calls. Sent as a real child-span row of the active span (see
         ``current_span``) immediately; queued onto the next trace's plain ``tool_calls`` list if
-        there's no active span to attach a child to.
+        there's no active span to attach a child to. That queue is tracer-wide, not
+        per-context: the pending record attaches to the next trace THIS TRACER sends from ANY
+        thread or context, so concurrent no-span use can attach it to an unrelated trace -
+        wrap the call in ``tracer.trace()`` when that matters.
 
         ``success``/``error`` mark a failed call. ``success=False`` is what the engine's built-in
         "Tool failure" Monitor check and the dashboard's Tool quality column both read; leaving
@@ -824,6 +835,11 @@ class Tracer:
         (same behavior as ``record_tool_call``, covering the patched-client flow where the
         retrieval runs just before a standalone ``messages.create()`` /
         ``chat.completions.create()`` call).
+
+        The pending queue is tracer-wide, not per-context: a record queued with no active
+        span attaches to the next trace THIS TRACER sends from ANY thread or context, so
+        concurrent no-span use can attach it to an unrelated trace. Wrap the call in
+        ``tracer.trace()`` when that matters.
         """
         active_span = self.current_span
         if active_span is None:
@@ -839,6 +855,7 @@ class Tracer:
                 "query": _safe_serialize(query) if query is not None else None,
                 "output": _safe_serialize(output) if output is not None else None,
                 "duration_ms": latency_ms,
+                **({"doc_count": doc_count} if doc_count is not None else {}),
             })
             return
         # The kind marker is what tells the engine (retrieval-context extraction for RAG
@@ -852,7 +869,7 @@ class Tracer:
             duration_ms=duration_ms,
             input=query,
             output=output,
-            metadata={"kind": "retrieval"},
+            metadata={"kind": "retrieval", **({"doc_count": doc_count} if doc_count is not None else {})},
             span_kind="retrieval",
         )
 
@@ -874,27 +891,23 @@ class Tracer:
         itself stays one value so dashboards and scorers can select all memory activity at once.
         Deliberately NOT a retrieval: retrieval spans feed the RAG judges' ``{context}``
         (knowledge grounding), while memory is recalled state - see the engine's spanKind.ts.
+
+        With no active span the record is DROPPED (with a debug log), not queued: the only
+        pending queue rides the next trace's ``retrieval_steps``, and memory content must
+        never reach the engine's retrieval-context extraction for RAG judges. Wrap the call
+        in ``tracer.trace()`` to keep it. (``record_tool_call``/``record_retrieval`` queue
+        instead - see their docstrings.)
         """
         active_span = self.current_span
         if active_span is None:
-            # Same posture as record_retrieval: queue and merge into the next trace this
-            # tracer sends (the patched-client flow where the memory op runs just before a
-            # standalone completions call) instead of silently dropping the record.
-            latency_ms = (
-                int(duration_ms)
-                if duration_ms is not None
-                else int((end_time - start_time) * 1000)
-                if start_time is not None and end_time is not None
-                else None
+            # NOT the record_retrieval queue posture: _pending_retrievals rides the next
+            # trace's performance_summary.retrieval_steps, which the engine's
+            # retrieval-context extraction feeds to RAG judges - recalled memory must never
+            # classify as knowledge grounding. Drop, and say so.
+            logger.debug(
+                "record_memory(%r) called with no active span - wrap the call in tracer.trace(); dropped",
+                name,
             )
-            self._pending_retrievals.append({
-                "name": name,
-                "query": _safe_serialize(query) if query is not None else None,
-                "output": _safe_serialize(output) if output is not None else None,
-                "duration_ms": latency_ms,
-                "kind": "memory",
-                **({"operation": operation} if operation else {}),
-            })
             return
         active_span.child_span(
             name,
@@ -923,9 +936,10 @@ class Tracer:
         error: Optional[str] = None
         try:
             yield recorder
-        except Exception as exc:
+        except BaseException as exc:
             # A memory op that raised must not be recorded as a clean span (trace_tool_call
-            # precedent) - fold the error into the output and re-raise.
+            # precedent, which also catches BaseException) - fold the error into the output
+            # and re-raise.
             error = str(exc)
             raise
         finally:

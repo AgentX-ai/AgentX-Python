@@ -17,9 +17,9 @@ class PromptClient:
     existing version-comparison view (``client.evaluations`` run comparisons on a dataset) can
     tell you which published version actually scored higher.
 
-    Deliberately read-mostly from here: there is no ``publish`` on this client. A prompt only
-    gets a new version through the dashboard's human-approved propose/publish flow, so a
-    rewritten prompt never reaches your running agent without someone explicitly approving it.
+    ``propose()`` never publishes anything; ``publish_version()`` IS the explicit approval
+    step - call it only after a human reviewed the proposal, since a published version is
+    what your running agent pulls as its live prompt.
 
     Example::
 
