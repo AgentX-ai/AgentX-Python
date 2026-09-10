@@ -235,7 +235,9 @@ class MonitorClient:
     # ------------------------------------------------------------------
 
     def create_pattern(self, payload: dict) -> MonitorPattern:
-        data = self._request("POST", "/patterns", json=self._with_workspace(payload))
+        # Server-side write: a timeout after the pattern row was created would be
+        # retried into a duplicate pattern, so no transport retry.
+        data = self._request("POST", "/patterns", json=self._with_workspace(payload), retry=False)
         return MonitorPattern(**data["pattern"])
 
     def list_patterns(self) -> List[MonitorPattern]:
@@ -253,7 +255,10 @@ class MonitorClient:
     # ------------------------------------------------------------------
 
     def create_online_evaluator(self, payload: dict) -> MonitorOnlineEvaluator:
-        data = self._request("POST", "/online-evaluators", json=self._with_workspace(payload))
+        # Server-side write - no transport retry (see create_pattern's comment).
+        data = self._request(
+            "POST", "/online-evaluators", json=self._with_workspace(payload), retry=False
+        )
         return MonitorOnlineEvaluator(**data["evaluator"])
 
     @property

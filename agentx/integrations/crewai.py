@@ -212,6 +212,9 @@ class AgentXCrewObserver:
                 "end_time": end,
                 "input": description,
                 "output": output_text,
+                # A CrewAI task is an agent turn, not a model call - without this,
+                # _merge_child_run's default stamped every task span "llm".
+                "kind": "agent",
             })
             if description is not None or task_output_text is not None:
                 tool_calls.append({"name": name, "input": description, "output": task_output_text})

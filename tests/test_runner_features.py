@@ -144,3 +144,19 @@ def test_flush_batch_failure_raises_after_one_retry(monkeypatch):
 
     with pytest.raises(EvaluationSubmissionError):
         ctx.execute(lambda case: "x")
+
+
+def test_finalize_failure_raises(monkeypatch):
+    """A failed finalize leaves the run in_progress - swallowing it let CI pipelines pass on
+    a run that gates and baselines would never see (same fail-loud posture as _flush_batch)."""
+    monkeypatch.setenv("AGENTX_EVAL_QUIET", "1")
+    client = FakeClient()
+
+    def failing_finalize(run_id):
+        raise RuntimeError("engine down")
+
+    client.finalize_run = failing_finalize
+    ctx = make_context(client)
+
+    with pytest.raises(RuntimeError, match="engine down"):
+        ctx.finalize()

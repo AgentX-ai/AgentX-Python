@@ -231,6 +231,7 @@ class AgentXADKPlugin(BasePlugin):
                 model=call_start.get("model") if call_start else None,
                 input_tokens=call_input_tokens,
                 output_tokens=call_output_tokens,
+                span_kind="llm",
             )
 
     async def on_model_error_callback(
@@ -261,6 +262,7 @@ class AgentXADKPlugin(BasePlugin):
                 output=f"ERROR: {error}",
                 model=call_start.get("model") if call_start else None,
                 error=str(error),
+                span_kind="llm",
             )
 
     # ------------------------------------------------------------------
@@ -290,7 +292,8 @@ class AgentXADKPlugin(BasePlugin):
         tool_input = _safe_serialize(tool_args)
         tool_output = str(result) if result is not None else None
         state["root_span"].child_span(
-            tool_name, start_time=start_t, end_time=end_t, input=tool_input, output=tool_output
+            tool_name, start_time=start_t, end_time=end_t, input=tool_input, output=tool_output,
+            span_kind="tool",
         )
 
     async def on_tool_error_callback(
@@ -311,5 +314,6 @@ class AgentXADKPlugin(BasePlugin):
         tool_input = _safe_serialize(tool_args)
         tool_output = f"ERROR: {error}"
         state["root_span"].child_span(
-            tool_name, start_time=start_t, end_time=end_t, input=tool_input, output=tool_output, error=str(error)
+            tool_name, start_time=start_t, end_time=end_t, input=tool_input, output=tool_output, error=str(error),
+            span_kind="tool",
         )

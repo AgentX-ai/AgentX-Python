@@ -277,6 +277,10 @@ class AgentXCallbackHandler(BaseCallbackHandler):
     become child spans, and each LLM call / tool call / retrieval becomes a span parented under
     the node that ran it - so the engine's Execution Timeline shows the actual graph trajectory
     (which nodes ran, in what order, and what each did), not a flat step list.
+
+    Retriever runs are stamped ``retrieval`` - LangChain cannot distinguish memory-backed
+    retrievers, so a Mem0/Zep-style store exposed as a retriever classifies as retrieval too.
+    Use ``tracer.trace_memory`` for lookups that should classify as memory.
     """
 
     def __init__(

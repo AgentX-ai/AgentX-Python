@@ -342,6 +342,10 @@ class EvaluationRunContext:
     # ------------------------------------------------------------------
 
     def finalize(self) -> "EvaluationRunContext":
+        """Mark the run completed server-side. A failed finalize is raised, not swallowed
+        (same fail-loud posture as _flush_batch): it leaves the run in_progress - a state a
+        CI pipeline MUST treat as a failure, since gates and baselines only consider
+        completed runs."""
         _say()
         with Spinner("Finalizing - submitting results"):
             try:
@@ -353,6 +357,7 @@ class EvaluationRunContext:
             except Exception as exc:
                 _say(f"  {red('✗')}  Finalize failed: {dim(str(exc))}")
                 logger.error("Finalize failed: %s", exc)
+                raise
         return self
 
     def gate(

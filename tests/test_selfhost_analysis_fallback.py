@@ -198,11 +198,35 @@ def test_the_synchronous_fallback_analyze_is_never_retried():
 
     session.request = always_times_out
 
-    with pytest.raises(AgentXEvaluationsError):
+    # The timeout keeps its type (requests.Timeout, not a generic wrapper) so callers can
+    # branch on "the engine may still be doing the billable work" - see _request.
+    with pytest.raises(requests.Timeout):
         client.analyze_run(RUN)
 
     dashboard_posts = [u for u in session.urls("POST") if "/evaluate/analyze/" in u]
     assert len(dashboard_posts) == 1, f"retried a billable request: {dashboard_posts}"
+
+
+def test_append_results_timeout_propagates_as_timeout_with_one_post():
+    """A read timeout on the batch-scoring POST must surface as requests.Timeout (the type
+    runner._flush_batch's double-billing guard catches - wrapping it in
+    AgentXEvaluationsError made that guard dead code) and must not be re-POSTed by the
+    transport while the engine may still be scoring the first submission."""
+    import requests
+
+    client, session = make_client({})
+
+    def always_times_out(method, url, **kwargs):
+        session.calls.append((method, url, kwargs))
+        raise requests.exceptions.ReadTimeout("still scoring")
+
+    session.request = always_times_out
+
+    with pytest.raises(requests.Timeout):
+        client.append_results(RUN, "batch-1", [])
+
+    result_posts = [u for u in session.urls("POST") if u.endswith(f"/runs/{RUN}/results")]
+    assert len(result_posts) == 1, f"re-POSTed a batch mid-scoring: {result_posts}"
 
 
 def test_the_fallback_request_gets_the_long_analysis_timeout():

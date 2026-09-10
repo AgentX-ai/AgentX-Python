@@ -387,7 +387,7 @@ except Exception as exc:
     # the legacy views below work on every engine
 ```
 
-The legacy views are not affected - they call the long-standing `/custom-agent-evaluations/evaluation-settings` and `/agent-monitoring/online-evaluators` routes - so they remain the portable choice for code that must run against engines you do not control. This does not affect the `scorer_id` kwarg on `.run()`, which is client-side naming over a field the wire has always had.
+The legacy views are not affected - they call the long-standing `/custom-agent-evaluations/evaluation-settings` and `/monitor/online-evaluators` routes (only the calibration/tuning calls ride `/agent-monitoring`) - so they remain the portable choice for code that must run against engines you do not control. This does not affect the `scorer_id` kwarg on `.run()`, which is client-side naming over a field the wire has always had.
 
 #### Legacy views
 
@@ -896,7 +896,7 @@ This run + gate flow is the **self-host CI path**. The separate CI-runs API in [
 
 ### AI analysis report
 
-`.analyze()` is the last step in the chain. It runs the same durable, multi-stage pipeline as the dashboard's "Analyze" button: each response is scored by 1-3 LLM judges, then reduced through question- and cluster-level summaries into one final qualitative report, returned as the `Report` object. Because of this, `.analyze()` polls until the job finishes rather than returning instantly, and can take noticeably longer than a single LLM call for larger runs (progress is shown in the terminal while it waits).
+`.analyze()` is the last step in the chain. It triggers the same analysis as the dashboard's "Analyze" button: each response is scored by 1-3 LLM judges and reduced into one final qualitative report, returned as the `Report` object. On self-host this is a single synchronous pass - the request returns when the whole analysis is done, so the poll loop sees a terminal status on its first check and the per-level progress percentages never populate. Either way, `.analyze()` can take noticeably longer than a single LLM call for larger runs (a spinner is shown in the terminal while it waits).
 
 ```python
 report = client.evaluations.run(...).execute(my_agent).finalize().analyze(

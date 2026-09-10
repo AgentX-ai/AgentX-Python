@@ -251,6 +251,7 @@ class AgentXTracingProcessor:
                     model=call_model,
                     input_tokens=call_input_tokens,
                     output_tokens=call_output_tokens,
+                    span_kind="llm",
                 )
 
         elif span_type == "response":
@@ -300,6 +301,7 @@ class AgentXTracingProcessor:
                     model=call_model,
                     input_tokens=call_input_tokens,
                     output_tokens=call_output_tokens,
+                    span_kind="llm",
                 )
 
         elif span_type == "function":
@@ -313,6 +315,7 @@ class AgentXTracingProcessor:
                 duration_ms=latency if t0 is None or t1 is None else None,
                 input=span_data.input,
                 output=tool_output,
+                span_kind="tool",
             )
 
     def force_flush(self) -> None:

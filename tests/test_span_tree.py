@@ -666,17 +666,64 @@ def test_trace_retrieval_emits_real_child_span():
     assert child["output"] == "3 matching docs"
 
 
-def test_record_retrieval_with_no_active_span_is_a_no_op():
-    """No enclosing `with tracer.trace()` and nothing else to attach a child span to — retrieval
-    data has no standalone wire representation anymore (that was performance_summary-only),
-    so this is a documented no-op rather than a silent fabrication."""
+def test_record_retrieval_with_no_active_span_queues_onto_next_trace():
+    """No enclosing `with tracer.trace()` - record_retrieval queues onto the tracer-level
+    pending list and rides the next trace's performance_summary.retrieval_steps (the shape
+    the engine's retrieval-context extraction reads), carrying doc_count along."""
     tracer = make_tracer()
-    tracer.record_retrieval("orphan_search", query="x", output="y")
+    tracer.record_retrieval("orphan_search", query="x", output="y", doc_count=4)
     with tracer.trace("agent"):
         pass
     wires = enqueued_wires(tracer)
     assert len(wires) == 1
     assert wires[0]["name"] == "agent"
+    steps = wires[0]["performance_summary"]["retrieval_steps"]
+    assert [s["name"] for s in steps] == ["orphan_search"]
+    assert steps[0]["doc_count"] == 4
+
+
+def test_record_retrieval_carries_doc_count_into_child_span_metadata():
+    tracer = make_tracer()
+    with tracer.trace("agent"):
+        tracer.record_retrieval("kb_search", query="q", output="docs", doc_count=3)
+    wires = enqueued_wires(tracer)
+    child = wires[0]
+    assert child["name"] == "kb_search"
+    assert child["span_kind"] == "retrieval"
+    assert child["metadata"] == {"kind": "retrieval", "doc_count": 3}
+
+
+def test_record_memory_with_no_active_span_drops_instead_of_queueing():
+    """Memory must never ride the pending retrieval queue: it lands in
+    performance_summary.retrieval_steps, which feeds the engine's retrieval-context
+    extraction for RAG judges - recalled state is not knowledge grounding. With no active
+    span the record is dropped (debug-logged), not attached to the next trace."""
+    tracer = make_tracer()
+    tracer.record_memory("orphan prefs", operation="read", query="u-1", output="secret")
+    with tracer.trace("agent"):
+        pass
+    wires = enqueued_wires(tracer)
+    assert len(wires) == 1
+    assert wires[0]["name"] == "agent"
+    assert_no_performance_summary(wires)
+
+
+def test_merge_child_run_execution_steps_honor_their_stated_kind():
+    """crewai.py stamps its task steps "kind": "agent" - the merge loop must forward that
+    instead of unconditionally stamping every step "llm" (autogen/llamaindex steps carry no
+    kind and keep classifying as llm)."""
+    tracer = make_tracer()
+    with tracer.trace("crew") as span:
+        span._merge_child_run(
+            execution_steps=[
+                {"name": "Research task", "duration_ms": 5, "kind": "agent"},
+                {"name": "LLM Call 1", "duration_ms": 5},
+            ],
+            framework="crewai",
+        )
+    wires = enqueued_wires(tracer)
+    kinds = {w["name"]: w.get("span_kind") for w in wires if w["name"] != "crew"}
+    assert kinds == {"Research task": "agent", "LLM Call 1": "llm"}
 
 
 def test_record_tool_call_with_no_active_span_still_queues():

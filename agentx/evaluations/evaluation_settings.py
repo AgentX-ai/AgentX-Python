@@ -64,7 +64,8 @@ class EvaluationSettingsBuilder:
         if rouge_score:
             self._payload["rougeScore"] = {"enabled": True}
         # Sovereignty & Portability - the models to compare when this config runs
-        # (use client.evaluations.list_models() to discover valid ids).
+        # (use client.evaluations.list_models() to discover valid ids). Self-host: accepted
+        # on the wire but not acted on by the engine (same caveat as DatasetBuilder's).
         if sovereignty_models:
             self._payload["sovereigntyIndex"] = {
                 "enabled": True,

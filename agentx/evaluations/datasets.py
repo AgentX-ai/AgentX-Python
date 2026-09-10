@@ -81,7 +81,8 @@ class DatasetBuilder:
             self._payload["codeScorers"] = [
                 {
                     "id": scorer.get("id") or _uuid.uuid4().hex[:12],
-                    "name": scorer["name"],
+                    # Name may be omitted - the engine defaults it, so don't KeyError here.
+                    "name": scorer.get("name"),
                     "code": scorer["code"],
                     "enabled": scorer.get("enabled", True),
                 }
