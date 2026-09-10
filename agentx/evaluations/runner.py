@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import os
 import time
+
+import requests
 import uuid
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Union
 
@@ -304,6 +306,12 @@ class EvaluationRunContext:
                         resp.failed_validation,
                     )
                     return
+                except requests.Timeout as exc:
+                    # A read timeout means the engine may STILL be scoring this batch - a
+                    # retry re-POSTs it and double-bills every judge call (idempotency keys
+                    # protect rows already inserted, not judge work mid-flight). Fail loud.
+                    last_exc = exc
+                    break
                 except Exception as exc:
                     last_exc = exc
                     if attempt == 1:

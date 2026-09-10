@@ -49,7 +49,8 @@ class ScorerGroupsClient:
         )
         if response.status_code >= 400:
             raise AgentXScorerGroupsError(f"HTTP {response.status_code}: {response.text}")
-        return response.json()
+        # DELETE (and any other empty 2xx) has no body - .json() on it raises.
+        return response.json() if response.text else {}
 
     def list(self) -> List[ScorerGroup]:
         return [ScorerGroup(g) for g in self._request("GET", self._base).get("scorerGroups", [])]

@@ -274,7 +274,7 @@ def _patch_stream(
                 return iter(ctx)
 
             def __aiter__(self_inner):
-                return aiter(ctx)
+                return ctx.__aiter__()  # aiter() builtin is 3.10+; python_requires is >=3.9
 
             def __getattr__(self_inner, item):
                 return getattr(ctx, item)

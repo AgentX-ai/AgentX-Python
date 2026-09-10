@@ -107,17 +107,50 @@ class AgentXLlamaIndexHandler(BaseCallbackHandler):
         name: str = "llamaindex-agent",
         metadata: Optional[Dict[str, Any]] = None,
         session_id: Optional[str] = None,
+        max_run_age_seconds: float = 900.0,
     ) -> None:
         super().__init__(event_starts_to_ignore=[], event_ends_to_ignore=[])
         self._tracer = tracer
         self._name = name
         self._metadata = metadata
         self._session_id = session_id
+        # Safety net mirroring langchain.py's _prune_stale_entries: state is
+        # normally popped in on_event_end, but an event whose end callback never
+        # fires (hard crash, integration bug) would leak forever in this
+        # long-lived singleton handler. Entries older than this are swept out
+        # at the top of on_event_start.
+        self._max_run_age_seconds = max_run_age_seconds
 
         self._parents: Dict[str, Optional[str]] = {}
         self._roots: Dict[str, bool] = {}
         self._runs: Dict[str, Dict[str, Any]] = {}
         self._starts: Dict[str, Dict[str, Any]] = {}
+
+    def _prune_stale_entries(self) -> None:
+        """Sweep out event_id entries older than max_run_age_seconds - see __init__'s comment."""
+        cutoff = time.time() - self._max_run_age_seconds
+
+        # Every live event_id has a _starts entry (set in on_event_start and
+        # popped with _parents/_roots in on_event_end), each carrying its own
+        # start timestamp.
+        stale_event_ids = [
+            event_id for event_id, info in self._starts.items() if info.get("start", 0) < cutoff
+        ]
+        for event_id in stale_event_ids:
+            self._starts.pop(event_id, None)
+            self._parents.pop(event_id, None)
+            self._roots.pop(event_id, None)
+            self._runs.pop(event_id, None)
+
+        # Root runs outlive their own _starts entry until the root's end event
+        # fires - sweep those by the run state's own start timestamp.
+        stale_run_ids = [
+            event_id for event_id, state in self._runs.items() if state.get("start", 0) < cutoff
+        ]
+        for event_id in stale_run_ids:
+            self._runs.pop(event_id, None)
+            self._roots.pop(event_id, None)
+            self._parents.pop(event_id, None)
 
     # ------------------------------------------------------------------
     # BaseCallbackHandler protocol
@@ -138,6 +171,7 @@ class AgentXLlamaIndexHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> str:
         payload = payload or {}
+        self._prune_stale_entries()
         self._parents[event_id] = parent_id
 
         root_id = self._find_root(parent_id)
@@ -251,11 +285,16 @@ class AgentXLlamaIndexHandler(BaseCallbackHandler):
             tool_output = payload.get(EventPayload.FUNCTION_OUTPUT)
             state["tool_call_steps"].append({
                 "name": tool_name,
-                "duration_ms": (end_t - start_t) * 1000,
+                # tracer._merge_child_run's tool_calls loop reads "latency_ms"
+                # (not "duration_ms" like execution/retrieval steps).
+                "latency_ms": int((end_t - start_t) * 1000),
                 "start_time": start_t,
                 "end_time": end_t,
                 "input": _safe_serialize(tool_input) if tool_input is not None else None,
                 "output": f"ERROR: {exception}" if exception else (str(tool_output) if tool_output is not None else None),
+                # The engine's failure test is success === false; without this a
+                # failed tool call would read as passing.
+                "success": exception is None,
             })
 
         if is_root:
@@ -277,10 +316,9 @@ class AgentXLlamaIndexHandler(BaseCallbackHandler):
         return None
 
     def _send_trace(self, state: Dict[str, Any]) -> None:
-        # tool_call_steps entries carry start_time/end_time (unlike langchain.py's leaner
-        # wire-shaped tool_calls list) - _merge_child_run's tool_calls loop falls back to
-        # computing duration from those when no explicit latency_ms is present, so each tool
-        # call still positions correctly in the tree panel instead of defaulting to offset 0.
+        # tool_call_steps entries carry latency_ms AND start_time/end_time - _merge_child_run's
+        # tool_calls loop reads latency_ms for duration and the timestamps for position, so each
+        # tool call lands correctly in the tree panel instead of defaulting to offset 0.
         with self._tracer.trace(
             self._name, metadata=self._metadata, session_id=self._session_id, framework="llamaindex"
         ) as span:

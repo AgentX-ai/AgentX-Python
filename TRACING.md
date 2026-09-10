@@ -112,7 +112,7 @@ All parameters work in both decorator and context-manager form - the decorator f
 | `monitor` | `bool` | - | `True` checks this trace against Monitor patterns immediately; `False` opts out of every ingest-time check. Default (`None`) leaves the server's standard behavior. See [Monitor](#monitor) |
 | `pattern_ids` | `list[str]` | - | With `monitor=True`: restrict detection to exactly these pattern ids |
 | `agent_id` | `str` | - | Pin this trace to a known agent id instead of resolving by `name` - a disambiguator for when the name alone isn't enough |
-| `span_kind` | `str` | - | What kind of step this span is (`"agent"`, `"llm"`, `"tool"`, `"retrieval"`, ...), stated instead of left to the backend's classification fallback |
+| `span_kind` | `str` | - | What kind of step this span is (`"agent"`, `"llm"`, `"tool"`, `"retrieval"`, `"memory"`, ...), stated instead of left to the backend's classification fallback |
 
 ### `_TraceSpan` methods and attributes (context manager form)
 
@@ -368,6 +368,19 @@ with tracer.trace("rag-agent") as span:
 ```
 
 `tracer.record_retrieval(name, query=..., output=..., duration_ms=...)` is the after-the-fact form. Custom names like `"kb_search"` work - the span carries an explicit retrieval marker, not a name heuristic.
+
+### Memory operations
+
+The memory twins mark a long-term-memory operation (a Mem0/Zep/Letta-style recall or store) as a `span_kind="memory"` child span of the active span. Memory is deliberately NOT retrieval: retrieval spans feed the RAG judges' `{context}` (knowledge grounding), while memory is recalled state.
+
+```python
+with tracer.trace("support-agent") as span:
+    with tracer.trace_memory("user prefs", operation="read", query=user_id) as m:
+        m.output = memory.search(user_id, question)
+    span.output = answer
+```
+
+`tracer.record_memory(name, operation=..., query=..., output=..., duration_ms=...)` is the after-the-fact form. `operation` is free text - conventionally `"read"` or `"write"` - carried in the span's metadata, while the kind itself stays one value so dashboards and scorers can select all memory activity at once. With no active span, both forms queue the record and merge it into the next trace this tracer sends (the patched-client flow where the memory op runs just before a standalone completions call) instead of silently dropping it.
 
 ---
 
@@ -672,6 +685,6 @@ Constructing the client makes no network call; `client.ping()` is the fail-fast 
 ## Delivery behavior and limits
 
 - **Queueing** - traces are enqueued (up to 500 in flight) and drained by a background daemon thread. On overflow, or when retries are exhausted, the trace is dropped **with a logged warning** (first drop, then every 50th, with a cumulative count) - never silently.
-- **Retries** - each queued trace is retried up to 3 times with backoff on connection errors, 429, and 5xx responses; a 429's `Retry-After` header is honored. `sync=True` sends block once with a 10s timeout and do not retry - a failed sync send just means `span.trace_id` stays `None`.
+- **Retries** - each queued trace walks the full backoff schedule (up to 3 retries after the first attempt) on connection errors, 429, and 5xx responses alike; a 429's `Retry-After` header is honored in place of the schedule's next wait. `sync=True` sends block with a 10s timeout and retry only briefly - up to 2 bounded retries on 429/503, honoring `Retry-After` (capped at 5s per wait); span ids make redelivery idempotent server-side. A sync send that still fails means the trace was **not stored** (nothing is persisted locally or retried in the background), so `span.trace_id` stays `None`.
 - **Payload truncation** - `input`, `output`, and `metadata` are serialized best-effort before sending: nesting deeper than 4 levels, dicts/lists beyond 30 entries, and unserializable objects are truncated/stringified (long fallback strings cut to 200 chars) to keep payloads bounded.
 - **First failure warns** - the first delivery failure per client logs at WARNING with a hint (bad key vs. bad URL); repeats log at DEBUG. `client.ping()` at startup fails fast instead.

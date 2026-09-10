@@ -470,7 +470,7 @@ client.evaluations.run(
 ).execute(my_agent_fn)
 ```
 
-or on a live trace from real production traffic, scored continuously by a self-host Online Evaluator:
+or on a live trace from real production traffic, scored continuously by a judge scorer's online profile (self-host):
 
 ```python
 with client.tracer.trace("support-agent", metadata={"promptName": prompt.name}) as span:
@@ -480,7 +480,7 @@ with client.tracer.trace("support-agent", metadata={"promptName": prompt.name}) 
 From the self-host dashboard: Governance > Manage > **Prompts** > a prompt's row menu > **Suggest
 improvement**. It merges both kinds of evidence - deliberate eval runs (defaulting to the *current
 published version only*, auto-widening to every version if there isn't enough recent evidence yet)
-and worst-scoring Online Evaluator ratings from a recent time window - feeds the worst-rated
+and the worst-scoring ratings a judge scorer's online profile produced in a recent time window - feeds the worst-rated
 examples to a judge, and shows a full rewrite plus reasoning. **Nothing is saved until a human
 approves it as a new version.** The same propose loop is scriptable: `prompts.examples(prompt.id)`
 returns the evidence, `prompts.propose(prompt.id)` asks the judge for a rewrite (returns

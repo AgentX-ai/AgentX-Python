@@ -16,7 +16,13 @@ _REQUIRED_CSV_COLS = {"query"}
 
 
 class DatasetBuilder:
-    """Fluent builder for creating a Custom Agent Evaluations dataset."""
+    """Fluent builder for creating a Custom Agent Evaluations dataset.
+
+    ``judge_prompt``/``judge_model`` are LLM-as-judge overrides for the dataset's grading
+    config. NOTE (self-host): the engine's dataset-create route currently ignores both -
+    set them on a judge scorer / the evaluation settings instead. ``sovereignty_models``
+    is accepted on the wire but not acted on by the self-host engine.
+    """
 
     def __init__(
         self,
@@ -50,6 +56,8 @@ class DatasetBuilder:
         # LLM-as-judge overrides for this dataset's own grading config. Omit either to keep the
         # server default (raw prompt template / gpt-5.6-luna, see EVALUATIONS.md). judge_model
         # must be one of client.evaluations.list_models() (OpenAI or Anthropic).
+        # Self-host: the dataset-create route currently IGNORES judgePrompt/judgeModel - set
+        # them on a judge scorer / the evaluation settings instead (see class docstring).
         if judge_prompt is not None:
             self._payload["judgePrompt"] = judge_prompt
         if judge_model is not None:
@@ -84,7 +92,8 @@ class DatasetBuilder:
         if rouge_score:
             self._payload["rougeScore"] = {"enabled": True}
         # Sovereignty & Portability - the models to compare on this dataset (use
-        # client.evaluations.list_models() to discover valid ids).
+        # client.evaluations.list_models() to discover valid ids). Self-host: accepted on
+        # the wire but not acted on by the engine (see class docstring).
         if sovereignty_models:
             self._payload["sovereigntyIndex"] = {
                 "enabled": True,
@@ -354,10 +363,13 @@ class DatasetClient:
             "acceptanceCriteria",
             "rejectionCriteria",
             "evaluationCriteria",
+            "judgePrompt",
+            "judgeModel",
             "vectorSimilarity",
             "jaccardSimilarity",
             "bleuScore",
             "rougeScore",
+            "sovereigntyIndex",
             "codeScorers",
         ):
             if wire.get(key) is not None:
