@@ -24,7 +24,12 @@ from agentx.evaluations.models import (
 
 logger = logging.getLogger(__name__)
 
-from agentx.util import _DEFAULT_API_BASE as _UTIL_API_BASE
+from agentx.util import _DEFAULT_API_BASE as _UTIL_API_BASE, normalize_base
+
+# The canonical error classes (agentx.exceptions) are raised - and re-exported here for
+# compat with code that imported them from this module - so `except agentx.AgentXAuthError`
+# works whichever client raised.
+from agentx.exceptions import AgentXError, AgentXAuthError, AgentXValidationError
 
 _DEFAULT_BASE_URL = f"{_UTIL_API_BASE}/custom-agent-evaluations"
 SDK_NAME = "agentx-python"
@@ -42,7 +47,7 @@ _SELF_HOST_ANALYZE_TIMEOUT = 1800
 _SELF_HOST_SCORING_TIMEOUT = 900
 
 
-class AgentXEvaluationsError(Exception):
+class AgentXEvaluationsError(AgentXError):
     """An evaluations API call failed.
 
     ``status_code`` carries the HTTP status when the failure came from a response rather
@@ -53,14 +58,6 @@ class AgentXEvaluationsError(Exception):
     def __init__(self, message: str, status_code: Optional[int] = None) -> None:
         super().__init__(message)
         self.status_code = status_code
-
-
-class AgentXAuthError(AgentXEvaluationsError):
-    pass
-
-
-class AgentXValidationError(AgentXEvaluationsError):
-    pass
 
 
 class EvaluationSubmissionError(AgentXEvaluationsError):
@@ -96,13 +93,10 @@ class EvaluationsClient:
         # whatever workspace the API key's user defaults to, not the one the caller intended.
         self._workspace_id = workspace_id
         # Priority: constructor arg > env var > SDK default
-        # Always append /custom-agent-evaluations so users only need to provide /api/v1
-        _api_base = (
-            base_url or os.getenv("AGENTX_API_BASE_URL", _UTIL_API_BASE)
-        ).rstrip("/")
-        if not _api_base.endswith("/custom-agent-evaluations"):
-            _api_base = f"{_api_base}/custom-agent-evaluations"
-        self._base_url = _api_base
+        # normalize_base strips a trailing slash and any /custom-agent-evaluations suffix,
+        # then the suffix is appended - users only need to provide /api/v1 either way.
+        _api_base = normalize_base(base_url or os.getenv("AGENTX_API_BASE_URL", _UTIL_API_BASE))
+        self._base_url = f"{_api_base}/custom-agent-evaluations"
         # None until an analysis call tells us which engine this is; see _api_root.
         self._analysis_on_dashboard_router: Optional[bool] = None
         self._session = requests.Session()
@@ -184,13 +178,16 @@ class EvaluationsClient:
                 continue
 
             if resp.status_code == 401:
-                raise AgentXAuthError("Invalid or missing API key")
+                raise AgentXAuthError("Invalid or missing API key", status_code=401)
             if resp.status_code == 422:
                 raise AgentXValidationError(resp.text)
+            # Gate on the schedule itself so HTTP-status retries walk the SAME full backoff
+            # schedule connection errors do - the old `attempt < _MAX_RETRIES - 1` gate left
+            # the schedule's last entry unreachable for HTTP retries (ingest_client precedent).
             if (
                 resp.status_code in _RETRYABLE_STATUS
                 and retry
-                and attempt < _MAX_RETRIES - 1
+                and attempt < len(schedule) - 1
             ):
                 logger.debug(
                     "Retryable status %d (attempt %d)", resp.status_code, attempt + 1
@@ -500,6 +497,17 @@ class EvaluationsClient:
         return self._report_from_dashboard(run_id)
 
     def get_missing_results(self, run_id: str) -> List[Dict[str, Any]]:
+        """Deprecated: on self-host the route's response body has no top-level list, so this
+        always returns ``[]``. Use :meth:`get_submitted_keys` - the same route's
+        ``submittedKeys`` - to find out what a run still needs."""
+        import warnings
+
+        warnings.warn(
+            "get_missing_results() always returns [] on self-host - use get_submitted_keys() "
+            "to resume a run instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         data = self._request("GET", f"/runs/{run_id}/missing-results")
         return data if isinstance(data, list) else data.get("missing", [])
 

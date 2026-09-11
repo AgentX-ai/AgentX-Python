@@ -9,8 +9,10 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
+from agentx.exceptions import AgentXError
 
-class AgentXScorerGroupsError(Exception):
+
+class AgentXScorerGroupsError(AgentXError):
     pass
 
 

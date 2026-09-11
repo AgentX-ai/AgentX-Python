@@ -3,7 +3,7 @@ import requests
 import os
 import logging
 
-from agentx.util import get_headers, api_base
+from agentx.util import get_headers, api_base, normalize_base
 from agentx.resources.agent import Agent
 from agentx.resources.workforce import Workforce
 
@@ -16,16 +16,23 @@ class AgentX:
         base_url: Optional[str] = None,
         workspace_id: Optional[str] = None,
     ):
+        # The api_key is NOT written back into os.environ (it used to be): every sub-client
+        # below receives it explicitly, and mutating process-global state from a constructor
+        # re-pointed unrelated code - the same leak the base_url write below had (deep-dive
+        # round 3, bug #1). Static flows that still read the env (AgentX.list_workforces,
+        # bare get_headers()) now require the caller to set AGENTX_API_KEY themselves.
         self.api_key = api_key or os.getenv("AGENTX_API_KEY")
-        if self.api_key and not os.getenv("AGENTX_API_KEY"):
-            os.environ["AGENTX_API_KEY"] = self.api_key
 
         # base_url overrides AGENTX_API_BASE_URL env var (and the SDK default). It is
         # deliberately NOT written back into os.environ: the constructor used to do that, which
         # made the last-constructed client silently re-point every other client in the process
         # (deep-dive round 3, bug #1). Each sub-client below receives this value explicitly and
-        # captures it at construction instead.
+        # captures it at construction instead. Normalized (trailing slash and the
+        # /custom-agent-evaluations suffix stripped) so an evaluations-shaped URL works for
+        # every sub-client, not just evaluations.
         self.base_url = base_url or os.getenv("AGENTX_API_BASE_URL")
+        if self.base_url:
+            self.base_url = normalize_base(self.base_url)
 
         self.workspace_id = workspace_id or os.getenv("AGENTX_WORKSPACE_ID")
 
@@ -91,6 +98,27 @@ class AgentX:
             workspace_id=self.workspace_id,
         )
         self.tracer = Tracer(_ingest_client)
+        self._ingest_client = _ingest_client
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def close(self, timeout: float = 5.0) -> bool:
+        """Flush queued traces and stop the tracer's background ingest worker.
+
+        Returns ``True`` when everything drained before ``timeout`` seconds elapsed. Optional -
+        an ``atexit`` hook already flushes queued traces on interpreter shutdown - but a
+        long-running service that tears clients down mid-process should call it (or use the
+        client as a context manager) so worker threads don't accumulate.
+        """
+        return self._ingest_client.close(timeout)
+
+    def __enter__(self) -> "AgentX":
+        return self
+
+    def __exit__(self, exc_type, exc_val, tb) -> None:
+        self.close()
 
     @classmethod
     def from_env(cls) -> "AgentX":
@@ -129,7 +157,9 @@ class AgentX:
 
     @staticmethod
     def list_workforces() -> List["Workforce"]:
-        """List all workforces/teams."""
+        """List all workforces/teams. Static, so it reads AGENTX_API_KEY from the environment
+        directly - the constructor no longer writes ``api_key`` into os.environ, so set the
+        env var yourself before calling this."""
         url = f"{api_base()}/access/teams"
         response = requests.get(url, headers=get_headers())
         if response.status_code == 200:

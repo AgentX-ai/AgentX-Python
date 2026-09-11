@@ -6,11 +6,12 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from agentx.util import api_base, get_headers
+from agentx.exceptions import AgentXError
 
 logger = logging.getLogger(__name__)
 
 
-class AgentXProjectsError(Exception):
+class AgentXProjectsError(AgentXError):
     pass
 
 

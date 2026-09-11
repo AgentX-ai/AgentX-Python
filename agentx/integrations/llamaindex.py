@@ -21,10 +21,14 @@ Requires: ``pip install "agentx-python[llamaindex]"``
 """
 from __future__ import annotations
 
+import logging
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
+
+logger = logging.getLogger(__name__)
 
 try:
     from llama_index.core.callbacks.base_handler import BaseCallbackHandler
@@ -67,15 +71,23 @@ def _extract_usage_tokens(completion: Any) -> tuple:
     """
     Best-effort: LlamaIndex's CallbackManager payload has no dedicated token
     fields, so this digs into the completion/response object's provider-raw
-    data (shape varies per LLM integration, hence the broad try/except).
+    data. ``raw`` is a plain dict for some LLM integrations and a typed
+    response object (with a ``.usage`` attribute) for others - both shapes are
+    read, since bailing on the non-dict form silently lost every token count
+    for those providers.
     """
     raw = getattr(completion, "raw", None)
-    if not isinstance(raw, dict):
-        return None, None
-    usage = raw.get("usage")
+    if isinstance(raw, dict):
+        usage = raw.get("usage")
+    else:
+        usage = getattr(raw, "usage", None) if raw is not None else None
     if isinstance(usage, dict):
         input_tokens = usage.get("prompt_tokens") or usage.get("input_tokens")
         output_tokens = usage.get("completion_tokens") or usage.get("output_tokens")
+        return input_tokens, output_tokens
+    if usage is not None:
+        input_tokens = getattr(usage, "prompt_tokens", None) or getattr(usage, "input_tokens", None)
+        output_tokens = getattr(usage, "completion_tokens", None) or getattr(usage, "output_tokens", None)
         return input_tokens, output_tokens
     return None, None
 
@@ -125,32 +137,49 @@ class AgentXLlamaIndexHandler(BaseCallbackHandler):
         self._roots: Dict[str, bool] = {}
         self._runs: Dict[str, Dict[str, Any]] = {}
         self._starts: Dict[str, Dict[str, Any]] = {}
+        # Guards the prune's iteration over the state dicts against concurrent
+        # on_event_start inserts from other threads (a query engine and a bare
+        # llm.complete() running in parallel share this singleton handler) -
+        # iterating a dict another thread mutates raises RuntimeError.
+        self._state_lock = threading.Lock()
 
     def _prune_stale_entries(self) -> None:
         """Sweep out event_id entries older than max_run_age_seconds - see __init__'s comment."""
         cutoff = time.time() - self._max_run_age_seconds
+        swept = 0
 
-        # Every live event_id has a _starts entry (set in on_event_start and
-        # popped with _parents/_roots in on_event_end), each carrying its own
-        # start timestamp.
-        stale_event_ids = [
-            event_id for event_id, info in self._starts.items() if info.get("start", 0) < cutoff
-        ]
-        for event_id in stale_event_ids:
-            self._starts.pop(event_id, None)
-            self._parents.pop(event_id, None)
-            self._roots.pop(event_id, None)
-            self._runs.pop(event_id, None)
+        with self._state_lock:
+            # Every live event_id has a _starts entry (set in on_event_start and
+            # popped with _parents/_roots in on_event_end), each carrying its own
+            # start timestamp.
+            stale_event_ids = [
+                event_id for event_id, info in list(self._starts.items()) if info.get("start", 0) < cutoff
+            ]
+            for event_id in stale_event_ids:
+                self._starts.pop(event_id, None)
+                self._parents.pop(event_id, None)
+                self._roots.pop(event_id, None)
+                self._runs.pop(event_id, None)
+            swept += len(stale_event_ids)
 
-        # Root runs outlive their own _starts entry until the root's end event
-        # fires - sweep those by the run state's own start timestamp.
-        stale_run_ids = [
-            event_id for event_id, state in self._runs.items() if state.get("start", 0) < cutoff
-        ]
-        for event_id in stale_run_ids:
-            self._runs.pop(event_id, None)
-            self._roots.pop(event_id, None)
-            self._parents.pop(event_id, None)
+            # Root runs outlive their own _starts entry until the root's end event
+            # fires - sweep those by the run state's own start timestamp.
+            stale_run_ids = [
+                event_id for event_id, state in list(self._runs.items()) if state.get("start", 0) < cutoff
+            ]
+            for event_id in stale_run_ids:
+                self._runs.pop(event_id, None)
+                self._roots.pop(event_id, None)
+                self._parents.pop(event_id, None)
+            swept += len(stale_run_ids)
+
+        if swept:
+            logger.warning(
+                "AgentXLlamaIndexHandler swept %d in-flight event record(s) older than %.0fs - "
+                "their end callbacks never fired, so their traces were never sent",
+                swept,
+                self._max_run_age_seconds,
+            )
 
     # ------------------------------------------------------------------
     # BaseCallbackHandler protocol
@@ -172,26 +201,28 @@ class AgentXLlamaIndexHandler(BaseCallbackHandler):
     ) -> str:
         payload = payload or {}
         self._prune_stale_entries()
-        self._parents[event_id] = parent_id
+        # Inserts under the same lock the prune's iteration holds - see _state_lock's comment.
+        with self._state_lock:
+            self._parents[event_id] = parent_id
 
-        root_id = self._find_root(parent_id)
-        if root_id is None and event_type in _ROOT_EVENT_TYPES:
-            self._roots[event_id] = True
-            root_id = event_id
-            self._runs[event_id] = {
-                "start": time.time(),
-                "input": None,
-                "output": None,
-                "model": None,
-                "error": None,
-                "execution_steps": [],
-                "tool_call_steps": [],
-                "retrieval_steps": [],
-                "input_tokens": 0,
-                "output_tokens": 0,
-            }
+            root_id = self._find_root(parent_id)
+            if root_id is None and event_type in _ROOT_EVENT_TYPES:
+                self._roots[event_id] = True
+                root_id = event_id
+                self._runs[event_id] = {
+                    "start": time.time(),
+                    "input": None,
+                    "output": None,
+                    "model": None,
+                    "error": None,
+                    "execution_steps": [],
+                    "tool_call_steps": [],
+                    "retrieval_steps": [],
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                }
 
-        self._starts[event_id] = {"start": time.time(), "type": event_type, "payload": payload}
+            self._starts[event_id] = {"start": time.time(), "type": event_type, "payload": payload}
 
         state = self._runs.get(root_id) if root_id else None
         if state is not None and state["input"] is None:
@@ -239,7 +270,15 @@ class AgentXLlamaIndexHandler(BaseCallbackHandler):
         elif event_type == CBEventType.LLM:
             completion = payload.get(EventPayload.COMPLETION) or payload.get(EventPayload.RESPONSE)
             output_text = _extract_llm_text(completion)
+            # LLM events don't actually set MODEL_NAME (it only appears on embedding events),
+            # so also read it off the start payload's SERIALIZED dict - the LLM's serialized
+            # config, same "model"/"model_name" ladder langchain.py's _record_llm_start walks.
             model = payload.get(EventPayload.MODEL_NAME)
+            if not model and start_info:
+                serialized = start_info["payload"].get(EventPayload.SERIALIZED)
+                if isinstance(serialized, dict):
+                    model = serialized.get("model") or serialized.get("model_name")
+            model = str(model) if model else None
             if model and not state["model"]:
                 state["model"] = model
             input_tokens, output_tokens = _extract_usage_tokens(completion)

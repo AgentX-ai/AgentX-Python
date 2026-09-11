@@ -207,10 +207,13 @@ class AgentXTracingProcessor:
         # failure lives on `span.error` (a `SpanError | None`) instead.
         # First error wins: one failed span is enough to flag the trace.
         span_error = getattr(span, "error", None)
-        if span_error is not None and state.get("error") is None:
+        span_error_text: Optional[str] = None
+        if span_error is not None:
             error_message = getattr(span_error, "message", None) or str(span_error)
             error_data = getattr(span_error, "data", None)
-            state["error"] = f"{error_message} ({error_data})" if error_data else error_message
+            span_error_text = f"{error_message} ({error_data})" if error_data else error_message
+            if state.get("error") is None:
+                state["error"] = span_error_text
 
         t0 = _iso_to_ts(getattr(span, "started_at", None))
         t1 = _iso_to_ts(getattr(span, "ended_at", None))
@@ -315,8 +318,21 @@ class AgentXTracingProcessor:
                 duration_ms=latency if t0 is None or t1 is None else None,
                 input=span_data.input,
                 output=tool_output,
+                error=span_error_text,
                 span_kind="tool",
             )
+            # Also mirror onto the root's flat tool_calls list (the dual-write every other
+            # integration does via _merge_child_run): the child span above only feeds the
+            # trace detail's span tree, while the engine's built-in "Tool failure" check and
+            # the dashboard's Tool quality column read the ROOT trace's flat toolCalls -
+            # without this, a failed function tool would be invisible to both.
+            state["root_span"].tool_calls.append({
+                "name": span_data.name,
+                "input": _safe_serialize(span_data.input) if span_data.input is not None else None,
+                "output": tool_output,
+                "latency_ms": latency,
+                "success": span_error is None,
+            })
 
     def force_flush(self) -> None:
         self._tracer.flush()

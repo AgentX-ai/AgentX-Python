@@ -825,6 +825,7 @@ class Tracer:
         duration_ms: Optional[float] = None,
         start_time: Optional[float] = None,
         end_time: Optional[float] = None,
+        error: Optional[str] = None,
     ) -> None:
         """
         Manually record a knowledge-base / vector-store retrieval that an
@@ -856,6 +857,7 @@ class Tracer:
                 "output": _safe_serialize(output) if output is not None else None,
                 "duration_ms": latency_ms,
                 **({"doc_count": doc_count} if doc_count is not None else {}),
+                **({"error": error} if error is not None else {}),
             })
             return
         # The kind marker is what tells the engine (retrieval-context extraction for RAG
@@ -869,6 +871,7 @@ class Tracer:
             duration_ms=duration_ms,
             input=query,
             output=output,
+            error=error,
             metadata={"kind": "retrieval", **({"doc_count": doc_count} if doc_count is not None else {})},
             span_kind="retrieval",
         )
@@ -883,6 +886,7 @@ class Tracer:
         duration_ms: Optional[float] = None,
         start_time: Optional[float] = None,
         end_time: Optional[float] = None,
+        error: Optional[str] = None,
     ) -> None:
         """
         Manually record a long-term-memory operation (a Mem0/Zep/Letta-style recall or store)
@@ -916,6 +920,7 @@ class Tracer:
             duration_ms=duration_ms,
             input=query,
             output=output,
+            error=error,
             metadata={"kind": "memory", **({"operation": operation} if operation else {})},
             span_kind="memory",
         )
@@ -945,6 +950,8 @@ class Tracer:
         finally:
             end_t = time.time()
             if error is not None and recorder.output is None:
+                # The ERROR: prefix stays in the output for at-a-glance visibility; the
+                # structured error field below is what marks the span failed.
                 recorder.output = f"ERROR: {error}"
             self.record_memory(
                 name,
@@ -954,6 +961,7 @@ class Tracer:
                 duration_ms=(end_t - start_t) * 1000,
                 start_time=start_t,
                 end_time=end_t,
+                error=error,
             )
 
     @contextmanager
@@ -966,13 +974,26 @@ class Tracer:
                 docs = retrieve(question)
                 r.doc_count = len(docs)
                 r.output = docs
+
+        An exception escaping the block records the retrieval as failed (error set, output
+        ``ERROR: ...``) instead of as a clean empty retrieval, then propagates unchanged -
+        same posture as :meth:`trace_tool_call`.
         """
         start_t = time.time()
         recorder = _RetrievalRecorder()
+        error: Optional[str] = None
         try:
             yield recorder
+        except BaseException as exc:
+            # A retrieval that raised must not be recorded as a clean empty span
+            # (trace_tool_call precedent, which also catches BaseException) - fold the error
+            # into the output and re-raise.
+            error = str(exc)
+            raise
         finally:
             end_t = time.time()
+            if error is not None and recorder.output is None:
+                recorder.output = f"ERROR: {error}"
             self.record_retrieval(
                 name,
                 query=query,
@@ -981,6 +1002,7 @@ class Tracer:
                 duration_ms=(end_t - start_t) * 1000,
                 start_time=start_t,
                 end_time=end_t,
+                error=error,
             )
 
     def trace(
@@ -1323,23 +1345,31 @@ class Tracer:
         if "span_kind" in payload:
             wire["span_kind"] = payload["span_kind"]
 
-        pending_tool_calls, self._pending_tool_calls = self._pending_tool_calls, []
-        if pending_tool_calls:
-            # Passed through whole rather than re-projected field by field: record_tool_call may
-            # have attached success/error (the fields the engine's tool-failure check reads), and
-            # a projection that predates them would silently strip exactly the failure evidence.
-            wire["tool_calls"] = list(wire.get("tool_calls") or []) + [dict(t) for t in pending_tool_calls]
+        # Drain the no-active-span pending queues into ROOT sends only. A nested
+        # `with tracer.trace(...)` block exits (and _send()s) before its parent, and a pending
+        # record drained into that child row is invisible to the engine's monitor pipeline -
+        # routes/ingest.ts skips every parent_span_id row - so a queued failed-tool signal
+        # would silently vanish into a span nobody checks.
+        if "parent_span_id" not in wire:
+            pending_tool_calls, self._pending_tool_calls = self._pending_tool_calls, []
+            if pending_tool_calls:
+                # Passed through whole rather than re-projected field by field: record_tool_call
+                # may have attached success/error (the fields the engine's tool-failure check
+                # reads), and a projection that predates them would silently strip exactly the
+                # failure evidence.
+                wire["tool_calls"] = list(wire.get("tool_calls") or []) + [dict(t) for t in pending_tool_calls]
 
-        # record_retrieval entries queued with no active span ride the root's
-        # performance_summary.retrieval_steps - the same shape older flat traces used, which the
-        # engine's retrieval-context extraction and the dashboard's references panel both read.
-        pending_retrievals, self._pending_retrievals = self._pending_retrievals, []
-        if pending_retrievals:
-            summary = dict(wire.get("performance_summary") or {})
-            summary["retrieval_steps"] = list(summary.get("retrieval_steps") or []) + [
-                dict(r) for r in pending_retrievals
-            ]
-            wire["performance_summary"] = summary
+            # record_retrieval entries queued with no active span ride the root's
+            # performance_summary.retrieval_steps - the same shape older flat traces used, which
+            # the engine's retrieval-context extraction and the dashboard's references panel
+            # both read.
+            pending_retrievals, self._pending_retrievals = self._pending_retrievals, []
+            if pending_retrievals:
+                summary = dict(wire.get("performance_summary") or {})
+                summary["retrieval_steps"] = list(summary.get("retrieval_steps") or []) + [
+                    dict(r) for r in pending_retrievals
+                ]
+                wire["performance_summary"] = summary
 
         return self._dispatch(wire, sync=sync)
 

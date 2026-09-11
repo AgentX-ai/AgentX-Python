@@ -299,3 +299,50 @@ def test_dataset_model_round_trips_code_scorers():
     parsed = Dataset(**wire)
     assert parsed.code_scorers == wire["codeScorers"]
     assert parsed.model_dump(by_alias=True)["codeScorers"] == wire["codeScorers"]
+
+
+def test_publish_tuning_preserves_the_validation_token(recorded):
+    """P1 regression: publish_tuning re-projected the validation dict and dropped the signed
+    validationToken from validate_tuning's response, so the engine's version history stamped
+    every publish client-asserted instead of measured."""
+    calls, responses = recorded
+    responses.append(
+        FakeResponse({"judgeScorer": {"_id": "s1", "name": "n", "online": {"profileId": "prof-9"}}})
+    )
+    responses.append(FakeResponse({"published": True}))
+    make_client().publish_tuning(
+        "s1",
+        {"acceptanceCriteria": "a", "rejectionCriteria": "r", "evaluationCriteria": "e"},
+        validation={
+            "verdict": "improved",
+            "netAgreementGain": 0.12,
+            "validationToken": "tok-123",
+            "fixed": 3,
+        },
+    )
+    body = calls[1]["json"]
+    assert body["validation"] == {"verdict": "improved", "netAgreementGain": 0.12, "token": "tok-123"}
+
+
+def test_legacy_monitor_publish_lifts_validation_token(monkeypatch):
+    """Same fix on the legacy MonitorClient path: the dict passes through whole AND the
+    validationToken is lifted into the `token` key the engine's publish route verifies."""
+    from agentx.monitor.client import MonitorClient
+
+    client = MonitorClient(api_key="k", base_url="http://engine:1/api/v1")
+    captured = {}
+
+    def fake_request(method, path, base=None, json=None, **kwargs):
+        captured.update({"method": method, "path": path, "json": json})
+        return {}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    client.publish_online_evaluator_tuning(
+        "ev-1",
+        {"acceptanceCriteria": "a"},
+        validation={"verdict": "improved", "validationToken": "tok-9", "fixed": 2},
+    )
+    validation = captured["json"]["validation"]
+    assert validation["token"] == "tok-9"
+    assert validation["validationToken"] == "tok-9"  # passed through whole
+    assert validation["fixed"] == 2
