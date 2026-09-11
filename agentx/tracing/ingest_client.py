@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import queue
@@ -9,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from agentx.util import _DEFAULT_API_BASE as _UTIL_API_BASE
+from agentx.util import _DEFAULT_API_BASE as _UTIL_API_BASE, normalize_base
 from agentx.exceptions import AgentXAPIError, CINotEnabled, DatasetNotFound
 from agentx.tracing.ci_types import (
     CIRun,
@@ -51,10 +52,9 @@ class IngestClient:
         self._api_key = api_key
         self._sdk_version = sdk_version
 
-        _base = (base_url or os.getenv("AGENTX_API_BASE_URL", _UTIL_API_BASE)).rstrip("/")
-        # Strip the custom-agent-evaluations suffix if someone passes the eval base URL
-        if _base.endswith("/custom-agent-evaluations"):
-            _base = _base[: -len("/custom-agent-evaluations")]
+        # normalize_base strips the trailing slash and the custom-agent-evaluations suffix if
+        # someone passes the eval base URL - shared with util.api_base()/AgentX.__init__.
+        _base = normalize_base(base_url or os.getenv("AGENTX_API_BASE_URL", _UTIL_API_BASE))
         self._endpoint = f"{_base}/ingest/traces"
 
         self._session = requests.Session()
@@ -80,6 +80,11 @@ class IngestClient:
         self._queue: queue.Queue[Optional[Dict[str, Any]]] = queue.Queue(maxsize=_QUEUE_MAX)
         self._worker = threading.Thread(target=self._drain, daemon=True, name="agentx-ingest")
         self._worker.start()
+
+        # Flush (not close) at interpreter shutdown so traces enqueued moments before exit
+        # still get a bounded delivery attempt - the worker is a daemon thread, so without
+        # this they'd silently die with the process. close() unregisters it.
+        atexit.register(self.flush)
 
         # Base URL (without the /ingest/traces suffix) for synchronous calls like evaluate_trace
         self._base_url = _base
@@ -120,6 +125,27 @@ class IngestClient:
                     return False
                 self._queue.all_tasks_done.wait(remaining)
         return True
+
+    def close(self, timeout: float = 5.0) -> bool:
+        """Drain what the deadline allows, then stop the background worker for good.
+
+        Enqueues the ``None`` sentinel the worker loop exits on and joins the thread, both
+        bounded by ``timeout`` seconds of total wall-clock time. Returns ``True`` when the
+        queue fully drained AND the worker stopped. Idempotent; a closed client must not be
+        used to send further traces (they would queue with no worker to deliver them).
+        """
+        deadline = time.time() + timeout
+        if not self._worker.is_alive():
+            return True
+        drained = self.flush(max(0.0, deadline - time.time()))
+        try:
+            self._queue.put_nowait(None)
+        except queue.Full:
+            # Worker wedged behind a full queue - the bounded join below still applies.
+            pass
+        self._worker.join(max(0.1, deadline - time.time()))
+        atexit.unregister(self.flush)
+        return drained and not self._worker.is_alive()
 
     def _record_drop(self, reason: str) -> None:
         self._dropped += 1

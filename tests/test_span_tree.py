@@ -356,7 +356,7 @@ def test_crewai_emits_one_child_per_task():
         "task-1": {"name": "Research topic", "start": now, "end": now + 0.03, "error": None},
         "task-2": {"name": "Write summary", "start": now + 0.03, "end": now + 0.04, "error": None},
     }
-    observer._start_task_timing_capture = lambda: (fake_timings, lambda: None)
+    observer._start_task_timing_capture = lambda crew=None: (fake_timings, lambda: None)
 
     result = observer.kickoff(FakeCrew(), inputs={"topic": "AI"})
 
@@ -380,7 +380,7 @@ def test_crewai_falls_back_to_evenly_divided_children_without_event_bus():
 
     tracer = make_tracer()
     observer = AgentXCrewObserver(tracer, name="my-crew")
-    observer._start_task_timing_capture = lambda: ({}, lambda: None)
+    observer._start_task_timing_capture = lambda crew=None: ({}, lambda: None)
 
     class FakeTaskOutput:
         def __init__(self, description, raw):
@@ -423,7 +423,7 @@ def test_crewai_does_not_swallow_kickoff_exception():
 
     now = 1_700_000_000.0
     fake_timings = {"task-1": {"name": "Research topic", "start": now, "end": now + 0.03, "error": None}}
-    observer._start_task_timing_capture = lambda: (fake_timings, lambda: None)
+    observer._start_task_timing_capture = lambda crew=None: (fake_timings, lambda: None)
 
     with pytest.raises(RuntimeError, match="boom"):
         observer.kickoff(FakeCrew(), inputs={"topic": "AI"})
@@ -737,3 +737,232 @@ def test_record_tool_call_with_no_active_span_still_queues():
     wires = enqueued_wires(tracer)
     assert len(wires) == 1
     assert wires[0]["tool_calls"][0]["name"] == "orphan_call"
+
+
+def test_pending_records_drain_into_root_sends_only_never_nested_children():
+    """P0 regression: a record_tool_call/record_retrieval queued with no active span must ride
+    the next ROOT trace's wire. The old drain ran on every _send(), and a nested `with
+    tracer.trace(...)` exits (and sends) before its parent - so the queue drained into a CHILD
+    row, which the engine's monitor pipeline ignores entirely (routes/ingest.ts skips
+    parent_span_id rows), silently losing the failed-tool signal."""
+    tracer = make_tracer()
+    tracer.record_tool_call("orphan_call", input="x", output="boom", success=False, latency_ms=5)
+    tracer.record_retrieval("orphan_search", query="q", output="docs", doc_count=2)
+    with tracer.trace("outer"):
+        with tracer.trace("inner"):
+            pass
+    wires = enqueued_wires(tracer)
+    assert len(wires) == 2
+    inner, outer = wires  # inner exits (and sends) first
+    assert inner["parent_span_id"] == outer["span_id"]
+    assert "tool_calls" not in inner
+    assert "performance_summary" not in inner
+    assert [tc["name"] for tc in outer["tool_calls"]] == ["orphan_call"]
+    assert outer["tool_calls"][0]["success"] is False
+    assert [s["name"] for s in outer["performance_summary"]["retrieval_steps"]] == ["orphan_search"]
+
+
+def test_trace_retrieval_exception_records_failed_retrieval():
+    """P1 regression: an exception escaping the trace_retrieval block used to record a CLEAN
+    empty retrieval - now it records error + ERROR: output (trace_tool_call posture) and
+    re-raises unchanged."""
+    tracer = make_tracer()
+    with pytest.raises(RuntimeError, match="index down"):
+        with tracer.trace("agent"):
+            with tracer.trace_retrieval("kb_search", query="refunds"):
+                raise RuntimeError("index down")
+    wires = enqueued_wires(tracer)
+    child = next(w for w in wires if w["name"] == "kb_search")
+    assert child["error"] == "index down"
+    assert child["output"] == "ERROR: index down"
+    assert child["span_kind"] == "retrieval"
+
+
+def test_trace_memory_exception_records_failed_memory_op():
+    """P1 regression: same posture for trace_memory - the captured exception is forwarded as
+    the span's structured error (not only folded into the output text) and re-raised."""
+    tracer = make_tracer()
+    with pytest.raises(RuntimeError, match="store down"):
+        with tracer.trace("agent"):
+            with tracer.trace_memory("user prefs", operation="read", query="u-1"):
+                raise RuntimeError("store down")
+    wires = enqueued_wires(tracer)
+    child = next(w for w in wires if w["name"] == "user prefs")
+    assert child["error"] == "store down"
+    assert child["output"] == "ERROR: store down"
+    assert child["span_kind"] == "memory"
+
+
+def test_openai_agents_mirrors_function_tools_onto_root_flat_tool_calls():
+    """P0 regression: function (tool) spans emitted only a child-span row - the engine's
+    built-in "Tool failure" check and the dashboard's Tool quality column read the ROOT's
+    flat toolCalls, so a failed tool was invisible to both. The mirror carries
+    success: False for a span with an error."""
+    import types
+    from agentx.integrations.openai_agents import AgentXTracingProcessor
+
+    tracer = make_tracer()
+    processor = AgentXTracingProcessor(tracer)
+
+    trace = types.SimpleNamespace(trace_id="trace-3", name="my-agent")
+    processor.on_trace_start(trace)
+
+    ok_data = types.SimpleNamespace(type="function", name="lookup", input="q", output="r")
+    ok_span = types.SimpleNamespace(
+        trace_id="trace-3", span_data=ok_data,
+        started_at="2026-01-01T00:00:00Z", ended_at="2026-01-01T00:00:01Z", error=None,
+    )
+    processor.on_span_end(ok_span)
+
+    failed_data = types.SimpleNamespace(type="function", name="charge_card", input="{}", output=None)
+    failed_span = types.SimpleNamespace(
+        trace_id="trace-3", span_data=failed_data,
+        started_at="2026-01-01T00:00:01Z", ended_at="2026-01-01T00:00:02Z",
+        error=types.SimpleNamespace(message="card declined", data=None),
+    )
+    processor.on_span_end(failed_span)
+
+    processor.on_trace_end(trace)
+
+    wires = enqueued_wires(tracer)
+    root = next(w for w in wires if w["name"] == "my-agent")
+    assert [tc["name"] for tc in root["tool_calls"]] == ["lookup", "charge_card"]
+    assert root["tool_calls"][0]["success"] is True
+    assert root["tool_calls"][1]["success"] is False
+    # The failed function's child span row is also marked failed.
+    failed_child = next(w for w in wires if w["name"] == "charge_card")
+    assert failed_child["error"] == "card declined"
+
+
+def test_google_adk_mirrors_tools_onto_root_flat_tool_calls():
+    """P0 regression: same mirror for the ADK plugin's tool callbacks - see the openai_agents
+    test above for why the root's flat list is load-bearing."""
+    import asyncio
+    import types
+
+    pytest.importorskip("google.adk")
+    from agentx.integrations.google_adk import AgentXADKPlugin
+
+    tracer = make_tracer()
+    plugin = AgentXADKPlugin(tracer, name="adk-agent")
+
+    invocation_context = types.SimpleNamespace(invocation_id="inv-3", agent=types.SimpleNamespace(name="adk-agent"))
+    tool_context_ok = types.SimpleNamespace(get_invocation_context=lambda: invocation_context)
+    tool_context_bad = types.SimpleNamespace(get_invocation_context=lambda: invocation_context)
+    lookup = types.SimpleNamespace(name="lookup")
+    charge = types.SimpleNamespace(name="charge_card")
+
+    async def run():
+        await plugin.before_run_callback(invocation_context=invocation_context)
+        await plugin.before_tool_callback(tool=lookup, tool_args={"q": "x"}, tool_context=tool_context_ok)
+        await plugin.after_tool_callback(
+            tool=lookup, tool_args={"q": "x"}, tool_context=tool_context_ok, result={"ok": True}
+        )
+        await plugin.before_tool_callback(tool=charge, tool_args={}, tool_context=tool_context_bad)
+        await plugin.on_tool_error_callback(
+            tool=charge, tool_args={}, tool_context=tool_context_bad, error=RuntimeError("card declined")
+        )
+        await plugin.after_run_callback(invocation_context=invocation_context)
+
+    asyncio.run(run())
+
+    wires = enqueued_wires(tracer)
+    root = next(w for w in wires if w["name"] == "adk-agent")
+    assert [tc["name"] for tc in root["tool_calls"]] == ["lookup", "charge_card"]
+    assert root["tool_calls"][0]["success"] is True
+    assert root["tool_calls"][1]["success"] is False
+    assert root["tool_calls"][1]["output"] == "ERROR: card declined"
+
+
+def test_google_adk_root_never_touches_the_active_span_stack():
+    """P2 regression: before_run_callback used to __enter__ the root span, pushing it onto the
+    calling context's stack - ADK may end the run elsewhere, so the entry never drained and
+    later unrelated traces were mis-filed as its children."""
+    import asyncio
+    import types
+
+    pytest.importorskip("google.adk")
+    from agentx.integrations.google_adk import AgentXADKPlugin
+
+    tracer = make_tracer()
+    plugin = AgentXADKPlugin(tracer, name="adk-agent")
+    invocation_context = types.SimpleNamespace(invocation_id="inv-4", agent=types.SimpleNamespace(name="adk-agent"))
+
+    async def run():
+        await plugin.before_run_callback(invocation_context=invocation_context)
+        assert tracer.current_span is None  # never pushed
+        await plugin.after_run_callback(invocation_context=invocation_context)
+
+    asyncio.run(run())
+    wires = enqueued_wires(tracer)
+    assert len(wires) == 1
+    assert "parent_span_id" not in wires[0]
+    assert wires[0]["session_id"].startswith("sdk_")
+
+
+def test_llamaindex_resolves_model_from_serialized_start_payload_and_object_raw_usage():
+    """P1 regression: LLM events never set MODEL_NAME (the old lookup left model None forever)
+    and token extraction bailed when completion.raw was a typed object instead of a dict."""
+    import types
+
+    pytest.importorskip("llama_index.core")
+    from llama_index.core.callbacks.schema import CBEventType, EventPayload
+
+    from agentx.integrations.llamaindex import AgentXLlamaIndexHandler
+
+    tracer = make_tracer()
+    handler = AgentXLlamaIndexHandler(tracer, name="llm-agent")
+
+    completion = types.SimpleNamespace(
+        text="hello",
+        raw=types.SimpleNamespace(usage=types.SimpleNamespace(prompt_tokens=7, completion_tokens=3)),
+    )
+    handler.on_event_start(
+        CBEventType.LLM,
+        payload={EventPayload.SERIALIZED: {"model": "gpt-4o-mini"}, EventPayload.PROMPT: "hi"},
+        event_id="e1",
+        parent_id="",
+    )
+    handler.on_event_end(CBEventType.LLM, payload={EventPayload.COMPLETION: completion}, event_id="e1")
+
+    wires = enqueued_wires(tracer)
+    root = next(w for w in wires if w["name"] == "llm-agent")
+    assert root["model"] == "gpt-4o-mini"
+    assert root["input_tokens"] == 7
+    assert root["output_tokens"] == 3
+    child = next(w for w in wires if w is not root)
+    assert child["model"] == "gpt-4o-mini"
+
+
+def test_autogen_agent_turns_carry_agent_kind():
+    """P2 regression: a message with a named source is an agent turn in the team trajectory -
+    the step states kind "agent" (crewai task-step precedent) instead of defaulting to llm."""
+    import asyncio
+    from datetime import datetime, timezone
+    import types
+
+    from agentx.integrations.autogen import AgentXAutoGenObserver
+
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    t1 = datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc)
+    task_echo = types.SimpleNamespace(type="TextMessage", content="Plan it", created_at=t0, models_usage=None)
+    turn = types.SimpleNamespace(
+        type="TextMessage",
+        content="Here is the plan.",
+        created_at=t1,
+        source="planner",
+        models_usage=types.SimpleNamespace(prompt_tokens=5, completion_tokens=2),
+    )
+    task_result = types.SimpleNamespace(messages=[task_echo, turn])
+
+    class FakeTeam:
+        async def run(self, task=None, **kwargs):
+            return task_result
+
+    tracer = make_tracer()
+    observer = AgentXAutoGenObserver(tracer, name="my-team")
+    asyncio.run(observer.run(FakeTeam(), task="Plan it"))
+
+    wires = enqueued_wires(tracer)
+    child = next(w for w in wires if w["name"] == "planner")
+    assert child["span_kind"] == "agent"

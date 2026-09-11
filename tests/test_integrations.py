@@ -696,7 +696,7 @@ def test_crewai_falls_back_to_even_split_without_event_bus():
 
     # Force the "no events module" path regardless of whether crewai is installed.
     original = observer._start_task_timing_capture
-    observer._start_task_timing_capture = lambda: ({}, lambda: None)
+    observer._start_task_timing_capture = lambda crew=None: ({}, lambda: None)
     try:
         result = observer.kickoff(FakeCrew(), inputs={"topic": "AI"})
     finally:

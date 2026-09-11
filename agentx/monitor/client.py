@@ -18,7 +18,12 @@ from agentx.monitor.models import (
 
 logger = logging.getLogger(__name__)
 
-from agentx.util import _DEFAULT_API_BASE as _UTIL_API_BASE
+from agentx.util import _DEFAULT_API_BASE as _UTIL_API_BASE, normalize_base
+
+# The canonical error classes (agentx.exceptions) are raised - and re-exported here for
+# compat with code that imported them from this module - so `except agentx.AgentXAuthError`
+# works whichever client raised.
+from agentx.exceptions import AgentXError, AgentXAuthError, AgentXValidationError
 
 SDK_NAME = "agentx-python"
 
@@ -27,21 +32,13 @@ _MAX_RETRIES = 3
 _RETRY_BACKOFF = [1.0, 2.0, 4.0]
 
 
-class AgentXMonitorError(Exception):
+class AgentXMonitorError(AgentXError):
     """``status_code`` carries the HTTP status when the error came from a server
     response; it is ``None`` for transport-level failures and retry exhaustion."""
 
     def __init__(self, message: str, status_code: Optional[int] = None) -> None:
         super().__init__(message)
         self.status_code = status_code
-
-
-class AgentXAuthError(AgentXMonitorError):
-    pass
-
-
-class AgentXValidationError(AgentXMonitorError):
-    pass
 
 
 class CalibrationSummary(dict):
@@ -109,9 +106,11 @@ class MonitorClient:
         # EvaluationsClient. Without this, pattern creation silently lands in whatever
         # workspace the API key's user defaults to, not the one the caller intended.
         self._workspace_id = workspace_id
-        _api_base = (
+        # normalize_base also strips an evaluations-shaped URL's suffix, so a base copied
+        # from an eval env file doesn't 404 every monitor route.
+        _api_base = normalize_base(
             base_url or os.getenv("AGENTX_API_BASE_URL", _UTIL_API_BASE)
-        ).rstrip("/")
+        )
         if not _api_base.endswith("/monitor"):
             _api_base = f"{_api_base}/monitor"
         self._base_url = _api_base
@@ -216,7 +215,10 @@ class MonitorClient:
                 raise AgentXAuthError("Invalid or missing API key", status_code=401)
             if resp.status_code == 422:
                 raise AgentXValidationError(resp.text, status_code=422)
-            if retry and resp.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES - 1:
+            # Gate on the schedule itself so HTTP-status retries walk the SAME full backoff
+            # schedule connection errors do - the old `attempt < _MAX_RETRIES - 1` gate left
+            # the schedule's last entry unreachable for HTTP retries (ingest_client precedent).
+            if retry and resp.status_code in _RETRYABLE_STATUS and attempt < len(schedule) - 1:
                 logger.debug(
                     "Retryable status %d (attempt %d)", resp.status_code, attempt + 1
                 )
@@ -228,6 +230,11 @@ class MonitorClient:
                 return resp.json()
             except Exception:
                 return resp.text
+        # A timeout keeps its type (evaluations client precedent): callers guard on
+        # requests.Timeout specifically for judge-billing endpoints - the server may still be
+        # doing the work, and wrapping the timeout made that guard unreachable.
+        if isinstance(last_exc, requests.Timeout):
+            raise last_exc
         raise AgentXMonitorError(f"Request failed after retries: {last_exc}")
 
     # ------------------------------------------------------------------
@@ -510,6 +517,13 @@ class MonitorClient:
         # unless forced - see judge_scorers.publish_tuning for the full story.
         payload = dict(criteria)
         if validation is not None:
+            # Passed through whole; the signed `validationToken` from tune/validate is also
+            # lifted into the `token` key the publish route verifies, so the version history
+            # stamps "measured" instead of client-asserted (judge_scorers.publish_tuning
+            # precedent).
+            validation = dict(validation)
+            if validation.get("validationToken") and not validation.get("token"):
+                validation["token"] = validation["validationToken"]
             payload["validation"] = validation
         if force:
             payload["force"] = True

@@ -18,10 +18,17 @@ Requires: ``pip install "agentx-python[crewai]"``
 """
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Dict, List, Optional
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
+
+logger = logging.getLogger(__name__)
+
+# Warn once per process when CrewAI's event bus can't be imported and task timings fall back
+# to the evenly-divided approximation - fabricated timings shouldn't be silent.
+_warned_no_event_bus = False
 
 
 class AgentXCrewObserver:
@@ -53,7 +60,7 @@ class AgentXCrewObserver:
         present; on older CrewAI versions that predate it, this falls back to
         evenly dividing the total latency across tasks.
         """
-        task_timings, unregister = self._start_task_timing_capture()
+        task_timings, unregister = self._start_task_timing_capture(crew)
 
         start = time.time()
         error: Optional[str] = None
@@ -97,7 +104,7 @@ class AgentXCrewObserver:
                     framework="crewai",
                 )
 
-    def _start_task_timing_capture(self):
+    def _start_task_timing_capture(self, crew: Any = None):
         """
         Register temporary, additive listeners on CrewAI's event bus to
         capture each task's real start/end wall-clock time, keyed by
@@ -105,10 +112,16 @@ class AgentXCrewObserver:
         ``async_execution=True`` - unlike attributing the most-recently-
         started task, which would misattribute end times under overlap).
 
+        The event bus is a global singleton, so events from a DIFFERENT crew's
+        overlapping kickoff arrive here too - listeners are scoped to ``crew``
+        (event/source crew identity when the event carries it, this kickoff's
+        task ids otherwise) so each trace only records its own kickoff's tasks.
+
         Returns ``(task_timings, unregister)``. ``task_timings`` stays empty
         (and ``unregister`` is a no-op) on CrewAI versions that predate the
-        ``crewai.events`` module - callers should fall back to the
-        evenly-divided approximation in that case.
+        events module - callers should fall back to the evenly-divided
+        approximation in that case (warned once per process, since those
+        timings are fabricated).
 
         Uses ``crewai_event_bus.on()``/``.off()`` directly rather than
         ``scoped_handlers()`` - the latter temporarily disables *every*
@@ -116,30 +129,60 @@ class AgentXCrewObserver:
         built-in ones) for the duration of the `with` block, which isn't
         what we want for a handler meant to run alongside them.
         """
+        global _warned_no_event_bus
         task_timings: Dict[str, Dict[str, Any]] = {}
         try:
-            from crewai.events.event_bus import crewai_event_bus
-            from crewai.events.types.task_events import (
-                TaskCompletedEvent,
-                TaskFailedEvent,
-                TaskStartedEvent,
-            )
+            # Modern shape first (the crewai.events module), then the older
+            # crewai.utilities.events layout that shipped the same bus/events.
+            try:
+                from crewai.events.event_bus import crewai_event_bus
+                from crewai.events.types.task_events import (
+                    TaskCompletedEvent,
+                    TaskFailedEvent,
+                    TaskStartedEvent,
+                )
+            except ImportError:
+                from crewai.utilities.events import crewai_event_bus
+                from crewai.utilities.events.task_events import (
+                    TaskCompletedEvent,
+                    TaskFailedEvent,
+                    TaskStartedEvent,
+                )
         except ImportError:
+            if not _warned_no_event_bus:
+                _warned_no_event_bus = True
+                logger.warning(
+                    "CrewAI's event bus is not importable (tried crewai.events and "
+                    "crewai.utilities.events) - per-task timings will be approximated by "
+                    "evenly dividing the kickoff's total latency across tasks"
+                )
             return task_timings, lambda: None
 
-        # Double-instrumentation guard (bus-keyed latch, the same idea as the
-        # other integrations' _agentx_patched flag): the event bus is a global
-        # singleton, so a notebook re-run or an overlapping kickoff that
-        # already has AgentX listeners registered would otherwise get a second
-        # set and duplicate every task span. When already attached, this
-        # kickoff just falls back to the evenly-divided timing approximation.
-        if getattr(crewai_event_bus, "_agentx_attached", False):
-            return task_timings, lambda: None
-        crewai_event_bus._agentx_attached = True
+        # This kickoff's own task ids - the fallback scope filter when an event carries no
+        # crew reference to compare against.
+        own_task_ids = {
+            str(getattr(task, "id", None))
+            for task in (getattr(crew, "tasks", None) or [])
+            if getattr(task, "id", None) is not None
+        }
+
+        def is_ours(source: Any, event: Any) -> bool:
+            """Only record events that belong to THIS kickoff's crew - the bus is global,
+            so a concurrent kickoff's task events land on every registered listener."""
+            if crew is None:
+                return True
+            if source is crew:
+                return True
+            event_crew = getattr(event, "crew", None) or getattr(source, "crew", None)
+            if event_crew is not None:
+                return event_crew is crew
+            if own_task_ids:
+                return str(getattr(event, "task_id", None)) in own_task_ids
+            return True
 
         def on_task_started(source: Any, event: Any) -> None:
             task_id = getattr(event, "task_id", None)
-            if task_id is None:
+            if task_id is None or not is_ours(source, event):
                 return
             task_timings[task_id] = {
                 "name": getattr(event, "task_name", None),
@@ -164,14 +207,9 @@ class AgentXCrewObserver:
         crewai_event_bus.on(TaskFailedEvent)(on_task_failed)
 
         def unregister() -> None:
-            try:
-                crewai_event_bus.off(TaskStartedEvent, on_task_started)
-                crewai_event_bus.off(TaskCompletedEvent, on_task_completed)
-                crewai_event_bus.off(TaskFailedEvent, on_task_failed)
-            finally:
-                # Clear the latch even if .off() raises, so a later kickoff
-                # can re-attach instead of being locked out forever.
-                crewai_event_bus._agentx_attached = False
+            crewai_event_bus.off(TaskStartedEvent, on_task_started)
+            crewai_event_bus.off(TaskCompletedEvent, on_task_completed)
+            crewai_event_bus.off(TaskFailedEvent, on_task_failed)
 
         return task_timings, unregister
 

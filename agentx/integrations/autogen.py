@@ -195,6 +195,10 @@ class AgentXAutoGenObserver:
                     "output": text,
                     "inputTokenSize": input_tokens,
                     "outputTokenSize": out_tokens,
+                    # A named source is an agent turn in the team's trajectory, not a bare
+                    # model call - stated so _merge_child_run doesn't stamp it "llm" (the
+                    # crewai task-step precedent).
+                    **({"kind": "agent"} if source else {}),
                 })
 
             if text:

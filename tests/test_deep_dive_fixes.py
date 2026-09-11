@@ -83,3 +83,48 @@ def test_dropped_traces_warn_instead_of_vanishing(monkeypatch, caplog):
 
     assert client._dropped >= 1
     assert any("dropped a trace" in rec.message for rec in caplog.records)
+
+
+def test_evaluations_shaped_base_url_works_for_every_subclient():
+    """P0 regression: a base_url carrying the /custom-agent-evaluations suffix (what users copy
+    out of eval env files) used to 404 every non-eval sub-client - AgentX.__init__ now
+    normalizes it (trailing slash + suffix stripped) before handing it out."""
+    c = AgentX(api_key="k", base_url="http://engine:4700/api/v1/custom-agent-evaluations/")
+
+    assert c.base_url == "http://engine:4700/api/v1"
+    assert c.tracer._client._endpoint == "http://engine:4700/api/v1/ingest/traces"
+    assert c.monitor._base_url == "http://engine:4700/api/v1/monitor"
+    for sub in (c.projects, c.traces, c.export, c.feedback, c.outcomes):
+        assert sub._base_url == "http://engine:4700/api/v1", type(sub).__name__
+    # The evaluations client re-appends its own suffix exactly once.
+    assert c.evaluations._client._base_url == "http://engine:4700/api/v1/custom-agent-evaluations"
+
+
+def test_env_var_with_evaluations_suffix_is_normalized_too(monkeypatch):
+    monkeypatch.setenv("AGENTX_API_BASE_URL", "http://from-env:3333/api/v1/custom-agent-evaluations")
+    c = AgentX(api_key="k")
+    assert c.base_url == "http://from-env:3333/api/v1"
+    assert c.tracer._client._endpoint == "http://from-env:3333/api/v1/ingest/traces"
+
+
+def test_ingest_client_close_stops_the_worker():
+    """P2: close() enqueues the sentinel and joins the worker so a torn-down client leaves no
+    thread behind; AgentX exposes it (and context-manager form) on top."""
+    client = IngestClient(api_key="k", sdk_version="test", base_url="http://localhost:9/api/v1")
+    assert client.close(timeout=2.0) is True
+    assert not client._worker.is_alive()
+    # Idempotent.
+    assert client.close(timeout=1.0) is True
+
+
+def test_agentx_context_manager_closes_the_ingest_worker():
+    with AgentX(api_key="k", base_url="http://localhost:9/api/v1") as c:
+        worker = c._ingest_client._worker
+        assert worker.is_alive()
+    assert not worker.is_alive()
+
+
+def test_constructor_no_longer_writes_the_api_key_into_the_environment(monkeypatch):
+    monkeypatch.delenv("AGENTX_API_KEY", raising=False)
+    AgentX(api_key="k-secret", base_url="http://localhost:9/api/v1")
+    assert os.environ.get("AGENTX_API_KEY") is None

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import time
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
 
@@ -135,7 +136,16 @@ class AgentXADKPlugin(BasePlugin):
         root_span = self._tracer.trace(
             agent_name, framework="google-adk", metadata=self._metadata, session_id=self._session_id
         )
-        root_span.__enter__()
+        # Deliberately NOT root_span.__enter__() - the same reasoning as openai_agents'
+        # on_trace_start: enter pushes onto the CALLING context's active-span stack, but ADK
+        # may fire after_run_callback on a different task/thread, so the pop no-ops there, the
+        # entry never drains, and later unrelated traces on this context get mis-filed as
+        # children of this dead run (and inherit its session). Start time and session are set
+        # by hand instead; every callback below already parents via child_span() on the held
+        # state["root_span"] reference, no stack involved.
+        root_span._start = time.time()
+        if root_span._session_id is None:
+            root_span._session_id = f"sdk_{uuid4().hex}"
         self._runs[inv_id] = {
             "root_span": root_span,
             "llm_call_count": 0,
@@ -163,6 +173,9 @@ class AgentXADKPlugin(BasePlugin):
         root_span._output_tokens = state["output_tokens"]
         if state["error"]:
             root_span.set_error(state["error"])
+        # Close via the held reference WITHOUT touching the active-span stack (see
+        # before_run_callback) - __exit__'s only stack interaction is the pop, a no-op for a
+        # never-pushed span, so calling it directly for its send behavior is safe.
         root_span.__exit__(None, None, None)
 
     # ------------------------------------------------------------------
@@ -295,6 +308,16 @@ class AgentXADKPlugin(BasePlugin):
             tool_name, start_time=start_t, end_time=end_t, input=tool_input, output=tool_output,
             span_kind="tool",
         )
+        # Also mirror onto the root's flat tool_calls list (the dual-write every other
+        # integration does): the engine's built-in "Tool failure" check and the dashboard's
+        # Tool quality column read the ROOT trace's flat toolCalls, not child-span rows.
+        state["root_span"].tool_calls.append({
+            "name": tool_name,
+            "input": tool_input,
+            "output": tool_output,
+            "latency_ms": int((end_t - start_t) * 1000) if start_t is not None else None,
+            "success": True,
+        })
 
     async def on_tool_error_callback(
         self,
@@ -317,3 +340,12 @@ class AgentXADKPlugin(BasePlugin):
             tool_name, start_time=start_t, end_time=end_t, input=tool_input, output=tool_output, error=str(error),
             span_kind="tool",
         )
+        # Mirror the FAILED call onto the root's flat tool_calls list - success: False is
+        # exactly what the engine's "Tool failure" check reads (see after_tool_callback).
+        state["root_span"].tool_calls.append({
+            "name": tool_name,
+            "input": tool_input,
+            "output": tool_output,
+            "latency_ms": int((end_t - start_t) * 1000) if start_t is not None else None,
+            "success": False,
+        })

@@ -11,7 +11,11 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Union
 from agentx.evaluations.adapters.raw import RawCallableAdapter
 from agentx.evaluations.adapters.precomputed import PrecomputedAdapter
 from agentx.evaluations.adapters.http_endpoint import HttpEndpointAdapter
-from agentx.evaluations.client import EvaluationsClient, EvaluationSubmissionError
+from agentx.evaluations.client import (
+    AgentXEvaluationsError,
+    EvaluationsClient,
+    EvaluationSubmissionError,
+)
 from agentx.evaluations.models import (
     AnalysisStatus,
     Dataset,
@@ -227,6 +231,7 @@ class EvaluationRunContext:
         if concurrency > 1:
             import concurrent.futures
             import contextvars
+            from collections import deque
 
             def in_scope(case: EvaluationCase) -> EvaluationResult:
                 # ContextVars (the eval-run scope) do not cross thread boundaries on their own -
@@ -240,45 +245,68 @@ class EvaluationRunContext:
                 if _idem_key(self._run.run_id, case.case_id, case.run_number) not in already_done
             ]
             executor = concurrent.futures.ThreadPoolExecutor(max_workers=concurrency)
-            # map() yields in submission order, so batching/submission below stays deterministic.
-            mapped = executor.map(in_scope, pending)
 
-            def ordered() -> "Iterator[EvaluationResult]":
+            def bounded() -> "Iterator[EvaluationResult]":
+                # Bounded submit loop instead of executor.map(): map() dispatches EVERY case
+                # up front, so a fail-fast flush failure (EvaluationSubmissionError below)
+                # still paid for the whole rest of the run in agent calls. Keep at most
+                # `concurrency` cases in flight, topping up as results are consumed; yields
+                # stay in submission order so batching below is deterministic. On teardown
+                # (an exception in the consuming loop closes this generator) whatever is
+                # queued but unstarted is cancelled.
+                import itertools
+
+                case_iter = iter(pending)
+                in_flight: "deque[concurrent.futures.Future]" = deque()
                 try:
-                    yield from mapped
+                    for case in itertools.islice(case_iter, concurrency):
+                        in_flight.append(executor.submit(in_scope, case))
+                    while in_flight:
+                        result = in_flight.popleft().result()
+                        next_case = next(case_iter, None)
+                        if next_case is not None:
+                            in_flight.append(executor.submit(in_scope, next_case))
+                        yield result
                 finally:
-                    executor.shutdown(wait=True)
+                    executor.shutdown(wait=False, cancel_futures=True)
 
-            results_iter = ordered()
+            results_iter = bounded()
         else:
             results_iter = None  # sequential path below produces inline
 
-        for idx, case in enumerate(cases, start=1):
-            idem_key = _idem_key(self._run.run_id, case.case_id, case.run_number)
+        try:
+            for idx, case in enumerate(cases, start=1):
+                idem_key = _idem_key(self._run.run_id, case.case_id, case.run_number)
 
-            if idem_key in already_done:
-                logger.debug("Skipping already-submitted case: %s", idem_key)
-                _print_progress(idx, total, case, skipped=True)
-                continue
+                if idem_key in already_done:
+                    logger.debug("Skipping already-submitted case: %s", idem_key)
+                    _print_progress(idx, total, case, skipped=True)
+                    continue
 
-            result = next(results_iter) if results_iter is not None else produce(case)
-            result.idempotency_key = idem_key
-            # Tag the result with the case's model so the server can group it into
-            # the Sovereignty & Portability matrix (the callable may also set it).
-            if case.model:
-                meta = dict(result.metadata or {})
-                meta.setdefault("model", case.model)
-                result.metadata = meta
-            result = EvaluationResult(
-                **{**result.model_dump(), "idempotencyKey": idem_key}
-            )
-            self._results.append(result)
-            batch.append(result)
-            _print_progress(idx, total, case, result=result)
+                result = next(results_iter) if results_iter is not None else produce(case)
+                result.idempotency_key = idem_key
+                # Tag the result with the case's model so the server can group it into
+                # the Sovereignty & Portability matrix (the callable may also set it).
+                if case.model:
+                    meta = dict(result.metadata or {})
+                    meta.setdefault("model", case.model)
+                    result.metadata = meta
+                result = EvaluationResult(
+                    **{**result.model_dump(), "idempotencyKey": idem_key}
+                )
+                self._results.append(result)
+                batch.append(result)
+                _print_progress(idx, total, case, result=result)
 
-            if len(batch) >= max_batch:
-                self._flush_batch(batch)
-                batch = []
+                if len(batch) >= max_batch:
+                    self._flush_batch(batch)
+                    batch = []
+        finally:
+            # Deterministic teardown: a flush failure mid-run must stop the in-flight agent
+            # dispatch NOW (bounded()'s finally cancels queued cases), not whenever the
+            # generator happens to be garbage-collected.
+            if results_iter is not None:
+                results_iter.close()
 
         if batch:
             self._flush_batch(batch)
@@ -333,9 +361,21 @@ class EvaluationRunContext:
         so a re-execute() after a crash skips (and never re-pays for) finished cases."""
         try:
             return set(self._client.get_submitted_keys(self._run.run_id))
-        except Exception:
-            # Older engines without the route: no resume, identical to the historical behavior.
-            return set()
+        except AgentXEvaluationsError as exc:
+            if exc.status_code == 404:
+                # Older engines without the route: no resume, identical to the historical
+                # behavior. ONLY the 404 qualifies - a transient 502/timeout here used to be
+                # swallowed too, and an empty resume set silently re-runs (and re-bills)
+                # every already-finished case.
+                return set()
+            _say(f"  {red('✗')}  Could not fetch already-submitted keys: {dim(str(exc))}")
+            logger.error(
+                "Resume-key fetch for run %s failed (%s) - refusing to re-run the whole run "
+                "blind; retry execute() once the engine is reachable",
+                self._run.run_id,
+                exc,
+            )
+            raise
 
     # ------------------------------------------------------------------
     # Step 2: finalize
@@ -465,6 +505,8 @@ class EvaluationRunContext:
 
         Args:
             mode: "auto" (default), "sync", or "batch" - how item scoring executes server-side.
+                Hosted-only: self-host runs the analysis synchronously regardless; see the
+                response's mode field for what actually ran.
             quality_mode: "quality_first" or "balanced" - how many items get a second/third judge.
             judges: 1-3 model ids from ``client.evaluations.list_models()``, e.g.
                 ``["gpt-5.6-luna", "claude-opus-4-8"]``. Omit to let the engine score with its

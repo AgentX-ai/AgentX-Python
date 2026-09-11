@@ -160,3 +160,76 @@ def test_finalize_failure_raises(monkeypatch):
 
     with pytest.raises(RuntimeError, match="engine down"):
         ctx.finalize()
+
+
+def test_fail_fast_stops_dispatching_agent_calls_at_concurrency(monkeypatch):
+    """P1 regression: executor.map() dispatched EVERY case up front, so a flush failure's
+    fail-fast still paid for the whole run in agent calls. The bounded submit loop keeps at
+    most `concurrency` cases in flight, so a failure after the first flush leaves the rest
+    of the dataset un-run."""
+    monkeypatch.setenv("AGENTX_EVAL_QUIET", "1")
+    n_cases = 8
+    concurrency = 2
+    dataset = make_dataset(
+        questions=[{"main_question": {"query": f"q{i}"}} for i in range(n_cases)]
+    )
+    # maxBatchSize=1 so the first result flushes (and fails) while cases remain.
+    run = EvaluationRun(runId="run-1", datasetId="ds-1", limits={"maxBatchSize": 1})
+    client = FakeClient(fail_batches=2)  # first flush attempt + its retry both fail
+    ctx = EvaluationRunContext(client, dataset, run, EvaluationSubject())  # type: ignore[arg-type]
+
+    started: List[str] = []
+    lock = threading.Lock()
+
+    def agent(case):
+        with lock:
+            started.append(case.query)
+        time.sleep(0.02)
+        return f"answer to {case.query}"
+
+    with pytest.raises(EvaluationSubmissionError):
+        ctx.execute(agent, concurrency=concurrency)
+
+    # At the moment of failure at most 1 consumed + `concurrency` topped-up cases were ever
+    # dispatched - executor.map would have started all 8 (shutdown(wait=True) even ran them
+    # to completion).
+    assert len(started) <= 1 + concurrency, started
+
+
+def test_resume_key_fetch_transient_failure_raises_instead_of_rebilling(monkeypatch):
+    """P2 regression: a transient 502 on the resume-key fetch used to be swallowed into an
+    empty resume set, silently re-running (and re-billing) every already-finished case."""
+    monkeypatch.setenv("AGENTX_EVAL_QUIET", "1")
+    from agentx.evaluations.client import AgentXEvaluationsError
+
+    client = FakeClient()
+
+    def boom(run_id):
+        raise AgentXEvaluationsError("HTTP 502: bad gateway", status_code=502)
+
+    client.get_submitted_keys = boom
+    ctx = make_context(client)
+    ran: List[str] = []
+
+    with pytest.raises(AgentXEvaluationsError):
+        ctx.execute(lambda case: ran.append(case.query) or "x")
+    assert ran == []  # no agent spend before the failure surfaced
+
+
+def test_resume_key_fetch_404_still_means_no_resume(monkeypatch):
+    """Older engines without the route return 404 - that (and only that) keeps the historical
+    no-resume behavior."""
+    monkeypatch.setenv("AGENTX_EVAL_QUIET", "1")
+    from agentx.evaluations.client import AgentXEvaluationsError
+
+    client = FakeClient()
+
+    def missing(run_id):
+        raise AgentXEvaluationsError("HTTP 404: not found", status_code=404)
+
+    client.get_submitted_keys = missing
+    ctx = make_context(client)
+    ran: List[str] = []
+
+    ctx.execute(lambda case: ran.append(case.query) or "x")
+    assert ran == ["q0", "q1", "q2"]

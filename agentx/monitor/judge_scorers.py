@@ -6,13 +6,14 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from agentx.util import api_base, get_headers
+from agentx.exceptions import AgentXError
 
 logger = logging.getLogger(__name__)
 
 _SENTINEL: Any = object()
 
 
-class AgentXJudgeScorersError(Exception):
+class AgentXJudgeScorersError(AgentXError):
     pass
 
 
@@ -310,10 +311,18 @@ class JudgeScorersClient:
         ``force=True`` publishes without (or despite) validation - deliberate escape hatch."""
         payload = dict(criteria)
         if validation is not None:
-            payload["validation"] = {
+            validation_payload: Dict[str, Any] = {
                 "verdict": validation.get("verdict"),
                 "netAgreementGain": validation.get("netAgreementGain"),
             }
+            # The signed provenance token validate_tuning's response carries as
+            # `validationToken` - the engine's publish route reads it as validation.token and
+            # stamps the version history "measured" only when it verifies. Dropping it here
+            # (the old projection did) downgraded every publish to client-asserted.
+            token = validation.get("validationToken") or validation.get("token")
+            if token:
+                validation_payload["token"] = token
+            payload["validation"] = validation_payload
         if force:
             payload["force"] = True
         return self._request("POST", f"/online-evaluators/{self._profile_id(scorer_id)}/tune/publish", json=payload)

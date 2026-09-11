@@ -12,7 +12,25 @@ class AgentXError(Exception):
 
 
 class AgentXAuthError(AgentXError):
-    """Invalid or missing API key."""
+    """Invalid or missing API key.
+
+    Canonical across every sub-client (evaluations, monitor, ...) - ``except
+    agentx.AgentXAuthError`` catches an auth failure no matter which client raised it.
+    ``status_code`` carries the HTTP status when known (401/403), ``None`` otherwise.
+    """
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class AgentXValidationError(AgentXError):
+    """The API rejected the request as invalid (HTTP 422). Canonical across every
+    sub-client, same as :class:`AgentXAuthError`."""
+
+    def __init__(self, message: str, status_code: int | None = 422) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class AgentXConnectionError(AgentXError):

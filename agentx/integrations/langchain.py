@@ -20,6 +20,7 @@ Requires: ``pip install "agentx-python[langchain]"``
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import Any, Dict, List, Optional, Union
@@ -27,6 +28,8 @@ from uuid import UUID
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
 from agentx.integrations._traced_call import capture_tool_definitions
+
+logger = logging.getLogger(__name__)
 
 try:
     from langchain_core.callbacks.base import BaseCallbackHandler
@@ -325,33 +328,47 @@ class AgentXCallbackHandler(BaseCallbackHandler):
     def _prune_stale_entries(self) -> None:
         """Sweep out run_id entries older than max_run_age_seconds - see __init__'s comment."""
         cutoff = time.time() - self._max_run_age_seconds
+        swept = 0
 
-        stale_run_ids = [
-            run_id
-            for run_id, state in self._runs.items()
-            if (state.get("start") or state.get("llm_start") or 0) < cutoff
-        ]
-        for run_id in stale_run_ids:
-            self._runs.pop(run_id, None)
-            self._top_level.pop(run_id, None)
-            self._parents.pop(run_id, None)
-
-        stale_retrieval_ids = [
-            run_id for run_id, state in self._retrieval_starts.items() if state.get("start", 0) < cutoff
-        ]
-        for run_id in stale_retrieval_ids:
-            self._retrieval_starts.pop(run_id, None)
-            self._parents.pop(run_id, None)
-
-        # Pre-run retrieval steps waiting for a top-level chain that never came
-        # (e.g. retriever.invoke() called but agent.invoke() aborted before
-        # on_chain_start). Each step carries its own start_time, so drop the
-        # pre-cutoff ones just like the run_id-keyed structures above.
+        # The whole sweep runs under _state_lock: it iterates dicts that on_tool_start /
+        # on_retriever_start / _record_llm_start insert into from LangGraph's tool-node
+        # threads, and iterating a dict another thread mutates raises RuntimeError.
         with self._state_lock:
+            stale_run_ids = [
+                run_id
+                for run_id, state in list(self._runs.items())
+                if (state.get("start") or state.get("llm_start") or 0) < cutoff
+            ]
+            for run_id in stale_run_ids:
+                self._runs.pop(run_id, None)
+                self._top_level.pop(run_id, None)
+                self._parents.pop(run_id, None)
+            swept += len(stale_run_ids)
+
+            stale_retrieval_ids = [
+                run_id for run_id, state in list(self._retrieval_starts.items()) if state.get("start", 0) < cutoff
+            ]
+            for run_id in stale_retrieval_ids:
+                self._retrieval_starts.pop(run_id, None)
+                self._parents.pop(run_id, None)
+            swept += len(stale_retrieval_ids)
+
+            # Pre-run retrieval steps waiting for a top-level chain that never came
+            # (e.g. retriever.invoke() called but agent.invoke() aborted before
+            # on_chain_start). Each step carries its own start_time, so drop the
+            # pre-cutoff ones just like the run_id-keyed structures above.
             if self._pending_retrieval_steps:
                 self._pending_retrieval_steps[:] = [
                     step for step in self._pending_retrieval_steps if step.get("start_time", 0) >= cutoff
                 ]
+
+        if swept:
+            logger.warning(
+                "AgentXCallbackHandler swept %d in-flight run record(s) older than %.0fs - "
+                "their end callbacks never fired, so their traces were never sent",
+                swept,
+                self._max_run_age_seconds,
+            )
 
     # ------------------------------------------------------------------
     # Chain lifecycle
@@ -372,30 +389,32 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         if is_top:
             self._prune_stale_entries()
             # Consume any retrieval steps that ran before this chain started
-            # (pre-run RAG: retriever.invoke() called before agent.invoke())
+            # (pre-run RAG: retriever.invoke() called before agent.invoke()). The _runs
+            # insert shares the lock with _prune_stale_entries' iteration.
             with self._state_lock:
                 pending = self._pending_retrieval_steps[:]
                 self._pending_retrieval_steps.clear()
-            self._runs[run_id] = {
-                "start": time.time(),
-                "input": _extract_input(inputs),
-                "tool_calls": [],
-                "model": None,
-                "execution_steps": [],
-                "retrieval_steps": pending,
-                "input_tokens": 0,
-                "output_tokens": 0,
-                # Graph structure captured under this top-level run: named nested chain runs
-                # (LangGraph nodes, sub-agents) keyed by run_id, and the FULL nested-chain
-                # parent map (noise chains included) so _emit_span_tree can walk through
-                # skipped plumbing runs to the nearest emitted ancestor.
-                "node_runs": {},
-                "chain_parents": {},
-                # The request's tools=[...] as seen on the first LLM call's invocation params -
-                # attached to the root trace's metadata so the engine's unregistered-tool
-                # listing can surface the REAL definition (not one inferred from arguments).
-                "tool_definitions": None,
-            }
+                self._runs[run_id] = {
+                    "start": time.time(),
+                    "input": _extract_input(inputs),
+                    "tool_calls": [],
+                    "model": None,
+                    "execution_steps": [],
+                    "retrieval_steps": pending,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    # Graph structure captured under this top-level run: named nested chain runs
+                    # (LangGraph nodes, sub-agents) keyed by run_id, and the FULL nested-chain
+                    # parent map (noise chains included) so _emit_span_tree can walk through
+                    # skipped plumbing runs to the nearest emitted ancestor.
+                    "node_runs": {},
+                    "chain_parents": {},
+                    # The request's tools=[...] as seen on the first LLM call's invocation
+                    # params - attached to the root trace's metadata so the engine's
+                    # unregistered-tool listing can surface the REAL definition (not one
+                    # inferred from arguments).
+                    "tool_definitions": None,
+                }
         else:
             top = self._find_top_ancestor(parent_run_id)
             if top is None:
@@ -507,6 +526,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                 duration_ms=step.get("duration_ms"),
                 input=step.get("query"),
                 output=step.get("output"),
+                error=step.get("error"),
                 metadata={"kind": "retrieval"},
                 span_kind="retrieval",
             )
@@ -679,11 +699,14 @@ class AgentXCallbackHandler(BaseCallbackHandler):
             captured = capture_tool_definitions(kwargs.get("invocation_params", {}).get("tools"))
             if captured:
                 self._runs[top_for_tools]["tool_definitions"] = captured
-        self._runs[run_id] = {
-            "llm_start": time.time(),
-            "model": model,
-            "input": _extract_llm_input(prompts=prompts, messages=messages),
-        }
+        # Insert under the lock _prune_stale_entries' iteration holds - LangGraph can start
+        # LLM runs from worker threads while another thread's on_chain_start prunes.
+        with self._state_lock:
+            self._runs[run_id] = {
+                "llm_start": time.time(),
+                "model": model,
+                "input": _extract_llm_input(prompts=prompts, messages=messages),
+            }
         top = self._find_top_ancestor(parent_run_id)
         if top and top in self._runs and not self._runs[top].get("model") and model:
             self._runs[top]["model"] = model
@@ -780,11 +803,13 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         **kwargs,
     ) -> None:
         self._parents[run_id] = parent_run_id
-        self._runs[run_id] = {
-            "tool_name": serialized.get("name", "unknown"),
-            "tool_input": input_str,
-            "start": time.time(),
-        }
+        # Insert under the prune's lock - see _record_llm_start.
+        with self._state_lock:
+            self._runs[run_id] = {
+                "tool_name": serialized.get("name", "unknown"),
+                "tool_input": input_str,
+                "start": time.time(),
+            }
 
     def on_tool_end(
         self,
@@ -862,7 +887,9 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         **kwargs,
     ) -> None:
         self._parents[run_id] = parent_run_id
-        self._retrieval_starts[run_id] = {"start": time.time(), "query": query}
+        # Insert under the prune's lock - see _record_llm_start.
+        with self._state_lock:
+            self._retrieval_starts[run_id] = {"start": time.time(), "query": query}
 
     def on_retriever_end(
         self,
@@ -924,11 +951,18 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         start_t = state["start"]
         query: Optional[str] = state["query"] or None
         step: Dict[str, Any] = {
+            # parent_run_id so _emit_span_tree parents the failed retrieval under the node
+            # that ran it, like on_retriever_end's steps - without it the span always fell
+            # back to the root.
+            "parent_run_id": parent_run_id,
             "name": "Retrieval 1",  # renumbered below
             "duration_ms": (end_t - start_t) * 1000,
             "start_time": start_t,
             "end_time": end_t,
             "output": f"ERROR: {error}",
+            # Structured error - _emit_span_tree threads it to child_span(error=...) so the
+            # span row is marked failed, not just an output that happens to say ERROR.
+            "error": str(error),
         }
         if query:
             step["query"] = query

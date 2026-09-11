@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional, Union
-from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
 # ---------------------------------------------------------------------------
 # Observable trace
@@ -78,6 +78,17 @@ class Dataset(BaseModel):
     # Custom code scorers attached to this dataset - [{ id, name, code, enabled }]. Retrievable,
     # so a fetched dataset round-trips them (import_dataset copies them to the new dataset).
     code_scorers: Optional[List[Dict[str, Any]]] = Field(default=None, alias="codeScorers")
+    # Grading config carried on the dataset itself - similarity metric toggles (each a
+    # {"enabled": bool, ...} object on the wire), LLM-as-judge overrides, and the raw
+    # sovereigntyIndex object. Modeled so a fetched Dataset round-trips them: extra="ignore"
+    # used to silently drop all of these on read, and import_dataset lost them on the copy.
+    vector_similarity: Optional[Any] = Field(default=None, alias="vectorSimilarity")
+    jaccard_similarity: Optional[Any] = Field(default=None, alias="jaccardSimilarity")
+    bleu_score: Optional[Any] = Field(default=None, alias="bleuScore")
+    rouge_score: Optional[Any] = Field(default=None, alias="rougeScore")
+    judge_prompt: Optional[str] = Field(default=None, alias="judgePrompt")
+    judge_model: Optional[str] = Field(default=None, alias="judgeModel")
+    sovereignty_index: Optional[Dict[str, Any]] = Field(default=None, alias="sovereigntyIndex")
     status: str = "published"
     version_id: Optional[str] = Field(default=None, alias="versionId")
     # Sovereignty & Portability - models selected to compare on this dataset.
@@ -430,7 +441,12 @@ class RunResultRow(BaseModel):
     question_index: Optional[int] = Field(default=None, alias="questionIndex")
     run_number: Optional[int] = Field(default=None, alias="runNumber")
     question_text: Optional[str] = Field(default=None, alias="questionText")
-    response: Optional[str] = None
+    # The engine sends the agent's answer as an `output` OBJECT ({"text": ...}), not a
+    # `response` string - accept both spellings and lift the dict's text (see the
+    # validator below), so row.response actually populates on self-host.
+    response: Optional[str] = Field(
+        default=None, validation_alias=AliasChoices("response", "output")
+    )
     trace_id: Optional[str] = Field(default=None, alias="traceId")
     latency_ms: Optional[float] = Field(default=None, alias="latencyMs")
     input_tokens: Optional[int] = Field(default=None, alias="inputTokens")
@@ -451,6 +467,15 @@ class RunResultRow(BaseModel):
     class Config:
         populate_by_name = True
         extra = "ignore"
+
+    @field_validator("response", mode="before")
+    @classmethod
+    def _lift_output_text(cls, value: Any) -> Any:
+        # The `output` alias delivers the wire's whole output object - keep the declared
+        # Optional[str] by lifting its text field.
+        if isinstance(value, dict):
+            return value.get("text")
+        return value
 
     @classmethod
     def from_wire(cls, wire: Dict[str, Any]) -> "RunResultRow":

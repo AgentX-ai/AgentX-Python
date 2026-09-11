@@ -5,6 +5,8 @@ from agentx.version import VERSION
 from agentx.exceptions import (
     AgentXError,
     AgentXAuthError,
+    AgentXValidationError,
+    AgentXConnectionError,
     AgentXAPIError,
     DatasetNotFound,
     CINotEnabled,
@@ -21,6 +23,8 @@ __all__ = [
     "AgentX",
     "AgentXError",
     "AgentXAuthError",
+    "AgentXValidationError",
+    "AgentXConnectionError",
     "AgentXAPIError",
     "DatasetNotFound",
     "CINotEnabled",
