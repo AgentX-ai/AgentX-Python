@@ -190,6 +190,13 @@ extra:
 | LlamaIndex            | `pip install "agentx-python[llamaindex]"`    | `AgentXLlamaIndexHandler` |
 | AutoGen               | `pip install "agentx-python[autogen]"`       | `AgentXAutoGenObserver`   |
 
+> **Warning: pick ONE instrumentation layer per LLM call.** Do not combine
+> `AgentXCallbackHandler` (or any framework integration) with a patched provider client
+> (`patch_openai_client`, `patch_anthropic_client`, `patch_genai_client`) on the same code
+> path. A patched call that runs outside an active span emits its own root trace, so every
+> LLM call the framework already traces gets a duplicate trace - and its cost is counted
+> twice.
+
 Two more platforms are covered by **pull importers** rather than in-process hooks, each with its
 own CLI: `agentx-moveworks` (Moveworks Data API sync, no extra needed) and `agentx-databricks`
 (`pip install "agentx-python[databricks]"`, MLflow/Databricks trace sync).

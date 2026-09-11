@@ -221,7 +221,16 @@ class EvaluationsClient:
         the Sovereignty & Portability Index. Pass ``provider`` (e.g. "Google")
         to filter."""
         params = {"provider": provider} if provider else None
-        data = self._request("GET", "/models", params=params)
+        try:
+            data = self._request("GET", "/models", params=params)
+        except AgentXEvaluationsError as exc:
+            if exc.status_code == 404:
+                raise AgentXEvaluationsError(
+                    "list_models is hosted-only; on self-host pass any model id your judge "
+                    "key can reach, or use client.monitor.* portability models",
+                    status_code=404,
+                ) from exc
+            raise
         items = data if isinstance(data, list) else data.get("models", [])
         return [ModelInfo(**m) for m in items]
 
@@ -546,11 +555,19 @@ class EvaluationsClient:
     ) -> bool:
         """Return True if ``exc`` is the 404 that means "this engine is self-host".
 
-        Only a 404 qualifies. Anything else - auth, validation, a 500, a dead connection -
-        is a real failure on a route that does exist, and must propagate rather than be
-        retried against a different endpoint that would mask it.
+        Only a route-level 404 qualifies. Anything else - auth, validation, a 500, a dead
+        connection - is a real failure on a route that does exist, and must propagate rather
+        than be retried against a different endpoint that would mask it.
+
+        A resource 404 does not qualify either: the engine's SDK router answers these routes
+        with bodies naming the missing resource ("Run not found" / "No analysis found for
+        this run"), so latching on one would permanently reroute every later analysis call
+        to the dashboard router because a caller once passed a wrong run id.
         """
         if exc.status_code != 404:
+            return False
+        body = str(exc)
+        if "Run not found" in body or "No analysis found for this run" in body:
             return False
         if self._analysis_on_dashboard_router is None:
             logger.info(

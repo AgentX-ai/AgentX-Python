@@ -10,13 +10,14 @@ class MonitorPattern(BaseModel):
     ``pattern_ids`` entry in ``tracer.trace(..., monitor=True, pattern_ids=[...])``.
 
     A "failure" pattern (the default) raises a signal to triage; a "proper" pattern logs a
-    healthy tally instead. Only one of ``include_terms``/``regex``/``semantic_prompt`` is
-    meaningful at a time, selected by ``detector_kind``.
+    healthy tally instead.
 
     On self-host the engine stores a pattern as a list of ``conditions`` (each with its own
-    detector kind and match settings) - the flat ``include_terms``/``regex``/
-    ``semantic_prompt`` fields are display-only projections derived from the first condition;
-    ``conditions`` is the truth.
+    detector kind and match settings) and ``conditions`` is the only truth: the wire always
+    carries ``includeTerms``/``excludeTerms`` as ``[]`` and omits ``regex``/``semanticPrompt``
+    entirely (they are legacy display fields kept for wire compatibility), so the flat
+    ``include_terms``/``exclude_terms``/``regex``/``semantic_prompt`` attributes here stay
+    empty/None - read the match settings from ``conditions``.
     """
 
     id: str = Field(alias="_id")
@@ -41,6 +42,7 @@ class MonitorPattern(BaseModel):
     agent_ids: List[str] = Field(default_factory=list, alias="agentIds")
 
     class Config:
+        populate_by_name = True
         extra = "ignore"
 
 

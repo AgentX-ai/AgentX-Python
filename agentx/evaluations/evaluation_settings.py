@@ -74,8 +74,21 @@ class EvaluationSettingsBuilder:
         # Sandboxed JS scorers run per result alongside the judge - each entry is
         # {"name": ..., "enabled": True, "code": "..."} where the code is a JS function body
         # receiving (input, output, expected, toolCalls) and returning {score, reasoning}.
+        # Normalized the same way DatasetBuilder does: id defaulted, name optional (the
+        # engine defaults it), enabled default True - raw pass-through sent entries the
+        # engine's shape validation rejects.
         if code_scorers:
-            self._payload["codeScorers"] = list(code_scorers)
+            import uuid as _uuid
+
+            self._payload["codeScorers"] = [
+                {
+                    "id": scorer.get("id") or _uuid.uuid4().hex[:12],
+                    "name": scorer.get("name"),
+                    "code": scorer["code"],
+                    "enabled": scorer.get("enabled", True),
+                }
+                for scorer in code_scorers
+            ]
 
     def publish(self) -> EvaluationSettings:
         logger.info("Publishing evaluation settings '%s'", self._payload["name"])

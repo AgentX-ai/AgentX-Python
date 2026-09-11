@@ -51,6 +51,10 @@ class TestCase(BaseModel):
     expected_knowledge_base: Optional[List[str]] = Field(default=None, alias="expectedKnowledgeBase")
     expected_delegations: Optional[List[str]] = Field(default=None, alias="expectedDelegations")
     judge_guideline: Optional[str] = Field(default=None, alias="judgeGuideline")
+    # Engine-side trajectory match (e.g. {"tools": ["search"], "mode": "in_order"}) and the
+    # expected retrieval context for RAG grading - carried so import_dataset round-trips them.
+    expected_trajectory: Optional[Dict[str, Any]] = Field(default=None, alias="expectedTrajectory")
+    expected_retrieval_context: Optional[Any] = Field(default=None, alias="expectedRetrievalContext")
     smoke_test: Optional[SmokeTestSettings] = Field(default=None, alias="smokeTest")
     # Named subsets this case belongs to (e.g. ["smoke"], ["full", "regression"]).
     # ``run(dataset_id, split="smoke")`` runs only cases tagged with that split.

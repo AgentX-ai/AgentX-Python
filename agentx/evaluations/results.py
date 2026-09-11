@@ -87,6 +87,16 @@ def normalize_result(
     else:
         output = {"text": str(raw)} if raw is not None else {"text": ""}
 
+    if error is None and (
+        output is None
+        or (set(output) <= {"text"} and not str(output.get("text") or "").strip())
+    ):
+        # An empty output with no error would fail the engine's row validation and silently
+        # vanish from the run - store it as an explicit failed row instead.
+        error = ResultError(type="EmptyOutput", message="Agent returned no output")
+        if output is None:
+            output = {"text": ""}
+
     has_timings = (
         latency_ms is not None or input_tokens is not None or output_tokens is not None
     )

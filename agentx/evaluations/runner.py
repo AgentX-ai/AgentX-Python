@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import time
 
 import requests
@@ -307,9 +308,23 @@ class EvaluationRunContext:
             # generator happens to be garbage-collected.
             if results_iter is not None:
                 results_iter.close()
-
-        if batch:
-            self._flush_batch(batch)
+            # Flush the trailing partial batch HERE, not after the try: a mid-run exception
+            # (agent crash, Ctrl-C) used to discard up to max_batch - 1 already-paid-for
+            # results still waiting in it.
+            if batch:
+                propagating = sys.exc_info()[1]
+                try:
+                    self._flush_batch(batch)
+                except Exception as flush_exc:
+                    if propagating is None:
+                        raise
+                    # An exception is already propagating out of the loop - a flush failure
+                    # here must not mask it.
+                    logger.error(
+                        "Trailing batch flush failed while handling %r: %s",
+                        propagating,
+                        flush_exc,
+                    )
 
         return self
 
@@ -326,6 +341,15 @@ class EvaluationRunContext:
                     _say(
                         f"  {green('✓')}  Scored {resp.accepted} result{'s' if resp.accepted != 1 else ''}"
                     )
+                    if resp.failed_validation > 0:
+                        # The engine accepts the batch but silently drops rows that fail its
+                        # validation (typically empty output and no error) - say so, or those
+                        # cases just vanish from the report.
+                        _say(
+                            f"  {yellow('!')}  {resp.failed_validation} result"
+                            f"{'s' if resp.failed_validation != 1 else ''} failed validation "
+                            "(empty output and no error) and did not get stored"
+                        )
                     logger.info(
                         "Batch %s: accepted=%d duplicates=%d failed=%d",
                         batch_id[:8],
@@ -415,8 +439,11 @@ class EvaluationRunContext:
         ``no_regression=True`` fails it when the average dropped more than ``tolerance``
         (default 0.5, judge scores are noisy) below the dataset's previous completed run.
         At least one check is required. On a multi-judge run, ``scorer`` (an additional
-        scorer's id or name, e.g. ``scorer="Safety"``) gates that scorer's own average
-        instead of the primary's - "fail if Safety is low even when the average looks fine". Prints a CI-log-friendly verdict and returns a
+        judge scorer's id or name, e.g. ``scorer="Safety"``) gates that scorer's own average
+        instead of the primary's - "fail if Safety is low even when the average looks fine".
+        Only judge scorers resolve here: deterministic scorer-group members (pattern/code
+        kinds) have no per-run judge average, so naming one is rejected by the engine.
+        Prints a CI-log-friendly verdict and returns a
         :class:`GateResult` - the caller decides the exit code::
 
             report = client.evaluations.run(...).execute(my_agent).finalize()
@@ -468,6 +495,16 @@ class EvaluationRunContext:
     def rated_count(self) -> int:
         """Number of submitted results that have received a rating so far."""
         return self._live_stats.rated_count if self._live_stats else 0
+
+    @property
+    def skipped_count(self) -> int:
+        """Number of submitted results the judge could not score."""
+        return self._live_stats.skipped_count if self._live_stats else 0
+
+    @property
+    def failed_count(self) -> int:
+        """Number of submitted results that carried an error."""
+        return self._live_stats.failed_count if self._live_stats else 0
 
     @property
     def average_rating(self) -> Optional[float]:
@@ -638,6 +675,36 @@ class EvaluationsRunner:
         the ``EvaluationRunContext`` that started it (e.g. from a separate
         script execution)."""
         return self._client.get_analysis_status(run_id)
+
+    # Run-lifecycle calls by id - the standalone forms of what run()/execute()/finalize()/
+    # analyze() drive for you, for scripts operating on a run created elsewhere.
+
+    def init_run(self, dataset_id: str, subject, **kwargs):
+        """Create a run row without executing anything - the standalone form of :meth:`run`.
+        Accepts the same kwargs as ``EvaluationsClient.init_run``."""
+        return self._client.init_run(dataset_id, subject, **kwargs)
+
+    def append_results(self, run_id: str, batch_id: str, results: list):
+        """Submit one batch of results to a run by id (scored synchronously server-side)."""
+        return self._client.append_results(run_id, batch_id, results)
+
+    def finalize_run(self, run_id: str) -> dict:
+        """Mark a run completed by id - the standalone form of
+        ``EvaluationRunContext.finalize()``."""
+        return self._client.finalize_run(run_id)
+
+    def analyze_run(self, run_id: str, **kwargs) -> dict:
+        """Start the LLM analysis of a finalized run by id; poll
+        :meth:`get_analysis_status`, then :meth:`get_report`."""
+        return self._client.analyze_run(run_id, **kwargs)
+
+    def get_report(self, run_id: str):
+        """The analyzed report for a run by id, once analysis has finished."""
+        return self._client.get_report(run_id)
+
+    def get_submitted_keys(self, run_id: str) -> list:
+        """Idempotency keys a run has already accepted - what execute() uses to resume."""
+        return self._client.get_submitted_keys(run_id)
 
     def gate_run(
         self,

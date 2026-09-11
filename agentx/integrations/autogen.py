@@ -107,7 +107,10 @@ class AgentXAutoGenObserver:
             # explicit return/break/continue there would silently swallow any exception
             # propagating from agent_or_team.run() above (see crewai.py's kickoff() for the same
             # hazard spelled out in full).
-            with self._tracer.trace(self._name, metadata=self._metadata, session_id=self._session_id) as span:
+            # span_kind="agent": the root of a standalone team/agent run is the agent run itself.
+            with self._tracer.trace(
+                self._name, metadata=self._metadata, session_id=self._session_id, span_kind="agent"
+            ) as span:
                 span._start = start_t
                 if error:
                     span.set_error(error)
