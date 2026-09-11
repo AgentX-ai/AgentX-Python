@@ -153,7 +153,11 @@ def finish_llm_call(
         )
         return
 
-    span = tracer.trace(name, metadata=metadata, framework=framework, model=model, session_id=session_id)
+    # A patched provider call outside any active span becomes its own root trace - it is a bare
+    # model call, so stamp it "llm" rather than leaving the kind unset.
+    span = tracer.trace(
+        name, metadata=metadata, framework=framework, model=model, session_id=session_id, span_kind="llm"
+    )
     span.__enter__()
     span._start = start_t
     span.input = input_repr

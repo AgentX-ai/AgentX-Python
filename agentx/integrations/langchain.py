@@ -595,6 +595,9 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                     else self._metadata
                 ),
                 session_id=self._session_id,
+                # The root of a standalone chain/agent invocation is the agent run itself,
+                # not one of its llm/tool/retrieval children.
+                span_kind="agent",
             ) as span:
                 # __enter__ just set _start to "now" - overridden to the chain's real start time,
                 # see llamaindex.py's _send_trace for the identical fix and full rationale.
@@ -655,6 +658,7 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                     else self._metadata
                 ),
                 session_id=self._session_id,
+                span_kind="agent",
             ) as span:
                 span._start = state["start"]
                 span.set_error(str(error))

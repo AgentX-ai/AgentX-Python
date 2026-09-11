@@ -95,6 +95,21 @@ def test_documented_judge_scorer_methods_exist():
     assert not missing, "documented but not on JudgeScorersClient: " + ", ".join(missing)
 
 
+def test_run_lifecycle_calls_documented_on_client_evaluations_exist():
+    """The mintlify API reference shows client.evaluations.<method>(...) for the whole run
+    lifecycle - these delegate to the private EvaluationsClient, and every one must exist on
+    the public runner or the documented snippets raise AttributeError."""
+    for method in (
+        "init_run",
+        "append_results",
+        "finalize_run",
+        "analyze_run",
+        "get_report",
+        "get_submitted_keys",
+    ):
+        assert hasattr(EvaluationsRunner, method), f"client.evaluations.{method} is documented but missing"
+
+
 def test_documented_builder_keywords_are_real_parameters():
     keywords = [
         (doc, keyword)

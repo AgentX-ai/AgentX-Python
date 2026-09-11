@@ -1283,8 +1283,8 @@ class Tracer:
                             (available as ``span.trace_id`` once that `with` block exits).
             dataset_id:     EvaluationSettings ID to score against.
             question_index: Optional index into the dataset's questions array.
-                            When supplied, that question's ``expectedResults``
-                            is included in the scoring prompt.
+                            Hosted-only: the self-host engine ignores it and
+                            scores the trace's own input/output as-is.
 
         Returns:
             Dict with keys: ``run_id``, ``trace_id``, ``rating``,

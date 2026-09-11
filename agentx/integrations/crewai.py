@@ -93,7 +93,10 @@ class AgentXCrewObserver:
             # `return` here (this whole method body runs inside the try's `finally`) - an
             # explicit return/break/continue in a finally block silently swallows any exception
             # propagating from crew.kickoff() above.
-            with self._tracer.trace(self._name, metadata=self._metadata, session_id=self._session_id) as span:
+            # span_kind="agent": the root of a standalone crew kickoff is the agent run itself.
+            with self._tracer.trace(
+                self._name, metadata=self._metadata, session_id=self._session_id, span_kind="agent"
+            ) as span:
                 span._start = start
                 if error:
                     span.set_error(error)

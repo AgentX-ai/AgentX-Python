@@ -179,7 +179,9 @@ class IngestClient:
                 resp = self._session.post(self._endpoint, json=payload, timeout=10)
             except requests.RequestException as exc:
                 self._warn_delivery(f"{exc.__class__.__name__}: {exc}")
-                logger.debug("agentx ingest sync send error: %s", exc)
+                # WARNING, not debug: the sync caller explicitly asked for a trace_id back, so
+                # a dropped trace here silently becomes trace_id None downstream.
+                logger.warning("agentx sync trace send failed (%s) - trace dropped, no trace_id", exc)
                 return None
             if resp.status_code in (429, 503) and attempt < 2:
                 retry_after = resp.headers.get("Retry-After")
@@ -193,7 +195,13 @@ class IngestClient:
                 continue
             if not resp.ok:
                 self._warn_delivery(f"HTTP {resp.status_code}", status=resp.status_code)
-                logger.debug("agentx ingest sync HTTP %d: %s", resp.status_code, resp.text[:200])
+                # WARNING, not debug: the sync caller explicitly asked for a trace_id back, so
+                # a dropped trace here silently becomes trace_id None downstream.
+                logger.warning(
+                    "agentx sync trace send failed (HTTP %d: %s) - trace dropped, no trace_id",
+                    resp.status_code,
+                    resp.text[:200],
+                )
                 return None
             try:
                 return resp.json().get("trace_id")
@@ -211,11 +219,16 @@ class IngestClient:
             resp = self._session.post(self._endpoint, json=payload, timeout=10)
         except requests.RequestException as exc:
             self._warn_delivery(f"{exc.__class__.__name__}: {exc}")
-            logger.debug("agentx ingest sync send error: %s", exc)
+            # WARNING, not debug - same reasoning as send_trace_sync.
+            logger.warning("agentx sync trace send failed (%s) - trace dropped, no trace_id", exc)
             return None
         if not resp.ok:
             self._warn_delivery(f"HTTP {resp.status_code}", status=resp.status_code)
-            logger.debug("agentx ingest sync HTTP %d: %s", resp.status_code, resp.text[:200])
+            logger.warning(
+                "agentx sync trace send failed (HTTP %d: %s) - trace dropped, no trace_id",
+                resp.status_code,
+                resp.text[:200],
+            )
             return None
         try:
             body = resp.json()

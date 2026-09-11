@@ -359,7 +359,12 @@ class AgentXLlamaIndexHandler(BaseCallbackHandler):
         # tool_calls loop reads latency_ms for duration and the timestamps for position, so each
         # tool call lands correctly in the tree panel instead of defaulting to offset 0.
         with self._tracer.trace(
-            self._name, metadata=self._metadata, session_id=self._session_id, framework="llamaindex"
+            self._name,
+            metadata=self._metadata,
+            session_id=self._session_id,
+            framework="llamaindex",
+            # The root of a standalone query/agent invocation is the agent run itself.
+            span_kind="agent",
         ) as span:
             # __enter__ just set _start to "now" - overridden to the query's real start time so
             # __exit__'s latency_ms reflects the actual run, not the few microseconds between this

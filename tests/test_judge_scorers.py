@@ -214,6 +214,39 @@ def test_judge_scorers_builder_matches_legacy_builder_ergonomics(monkeypatch):
     assert payload["online"]["agentIds"] == ["support-agent"]
 
 
+def test_builder_rejects_idle_seconds_without_session_scope():
+    """idleSeconds only applies to session scope - the engine silently ignores it with trace
+    scope, so an explicit idle_seconds without scope="session" is a hard error, not an inert
+    wire field."""
+    client = JudgeScorersClient(api_key="agtx_local_test", base_url="http://localhost:1")
+    with pytest.raises(ValueError, match="idle_seconds requires scope='session'"):
+        client.builder("Support quality", live=True, idle_seconds=300)
+
+
+def test_builder_sends_idle_seconds_and_requires_expected(monkeypatch):
+    """With scope="session", an explicit idle_seconds reaches the wire, and requires_expected
+    lands in the judge section as requiresExpected."""
+    client = JudgeScorersClient(api_key="agtx_local_test", base_url="http://localhost:1")
+    captured = {}
+
+    def fake_request(method, path, **kwargs):
+        captured["payload"] = kwargs.get("json")
+        return {"judgeScorer": {"_id": "s1", "name": "Support quality", "judge": {}, "offline": {}, "online": None}}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    client.builder(
+        "Support quality",
+        requires_expected=True,
+        live=True,
+        scope="session",
+        idle_seconds=300,
+    ).publish()
+    payload = captured["payload"]
+    assert payload["judge"]["requiresExpected"] is True
+    assert payload["online"]["scope"] == "session"
+    assert payload["online"]["idleSeconds"] == 300
+
+
 def test_from_env_honors_selfhost_base_url_conventions(monkeypatch):
     """from_env silently targeting the hosted default while the shell exports the self-host
     conventions (AGENTX_SELFHOST_BASE_URL / BASE_URL) produced confusing auth errors - it now

@@ -271,6 +271,27 @@ def test_failures_that_are_not_404_propagate_untouched(status):
     assert client._analysis_on_dashboard_router is None
 
 
+@pytest.mark.parametrize("body", [{"error": "Run not found"}, {"error": "No analysis found for this run. POST /runs/:runId/analyze first."}])
+def test_resource_404s_do_not_latch_the_dashboard_fallback(body):
+    """A 404 whose body names the missing resource comes from a route that EXISTS - the SDK
+    router answered it. It must propagate as-is and must not permanently reroute every later
+    analysis call to the dashboard router."""
+    client, session = make_client(
+        {
+            ("GET", f"{SDK_ROOT}/runs/{RUN}/analyze-status"): FakeResponse(404, body),
+            # Present, and must not be reached.
+            ("GET", f"{API_ROOT}/evaluate/analyze/{RUN}/status"): FakeResponse(200, STATUS_BODY),
+        }
+    )
+
+    with pytest.raises(AgentXEvaluationsError) as caught:
+        client.get_analysis_status(RUN)
+
+    assert caught.value.status_code == 404
+    assert not [u for u in session.urls() if "/evaluate/" in u], "masked a resource 404"
+    assert client._analysis_on_dashboard_router is None
+
+
 def test_auth_errors_are_not_mistaken_for_a_missing_route():
     client, session = make_client(
         {("GET", f"{SDK_ROOT}/runs/{RUN}/analyze-status"): FakeResponse(401, {"e": "nope"})}

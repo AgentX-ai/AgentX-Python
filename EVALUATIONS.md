@@ -407,14 +407,14 @@ client.evaluations.run(dataset_id=dataset.id, subject={...}, scorer_id=settings.
 
 #### Configuring the judge
 
-`datasets.builder(...)`, `judge_scorers.builder(...)` and the legacy `settings.builder(...)` all accept `judge_prompt`/`judge_model` to override how the LLM-as-judge grades responses, applying to every scoring path (native dashboard runs and SDK/custom-agent runs alike):
+`judge_scorers.builder(...)` and the legacy `settings.builder(...)` accept `judge_prompt`/`judge_model` to override how the LLM-as-judge grades responses, applying to every scoring path (native dashboard runs and SDK/custom-agent runs alike). `datasets.builder(...)` accepts the same kwargs for hosted compatibility, but on self-host the engine's dataset-create route ignores both - set them on a judge scorer / the evaluation settings instead (matching the `DatasetBuilder` docstring):
 
 ```python
 scorer = (
     client.monitor.judge_scorers
     .builder(
         name="Strict grading",
-        judge_model="claude-opus-4-8",                    # any id from list_models()
+        judge_model="claude-opus-4-8",                    # any model id your judge key can reach (list_models() on the hosted platform)
         judge_prompt="""You are grading a customer support response.
 
 **User Query:** {input}

@@ -116,6 +116,7 @@ class JudgeScorersClient:
         judge_prompt: Optional[str] = None,
         judge_model: Optional[str] = None,
         tool_context: Optional[str] = None,
+        requires_expected: Optional[bool] = None,
         # Offline profile (dataset-run grading)
         number_of_requests: int = 1,
         vector_similarity: bool = False,
@@ -135,13 +136,17 @@ class JudgeScorersClient:
         alert_threshold: Optional[float] = 5,
         severity: str = "medium",
         agent_ids: Optional[List[str]] = None,
-        idle_seconds: int = 120,
+        idle_seconds: Optional[int] = None,
     ) -> "JudgeScorerBuilder":
         """Snake_case builder with ``.publish()``, the unified successor of
         ``client.evaluations.settings.builder(...)`` - same offline fields (plus ``thresholds``,
         ``tool_context``) and, new here, the online profile in the same call. The scorer the
         builder publishes is one entity: its ``.id`` is what ``client.evaluations.run(...,
         scorer_id=...)`` takes, and its live profile is what online scoring keys on."""
+        if idle_seconds is not None and scope != "session":
+            # idleSeconds only applies to session scope - with trace scope the engine ignores
+            # it, so an explicit value here would be silently inert.
+            raise ValueError("idle_seconds requires scope='session'")
         judge: Dict[str, Any] = {}
         for key, value in (
             ("acceptanceCriteria", acceptance_criteria),
@@ -150,6 +155,7 @@ class JudgeScorersClient:
             ("judgePrompt", judge_prompt),
             ("judgeModel", judge_model),
             ("toolContext", tool_context),
+            ("requiresExpected", requires_expected),
         ):
             if value is not None:
                 judge[key] = value
@@ -178,7 +184,7 @@ class JudgeScorersClient:
                 "scope": scope,
                 "alertThreshold": alert_threshold,
                 "severity": severity,
-                "idleSeconds": idle_seconds,
+                "idleSeconds": idle_seconds if idle_seconds is not None else 120,
             }
             if agent_ids:
                 online["scopeMode"] = "selected"
@@ -329,7 +335,9 @@ class JudgeScorersClient:
 
     def ratings(self, scorer_id: str, window: str = "7d") -> "List[OnlineEvaluatorRatingPoint]":
         """Bucketed average-rating-over-time for this scorer's live checks - same typed points
-        the legacy online_evaluators client returns, so scripts migrate without shape changes."""
+        the legacy online_evaluators client returns, so scripts migrate without shape changes.
+        ``window`` accepts "24h", "7d", or "30d" only (unlike :meth:`calibration`, which also
+        takes "rubric")."""
         from agentx.monitor.models import OnlineEvaluatorRatingPoint
 
         data = self._request("GET", f"/online-evaluators/{self._profile_id(scorer_id)}/ratings?window={window}")
@@ -337,7 +345,8 @@ class JudgeScorersClient:
 
     def events(self, scorer_id: str, window: str = "7d") -> "List[OnlineEvaluatorEvent]":
         """Individually scored traces behind the ratings series, worst-rated first - typed, same
-        as the legacy online_evaluators client."""
+        as the legacy online_evaluators client. ``window`` accepts "24h", "7d", or "30d" only
+        (unlike :meth:`calibration`, which also takes "rubric")."""
         from agentx.monitor.models import OnlineEvaluatorEvent
 
         data = self._request("GET", f"/online-evaluators/{self._profile_id(scorer_id)}/events?window={window}")
