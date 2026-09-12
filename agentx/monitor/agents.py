@@ -23,6 +23,17 @@ class MonitorAgentClient:
         return self._client.create_agent(name)
 
     def ensure(self, name: str) -> dict:
-        """Get-or-create by name - idempotent, safe to re-run."""
+        """Best-effort get-or-create - concurrent callers converge on the oldest row."""
         existing = next((a for a in self.list() if a.get("name") == name), None)
-        return existing if existing is not None else self.create(name)
+        if existing is not None:
+            return existing
+        created = self.create(name)
+        # The engine's POST /agents always creates a new row, so two concurrent ensure()
+        # calls can both create. Re-list and return the oldest row among same-name rows
+        # (createdAt is ISO-8601, so lexicographic min is chronological min) - the same
+        # row the engine's own name resolution picks - so every caller converges on the
+        # same agent.
+        matches = [a for a in self.list() if a.get("name") == name]
+        if not matches:
+            return created
+        return min(matches, key=lambda a: str(a.get("createdAt") or ""))

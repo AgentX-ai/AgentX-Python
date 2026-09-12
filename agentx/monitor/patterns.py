@@ -20,6 +20,11 @@ class MonitorPatternBuilder:
     - ``"regex"``: ``regex`` - a single regular expression.
     - ``"semantic"``: ``semantic_prompt`` - an LLM judges whether the response violates the
       described rubric.
+
+    ``conditions`` (self-host) is the engine's full N-condition model - a list of condition
+    dicts, each with its own detector kind and match settings - passed through verbatim to
+    the create payload; when set, the engine honors it as the pattern's whole rule set and
+    the flat fields above are only legacy display metadata.
     """
 
     def __init__(
@@ -41,6 +46,7 @@ class MonitorPatternBuilder:
         sample_rate: float = 1.0,
         scope_mode: str = "all",
         agent_ids: Optional[List[str]] = None,
+        conditions: Optional[List[dict]] = None,
     ):
         self._client = client
         self._payload: Dict[str, Any] = {
@@ -63,6 +69,10 @@ class MonitorPatternBuilder:
             "scopeMode": scope_mode,
             "agentIds": agent_ids or [],
         }
+        # Passed through verbatim - the engine honors body.conditions as the full
+        # N-condition model (see the class docstring).
+        if conditions is not None:
+            self._payload["conditions"] = conditions
 
     def publish(self) -> MonitorPattern:
         logger.info("Publishing monitor pattern '%s'", self._payload["name"])
@@ -93,6 +103,7 @@ class MonitorPatternClient:
         sample_rate: float = 1.0,
         scope_mode: str = "all",
         agent_ids: Optional[List[str]] = None,
+        conditions: Optional[List[dict]] = None,
     ) -> MonitorPatternBuilder:
         return MonitorPatternBuilder(
             self._client,
@@ -112,11 +123,33 @@ class MonitorPatternClient:
             sample_rate=sample_rate,
             scope_mode=scope_mode,
             agent_ids=agent_ids,
+            conditions=conditions,
         )
 
     def delete(self, pattern_id: str) -> None:
         """Delete a pattern. Its historical signals remain as history."""
-        self._client._request("DELETE", f"/agent-monitoring/patterns/{pattern_id}", base=self._client._api_root())
+        # retry=False: a lost response + transport retry would turn a successful
+        # delete into a spurious 404.
+        self._client._request(
+            "DELETE",
+            f"/agent-monitoring/patterns/{pattern_id}",
+            base=self._client._api_root(),
+            retry=False,
+        )
+
+    def update(self, pattern_id: str, **fields: Any) -> MonitorPattern:
+        """Update a pattern's fields in place (wire camelCase keys, passed through
+        verbatim - e.g. ``enabled=False``, ``conditions=[...]``) and return the
+        updated :class:`MonitorPattern`. retry=False: a non-idempotent server-side
+        write must not be re-fired on a lost response."""
+        data = self._client._request(
+            "PUT",
+            f"/agent-monitoring/patterns/{pattern_id}",
+            base=self._client._api_root(),
+            json=fields,
+            retry=False,
+        )
+        return MonitorPattern(**data["pattern"])
 
     def get(self, pattern_id: str) -> MonitorPattern:
         return self._client.get_pattern(pattern_id)

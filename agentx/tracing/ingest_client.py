@@ -94,7 +94,8 @@ class IngestClient:
     # ------------------------------------------------------------------
 
     def enqueue(self, payload: Dict[str, Any]) -> None:
-        """Add a trace payload to the send queue. Never blocks; drops silently on overflow."""
+        """Add a trace payload to the send queue. Never blocks; drops on overflow
+        (logged - the 1st and every 50th drop warn, see ``_record_drop``)."""
         if self._workspace_id:
             payload = {**payload, "workspaceId": self._workspace_id}
         try:
@@ -276,7 +277,11 @@ class IngestClient:
         git_context: Optional[Dict[str, Any]] = None,
         workspace_id: Optional[str] = None,
     ) -> CIRun:
-        """Create a CI run and return test cases from the dataset."""
+        """Create a CI run and return test cases from the dataset.
+
+        Hosted platform only - the self-host engine does not serve /ingest/ci-runs;
+        use ``client.evaluations.run(...).gate(...)`` instead.
+        """
         payload: Dict[str, Any] = {"dataset_id": dataset_id}
         if agent_name:
             payload["agent_name"] = agent_name
@@ -310,7 +315,11 @@ class IngestClient:
         input: Optional[Any] = None,
         latency_ms: Optional[int] = None,
     ) -> CIQuestionScore:
-        """Submit an agent result for one test case and receive the score."""
+        """Submit an agent result for one test case and receive the score.
+
+        Hosted platform only - the self-host engine does not serve /ingest/ci-runs;
+        use ``client.evaluations.run(...).gate(...)`` instead.
+        """
         payload: Dict[str, Any] = {
             "question_index": question_index,
             "output": output,
@@ -334,14 +343,22 @@ class IngestClient:
         )
 
     def finalize_ci_run(self, run_id: str) -> CIRunResult:
-        """Finalize the run and return the gate result."""
+        """Finalize the run and return the gate result.
+
+        Hosted platform only - the self-host engine does not serve /ingest/ci-runs;
+        use ``client.evaluations.run(...).gate(...)`` instead.
+        """
         url = f"{self._base_url}/ingest/ci-runs/{run_id}/finalize"
         resp = self._session.post(url, json={}, timeout=60)
         self._raise_for_ci_status(resp)
         return self._parse_ci_result(resp.json())
 
     def get_ci_run(self, run_id: str) -> CIRunStatus:
-        """Poll the status of a CI run."""
+        """Poll the status of a CI run.
+
+        Hosted platform only - the self-host engine does not serve /ingest/ci-runs;
+        use ``client.evaluations.run(...).gate(...)`` instead.
+        """
         url = f"{self._base_url}/ingest/ci-runs/{run_id}"
         resp = self._session.get(url, timeout=15)
         self._raise_for_ci_status(resp)

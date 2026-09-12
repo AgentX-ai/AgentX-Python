@@ -63,7 +63,9 @@ class MonitorRulesClient:
             payload["sampleRate"] = sample_rate
         if action_config is not None:
             payload["actionConfig"] = action_config
-        data = self._request("POST", "/agent-monitoring/rules", json=payload)
+        # Server-side write: a timeout retry would create a duplicate rule that fans out
+        # webhooks / dataset appends forever - no transport retry (create_pattern posture).
+        data = self._request("POST", "/agent-monitoring/rules", json=payload, retry=False)
         return MonitorRule(data.get("rule", data))
 
     def update(self, rule_id: str, **fields: Any) -> MonitorRule:
@@ -75,4 +77,6 @@ class MonitorRulesClient:
         return MonitorRule(data.get("rule", data))
 
     def delete(self, rule_id: str) -> None:
-        self._request("DELETE", f"/agent-monitoring/rules/{rule_id}")
+        # retry=False: a lost response + transport retry would turn a successful
+        # delete into a spurious 404.
+        self._request("DELETE", f"/agent-monitoring/rules/{rule_id}", retry=False)

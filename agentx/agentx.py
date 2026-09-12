@@ -4,6 +4,7 @@ import os
 import logging
 
 from agentx.util import get_headers, api_base, normalize_base
+from agentx.exceptions import AgentXError
 from agentx.resources.agent import Agent
 from agentx.resources.workforce import Workforce
 
@@ -136,6 +137,11 @@ class AgentX:
         return cls(base_url=base_url) if base_url else cls()
 
     def get_agent(self, id: str) -> Agent:
+        """Fetch one hosted-platform agent by id.
+
+        Hosted platform only - the self-host engine does not serve /access/agents;
+        use ``client.monitor.agents.list()`` for self-host agent rows instead.
+        """
         url = f"{self.base_url or api_base()}/access/agents/{id}"
         # Make a GET request to the AgentX API
         response = requests.get(url, headers=get_headers(self.api_key))
@@ -143,9 +149,17 @@ class AgentX:
         if response.status_code == 200:
             return Agent(**response.json())
         else:
-            raise Exception(f"Failed to retrieve agent: {response.reason}")
+            raise AgentXError(
+                f"Failed to retrieve agent: {response.reason}. This endpoint is "
+                "hosted-platform only - on self-host use client.monitor.agents.list()."
+            )
 
     def list_agents(self) -> List[Agent]:
+        """List the hosted platform's agents.
+
+        Hosted platform only - the self-host engine does not serve /access/agents;
+        use ``client.monitor.agents.list()`` for self-host agent rows instead.
+        """
         url = f"{self.base_url or api_base()}/access/agents"
         # Make a GET request to the AgentX API
         response = requests.get(url, headers=get_headers(self.api_key))
@@ -153,7 +167,10 @@ class AgentX:
         if response.status_code == 200:
             return [Agent(**agent) for agent in response.json()]
         else:
-            raise Exception(f"Failed to list agents: {response.reason}")
+            raise AgentXError(
+                f"Failed to list agents: {response.reason}. This endpoint is "
+                "hosted-platform only - on self-host use client.monitor.agents.list()."
+            )
 
     @staticmethod
     def list_workforces() -> List["Workforce"]:
@@ -214,12 +231,18 @@ class AgentX:
         return {"ok": True, "base_url": base}
 
     def get_profile(self):
-        """Get the current user's profile information."""
+        """Get the current user's profile information.
+
+        Hosted platform only - the self-host engine does not serve /access/getProfile;
+        self-host agent/monitoring data lives under ``client.monitor`` (e.g.
+        ``client.monitor.agents.list()``).
+        """
         url = f"{self.base_url or api_base()}/access/getProfile"
         response = requests.get(url, headers=get_headers(self.api_key))
         if response.status_code == 200:
             return response.json()
         else:
-            raise Exception(
-                f"Failed to get profile: {response.status_code} - {response.reason}"
+            raise AgentXError(
+                f"Failed to get profile: {response.status_code} - {response.reason}. "
+                "This endpoint is hosted-platform only - on self-host use client.monitor."
             )

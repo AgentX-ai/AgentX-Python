@@ -179,27 +179,22 @@ class Prompt(BaseModel):
 # Evaluation subject
 # ---------------------------------------------------------------------------
 
-FrameworkKind = Literal[
-    "raw_python",
-    "openai",
-    "anthropic",
-    "google",
-    "langchain",
-    "llamaindex",
-    "crewai",
-    "autogen",
-    "n8n",
-    "flowise",
-    "other",
-]
-
 RuntimeKind = Literal["local", "ci", "customer_hosted", "low_code"]
 
 
 class EvaluationSubject(BaseModel):
+    """Describes the agent under evaluation.
+
+    ``framework`` is an open string - the engine accepts any label (it also stamps
+    values like ``openai-agents``, ``langgraph``, ``google-genai``, ``litellm`` from
+    the tracing integrations). Common values: ``raw_python``, ``openai``,
+    ``anthropic``, ``google``, ``langchain``, ``llamaindex``, ``crewai``,
+    ``autogen``, ``n8n``, ``flowise``, ``other``.
+    """
+
     kind: Literal["custom_agent", "agentx_agent", "agentx_team"] = "custom_agent"
     display_name: Optional[str] = Field(default=None, alias="displayName")
-    framework: Optional[FrameworkKind] = None
+    framework: Optional[str] = None
     framework_version: Optional[str] = Field(default=None, alias="frameworkVersion")
     runtime: Optional[RuntimeKind] = "local"
     agent_instructions: Optional[str] = Field(default=None, alias="agentInstructions")

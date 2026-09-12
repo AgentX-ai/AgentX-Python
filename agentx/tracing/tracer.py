@@ -8,8 +8,9 @@ import contextvars
 import logging
 import threading
 import time
+import uuid
 from contextlib import contextmanager
-from typing import Any, Callable, Dict, Iterator, List, Optional, TypeVar
+from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, TypeVar
 from uuid import uuid4
 
 from agentx.exceptions import CIGateFailure
@@ -21,6 +22,41 @@ from agentx.tracing.framework_detect import detect_framework
 logger = logging.getLogger(__name__)
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+# Active-span stacks for every Tracer instance, keyed by id(tracer). ONE module-level
+# ContextVar (CPython's contextvars docs: create ContextVars at the top module level,
+# never per-instance - the context machinery keeps a reference per Context that a
+# per-instance var can never reclaim, so churning Tracer instances leaked an entry each).
+# The value is an immutable mapping of tracer id -> span-stack tuple, replaced
+# copy-on-write on every push/pop, so the thread/async isolation semantics (each asyncio
+# task sees a copy of its creator's context, bare threads start empty) are exactly what
+# the old per-instance var gave - and two Tracer instances still share no span state,
+# since each reads only its own id's slot.
+_SPAN_STACKS: "contextvars.ContextVar[Mapping[str, tuple]]" = contextvars.ContextVar(
+    "agentx_span_stacks", default={}
+)
+
+
+def _stack_key(tracer: "Tracer") -> str:
+    # A stable per-instance token, NOT id(self): a span leaked mid-`with` (killed thread, a
+    # framework callback that never fires on_*_end) leaves a stale entry, and a new Tracer
+    # landing on the recycled id() would read the dead tracer's stack and mis-parent spans.
+    return tracer._stack_token
+
+
+def _get_stack(tracer: "Tracer") -> tuple:
+    return _SPAN_STACKS.get().get(_stack_key(tracer), ())
+
+
+def _set_stack(tracer: "Tracer", stack: tuple) -> None:
+    stacks = dict(_SPAN_STACKS.get())
+    if stack:
+        stacks[_stack_key(tracer)] = stack
+    else:
+        # An empty stack is dropped rather than stored, so a finished tracer leaves no
+        # entry behind.
+        stacks.pop(_stack_key(tracer), None)
+    _SPAN_STACKS.set(stacks)
 
 
 def _safe_serialize(value: Any, depth: int = 0) -> Any:
@@ -600,6 +636,9 @@ class _RetrievalRecorder:
         self.output: Any = None
 
 
+_WARNED_MEMORY_NO_SPAN = False
+
+
 class _MemoryOpRecorder:
     """Handle yielded by ``Tracer.trace_memory()`` - set ``output`` (what was recalled or
     stored) inside the block."""
@@ -646,14 +685,10 @@ class Tracer:
         self._client = ingest_client
         self._pending_tool_calls: List[Dict[str, Any]] = []
         self._pending_retrievals: List[Dict[str, Any]] = []
-        # Context-local, not thread-local: two coroutines interleaving on one event loop each
-        # get their own asyncio task Context, so concurrent `async def` agents no longer
-        # mis-parent each other's spans (a thread-local stack merged them into one fabricated
-        # tree). Bare threads keep the old behavior - each starts an empty Context. Stored
-        # immutably (tuple, copy-on-write) so a child task's pushes never leak into siblings.
-        self._span_stack_var: "contextvars.ContextVar[tuple]" = contextvars.ContextVar(
-            f"agentx_span_stack_{id(self)}", default=()
-        )
+        # The active-span stack lives in the module-level _SPAN_STACKS ContextVar, keyed by
+        # this stable token - see _stack_key for why it must not be id(self), and the
+        # ContextVar's own comment for why it must not be a per-instance ContextVar.
+        self._stack_token = uuid.uuid4().hex
 
     # ------------------------------------------------------------------
     # Active-span stack (per context) - lets auto-instrumented integrations
@@ -663,22 +698,22 @@ class Tracer:
     # ------------------------------------------------------------------
 
     def _get_span_stack(self) -> tuple:
-        return self._span_stack_var.get()
+        return _get_stack(self)
 
     def _push_active_span(self, span: "_TraceSpan") -> None:
-        self._span_stack_var.set(self._span_stack_var.get() + (span,))
+        _set_stack(self, _get_stack(self) + (span,))
 
     def _pop_active_span(self, span: "_TraceSpan") -> None:
-        stack = self._span_stack_var.get()
+        stack = _get_stack(self)
         if stack and stack[-1] is span:
-            self._span_stack_var.set(stack[:-1])
+            _set_stack(self, stack[:-1])
         elif span in stack:
-            self._span_stack_var.set(tuple(item for item in stack if item is not span))
+            _set_stack(self, tuple(item for item in stack if item is not span))
 
     @property
     def current_span(self) -> Optional["_TraceSpan"]:
         """The innermost ``with tracer.trace(...)`` span active in this context, if any."""
-        stack = self._span_stack_var.get()
+        stack = _get_stack(self)
         return stack[-1] if stack else None
 
     @contextmanager
@@ -899,19 +934,28 @@ class Tracer:
         With no active span the record is DROPPED (with a debug log), not queued: the only
         pending queue rides the next trace's ``retrieval_steps``, and memory content must
         never reach the engine's retrieval-context extraction for RAG judges. Wrap the call
-        in ``tracer.trace()`` to keep it. (``record_tool_call``/``record_retrieval`` queue
-        instead - see their docstrings.)
+        in ``tracer.trace()`` to keep it - or, on a worker thread, wrap the worker body in
+        ``tracer.use_span(span)`` - a bare thread starts with an empty span stack.
+        (``record_tool_call``/``record_retrieval`` queue instead - see their docstrings.)
         """
         active_span = self.current_span
         if active_span is None:
             # NOT the record_retrieval queue posture: _pending_retrievals rides the next
             # trace's performance_summary.retrieval_steps, which the engine's
             # retrieval-context extraction feeds to RAG judges - recalled memory must never
-            # classify as knowledge grounding. Drop, and say so.
-            logger.debug(
-                "record_memory(%r) called with no active span - wrap the call in tracer.trace(); dropped",
-                name,
-            )
+            # classify as knowledge grounding. Drop - and WARN (once): this is a lost write,
+            # and at debug level the likely trigger (a worker thread without use_span) read
+            # as "memory spans don't work" with no log line anywhere.
+            global _WARNED_MEMORY_NO_SPAN
+            if not _WARNED_MEMORY_NO_SPAN:
+                _WARNED_MEMORY_NO_SPAN = True
+                logger.warning(
+                    "record_memory(%r): no active span - the memory operation was dropped "
+                    "(wrap the call in tracer.trace() or tracer.use_span()); further drops log at debug",
+                    name,
+                )
+            else:
+                logger.debug("record_memory(%r) called with no active span; dropped", name)
             return
         active_span.child_span(
             name,
@@ -935,6 +979,11 @@ class Tracer:
 
             with tracer.trace_memory("user prefs", operation="read", query=user_id) as m:
                 m.output = memory.search(user_id, question)
+
+        With no active span the record is DROPPED (with a debug log), not queued - see
+        :meth:`record_memory`. An exception escaping the block records the operation as
+        failed (error set, output ``ERROR: ...``) and then propagates unchanged - same
+        posture as :meth:`trace_tool_call`.
         """
         start_t = time.time()
         recorder = _MemoryOpRecorder()
@@ -1128,6 +1177,9 @@ class Tracer:
         """
         Run the full CI/CD evaluation lifecycle in one call.
 
+        Hosted platform only - the self-host engine does not serve /ingest/ci-runs;
+        use ``client.evaluations.run(...).gate(...)`` instead.
+
         Creates a CI run, calls ``agent_fn(query)`` for each test case,
         submits results to AgentX for scoring, finalizes the run, and
         returns the gate decision.
@@ -1142,6 +1194,12 @@ class Tracer:
             concurrency:            Max parallel question invocations (default 1).
             fail_on_gate:           Raise CIGateFailure if gate is "fail".
             timeout_per_question:   Seconds to wait for agent_fn per question.
+                                    A case that times out abandons the in-flight
+                                    agent call, but the non-daemon worker thread
+                                    keeps running until agent_fn returns - and
+                                    interpreter shutdown joins those workers, so
+                                    a permanently-hung agent_fn can block
+                                    process exit.
 
         Returns:
             CIRunResult with gate, pass_rate, scores, and violations.
@@ -1160,9 +1218,15 @@ class Tracer:
             output: Optional[str] = None
             try:
                 if timeout_per_question:
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                    # No `with` block: the executor's __exit__ would join the worker
+                    # thread, making a timed-out case block for the agent's full
+                    # runtime. shutdown(wait=False) lets the timeout actually fire.
+                    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                    try:
                         future = ex.submit(agent_fn, query)
                         output = future.result(timeout=timeout_per_question)
+                    finally:
+                        ex.shutdown(wait=False)
                 else:
                     output = agent_fn(query)
             except Exception as exc:
@@ -1196,12 +1260,15 @@ class Tracer:
                         raise CIGateFailure(final)
                     return final
         else:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as ex:
+            # No `with` block: on the fail-fast path __exit__ would still join the
+            # in-flight workers after shutdown(wait=False, cancel_futures=True),
+            # defeating the fast exit. The finally guarantees the shutdown instead.
+            ex = concurrent.futures.ThreadPoolExecutor(max_workers=concurrency)
+            try:
                 futures = {ex.submit(_process_case, tc): tc for tc in run.test_cases}
                 for future in concurrent.futures.as_completed(futures):
                     score = future.result()
                     if score.gate_fired:
-                        ex.shutdown(wait=False, cancel_futures=True)
                         result = self.get_ci_run(run.run_id)
                         final = CIRunResult(
                             run_id=run.run_id,
@@ -1214,6 +1281,8 @@ class Tracer:
                         if fail_on_gate:
                             raise CIGateFailure(final)
                         return final
+            finally:
+                ex.shutdown(wait=False, cancel_futures=True)
 
         result = self.finalize_ci_run(run.run_id)
         if fail_on_gate and result.gate == "fail":
@@ -1229,7 +1298,11 @@ class Tracer:
         git_context: Optional[Dict[str, Any]] = None,
         workspace_id: Optional[str] = None,
     ) -> CIRun:
-        """Create a CI run and receive test cases from the dataset."""
+        """Create a CI run and receive test cases from the dataset.
+
+        Hosted platform only - the self-host engine does not serve /ingest/ci-runs;
+        use ``client.evaluations.run(...).gate(...)`` instead.
+        """
         return self._client.create_ci_run(
             dataset_id,
             agent_name=agent_name,
@@ -1247,7 +1320,11 @@ class Tracer:
         input: Optional[Any] = None,
         latency_ms: Optional[int] = None,
     ) -> CIQuestionScore:
-        """Submit an agent output for one CI run test case."""
+        """Submit an agent output for one CI run test case.
+
+        Hosted platform only - the self-host engine does not serve /ingest/ci-runs;
+        use ``client.evaluations.run(...).gate(...)`` instead.
+        """
         return self._client.submit_ci_result(
             run_id,
             question_index,
@@ -1257,11 +1334,19 @@ class Tracer:
         )
 
     def finalize_ci_run(self, run_id: str) -> CIRunResult:
-        """Finalize a CI run and return the gate result."""
+        """Finalize a CI run and return the gate result.
+
+        Hosted platform only - the self-host engine does not serve /ingest/ci-runs;
+        use ``client.evaluations.run(...).gate(...)`` instead.
+        """
         return self._client.finalize_ci_run(run_id)
 
     def get_ci_run(self, run_id: str) -> CIRunStatus:
-        """Poll the current status of a CI run."""
+        """Poll the current status of a CI run.
+
+        Hosted platform only - the self-host engine does not serve /ingest/ci-runs;
+        use ``client.evaluations.run(...).gate(...)`` instead.
+        """
         return self._client.get_ci_run(run_id)
 
     def evaluate_trace(

@@ -229,6 +229,7 @@ class EvaluationRunContext:
                 )
             return normalized(case)
 
+        executor = None
         if concurrency > 1:
             import concurrent.futures
             import contextvars
@@ -308,6 +309,12 @@ class EvaluationRunContext:
             # generator happens to be garbage-collected.
             if results_iter is not None:
                 results_iter.close()
+            # And release the pool itself here too: close() on a NEVER-STARTED generator
+            # (e.g. every case was already submitted, so next() was never called) does not
+            # run bounded()'s finally - its executor.shutdown would never fire. shutdown()
+            # is idempotent, so the double call on the normal path is harmless.
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
             # Flush the trailing partial batch HERE, not after the try: a mid-run exception
             # (agent crash, Ctrl-C) used to discard up to max_batch - 1 already-paid-for
             # results still waiting in it.
@@ -546,7 +553,7 @@ class EvaluationRunContext:
                 response's mode field for what actually ran.
             quality_mode: "quality_first" or "balanced" - how many items get a second/third judge.
             judges: 1-3 model ids from ``client.evaluations.list_models()``, e.g.
-                ``["gpt-5.6-luna", "claude-opus-4-8"]``. Omit to let the engine score with its
+                ``["gpt-5.6-luna", "claude-opus-5"]``. Omit to let the engine score with its
                 platform default model (a single judge, rather than the dashboard's 3-judge
                 default - SDK runs are typically lighter-weight, quick-start evaluations).
             poll_interval: seconds between status checks while waiting.
@@ -566,16 +573,27 @@ class EvaluationRunContext:
                     judges=judges,
                 )
                 deadline = time.monotonic() + timeout
-                status = self._client.get_analysis_status(self._run.run_id)
-                while not status.is_terminal and time.monotonic() < deadline:
-                    level = _ANALYSIS_LEVEL_LABELS.get(status.progress.current_level, "")
-                    spinner.update(
-                        f"Analyzing, {level + ' ' if level else ''}{status.progress.overall_percentage}%"
-                    )
+                status = None
+                while True:
+                    try:
+                        status = self._client.get_analysis_status(self._run.run_id)
+                    except Exception as poll_exc:
+                        # One transient status-poll failure (network blip, engine restart)
+                        # must not abort the whole wait - the job keeps running
+                        # server-side, so keep polling until the deadline.
+                        logger.debug("Analysis status poll failed: %s", poll_exc)
+                    if status is not None and status.is_terminal:
+                        break
+                    if time.monotonic() >= deadline:
+                        break
+                    if status is not None:
+                        level = _ANALYSIS_LEVEL_LABELS.get(status.progress.current_level, "")
+                        spinner.update(
+                            f"Analyzing, {level + ' ' if level else ''}{status.progress.overall_percentage}%"
+                        )
                     time.sleep(poll_interval)
-                    status = self._client.get_analysis_status(self._run.run_id)
 
-                if not status.is_terminal:
+                if status is None or not status.is_terminal:
                     _say(f"  {yellow('!')}  Still running after {int(timeout)}s, check the dashboard for status")
                 elif status.status == "failed":
                     reason = status.failure_reason.message if status.failure_reason else "unknown error"

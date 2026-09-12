@@ -172,7 +172,7 @@ def print_report(report: Report) -> None:
     if report.low_scoring_cases:
         _section("Low-scoring Cases  (rating <= 5)")
         for case in report.low_scoring_cases[:5]:
-            q = (case.get("query") or case.get("questionText", ""))[:80]
+            q = (case.get("query") or case.get("questionText") or "")[:80]
             rating = case.get("rating", "?")
             justification = case.get("justification", "")
             print(f"  {red(f'[{rating}]')} {q}")

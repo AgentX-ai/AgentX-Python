@@ -20,11 +20,14 @@ Requires: ``pip install "agentx-python[google-adk]"``
 """
 from __future__ import annotations
 
+import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
+
+logger = logging.getLogger(__name__)
 
 try:
     from google.adk.plugins.base_plugin import BasePlugin
@@ -94,23 +97,34 @@ class AgentXADKPlugin(BasePlugin):
         name: str = "google-adk-agent",
         metadata: Optional[Dict[str, Any]] = None,
         session_id: Optional[str] = None,
+        max_run_age_seconds: float = 3600.0,
     ) -> None:
         super().__init__(name="agentx")
         self._tracer = tracer
         self._agent_name = name
         self._metadata = metadata
         self._session_id = session_id
+        # Safety net mirroring langchain.py's _prune_stale_entries: state is normally popped
+        # in after_run_callback, but an invocation whose end callback never fires (hard
+        # crash, ADK bug) would leak forever in this long-lived plugin. Entries older than
+        # this are swept out at the top of before_run_callback.
+        self._max_run_age_seconds = max_run_age_seconds
         # invocation_id → accumulated run state
         self._runs: Dict[str, Dict[str, Any]] = {}
-        # invocation_id → pre-buffered user input text
+        # invocation_id → (pre-buffered user input text, buffered-at time)
         # (on_user_message_callback fires *before* before_run_callback)
-        self._pending_inputs: Dict[str, str] = {}
-        # id(tool_context) → start time float
-        self._tool_starts: Dict[int, float] = {}
-        # invocation_id → stack of model call start times (FIFO)
+        self._pending_inputs: Dict[str, Tuple[str, float]] = {}
+        # (invocation_id, tool name) → FIFO list of start times, mirroring _model_starts:
+        # parallel same-name tool calls each push their own start, so a second start no
+        # longer overwrites the first (a scalar here lost the first call's timing). Keyed
+        # by invocation_id, not id(tool_context): ADK creates fresh context objects per
+        # callback (see _model_starts' comment), and a freed context's id() can be
+        # recycled by an unrelated object, pairing a start with the wrong end.
+        self._tool_starts: Dict[Tuple[str, str], List[float]] = {}
+        # invocation_id → FIFO list of per-call dicts ({"start", "model", "input"})
         # ADK creates new CallbackContext objects for before/after model callbacks,
         # so we cannot use id(callback_context) as a key - use invocation_id instead.
-        self._model_starts: Dict[str, List[float]] = {}
+        self._model_starts: Dict[str, List[Dict[str, Any]]] = {}
 
     # ------------------------------------------------------------------
     # Run lifecycle
@@ -124,9 +138,64 @@ class AgentXADKPlugin(BasePlugin):
         inv_id = invocation_context.invocation_id
         text = _content_to_text(user_message)
         if text:
-            self._pending_inputs[inv_id] = text
+            self._pending_inputs[inv_id] = (text, time.time())
+
+    def _prune_stale_entries(self) -> None:
+        """Sweep out invocation entries older than max_run_age_seconds - see __init__'s comment."""
+        cutoff = time.time() - self._max_run_age_seconds
+        swept = 0
+
+        stale_inv_ids = [
+            inv_id
+            for inv_id, state in list(self._runs.items())
+            if (getattr(state.get("root_span"), "_start", None) or 0) < cutoff
+        ]
+        for inv_id in stale_inv_ids:
+            self._runs.pop(inv_id, None)
+            self._model_starts.pop(inv_id, None)
+            self._pending_inputs.pop(inv_id, None)
+            for key in [k for k in self._tool_starts if k[0] == inv_id]:
+                self._tool_starts.pop(key, None)
+        swept += len(stale_inv_ids)
+
+        # Orphaned per-call state whose invocation state is already gone (or never existed) -
+        # each entry carries its own timestamp.
+        stale_model_ids = [
+            inv_id
+            for inv_id, starts in list(self._model_starts.items())
+            if inv_id not in self._runs
+            and (not starts or max(call.get("start", 0) for call in starts) < cutoff)
+        ]
+        for inv_id in stale_model_ids:
+            self._model_starts.pop(inv_id, None)
+        swept += len(stale_model_ids)
+
+        stale_tool_keys = [
+            key
+            for key, starts in list(self._tool_starts.items())
+            if not starts or max(starts) < cutoff
+        ]
+        for key in stale_tool_keys:
+            self._tool_starts.pop(key, None)
+        swept += len(stale_tool_keys)
+
+        stale_input_ids = [
+            inv_id for inv_id, pending in list(self._pending_inputs.items()) if pending[1] < cutoff
+        ]
+        for inv_id in stale_input_ids:
+            self._pending_inputs.pop(inv_id, None)
+        swept += len(stale_input_ids)
+
+        if swept:
+            logger.warning(
+                "AgentXADKPlugin swept %d in-flight invocation record(s) older than %.0fs - "
+                "their end callbacks never fired, so their traces were never sent",
+                swept,
+                self._max_run_age_seconds,
+            )
 
     async def before_run_callback(self, *, invocation_context: Any) -> None:
+        self._prune_stale_entries()
         inv_id = invocation_context.invocation_id
         agent_name = getattr(invocation_context.agent, "name", None) or self._agent_name
         # Held directly (not relied on via tracer.current_span) - ADK callbacks for one
@@ -134,7 +203,13 @@ class AgentXADKPlugin(BasePlugin):
         # same thread/task, so state["root_span"] (keyed by invocation_id, same as everything
         # else here) is the reliable way to address the right parent.
         root_span = self._tracer.trace(
-            agent_name, framework="google-adk", metadata=self._metadata, session_id=self._session_id
+            agent_name,
+            framework="google-adk",
+            metadata=self._metadata,
+            session_id=self._session_id,
+            # The root of a standalone runner invocation is the agent run itself
+            # (langchain/llamaindex/crewai/autogen parity).
+            span_kind="agent",
         )
         # Deliberately NOT root_span.__enter__() - the same reasoning as openai_agents'
         # on_trace_start: enter pushes onto the CALLING context's active-span stack, but ADK
@@ -146,10 +221,11 @@ class AgentXADKPlugin(BasePlugin):
         root_span._start = time.time()
         if root_span._session_id is None:
             root_span._session_id = f"sdk_{uuid4().hex}"
+        pending_input = self._pending_inputs.pop(inv_id, None)
         self._runs[inv_id] = {
             "root_span": root_span,
             "llm_call_count": 0,
-            "input": self._pending_inputs.pop(inv_id, None),
+            "input": pending_input[0] if pending_input else None,
             "output": None,
             "model": None,
             "error": None,
@@ -160,6 +236,10 @@ class AgentXADKPlugin(BasePlugin):
     async def after_run_callback(self, *, invocation_context: Any) -> None:
         inv_id = invocation_context.invocation_id
         state = self._runs.pop(inv_id, None)
+        # Drop this invocation's per-call leftovers too - an unpaired before_model_callback
+        # (or an input buffered after the run started) would otherwise leak here forever.
+        self._model_starts.pop(inv_id, None)
+        self._pending_inputs.pop(inv_id, None)
         if state is None:
             return
         # This invocation's own detail already went out as child-span rows via child_span() in
@@ -285,7 +365,10 @@ class AgentXADKPlugin(BasePlugin):
     async def before_tool_callback(
         self, *, tool: Any, tool_args: Dict[str, Any], tool_context: Any
     ) -> None:
-        self._tool_starts[id(tool_context)] = time.time()
+        inv_id = tool_context.get_invocation_context().invocation_id
+        # FIFO list per (invocation, tool name) - parallel same-name calls each queue
+        # their own start (see __init__'s comment).
+        self._tool_starts.setdefault((inv_id, getattr(tool, "name", "unknown")), []).append(time.time())
 
     async def after_tool_callback(
         self,
@@ -299,9 +382,15 @@ class AgentXADKPlugin(BasePlugin):
         state = self._runs.get(inv_id)
         if state is None:
             return
-        start_t = self._tool_starts.pop(id(tool_context), None)
-        end_t = time.time()
         tool_name = getattr(tool, "name", "unknown")
+        # Pop the earliest queued start (FIFO, _model_starts' pairing), dropping the
+        # key once its list drains so entries don't accumulate.
+        key = (inv_id, tool_name)
+        starts = self._tool_starts.get(key, [])
+        start_t = starts.pop(0) if starts else None
+        if not starts:
+            self._tool_starts.pop(key, None)
+        end_t = time.time()
         tool_input = _safe_serialize(tool_args)
         tool_output = str(result) if result is not None else None
         state["root_span"].child_span(
@@ -331,9 +420,15 @@ class AgentXADKPlugin(BasePlugin):
         state = self._runs.get(inv_id)
         if state is None:
             return
-        start_t = self._tool_starts.pop(id(tool_context), None)
-        end_t = time.time()
         tool_name = getattr(tool, "name", "unknown")
+        # Pop the earliest queued start (FIFO, _model_starts' pairing), dropping the
+        # key once its list drains so entries don't accumulate.
+        key = (inv_id, tool_name)
+        starts = self._tool_starts.get(key, [])
+        start_t = starts.pop(0) if starts else None
+        if not starts:
+            self._tool_starts.pop(key, None)
+        end_t = time.time()
         tool_input = _safe_serialize(tool_args)
         tool_output = f"ERROR: {error}"
         state["root_span"].child_span(

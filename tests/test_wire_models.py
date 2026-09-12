@@ -66,6 +66,49 @@ def test_import_dataset_copies_the_full_grading_config():
     assert payload["codeScorers"] == DATASET_WIRE["codeScorers"]
 
 
+def test_builders_warn_at_publish_when_sovereignty_models_requested():
+    """Self-host drops sovereigntyIndex on both create routes, so the warning fires where
+    the request is known - builder.publish() - not in a run-time guard that can never see
+    the field."""
+    import pytest
+
+    from agentx.evaluations.datasets import DatasetBuilder
+    from agentx.evaluations.evaluation_settings import EvaluationSettingsBuilder
+
+    class FakeEvalClient:
+        def create_dataset(self, payload):
+            return payload
+
+        def create_evaluation_settings(self, payload):
+            return payload
+
+    ds_builder = DatasetBuilder(FakeEvalClient(), name="ds", sovereignty_models=["m1", "m2"])
+    ds_builder.add_case("q0")
+    with pytest.warns(UserWarning, match="Self-host ignores sovereigntyIndex"):
+        ds_builder.publish()
+
+    with pytest.warns(UserWarning, match="Self-host ignores sovereigntyIndex"):
+        EvaluationSettingsBuilder(
+            FakeEvalClient(), name="cfg", sovereignty_models=["m1"]
+        ).publish()
+
+
+def test_builders_publish_quietly_without_sovereignty_models():
+    import warnings as _warnings
+
+    from agentx.evaluations.datasets import DatasetBuilder
+
+    class FakeEvalClient:
+        def create_dataset(self, payload):
+            return payload
+
+    builder = DatasetBuilder(FakeEvalClient(), name="ds")
+    builder.add_case("q0")
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")
+        builder.publish()
+
+
 def test_run_result_row_response_populates_from_output_object():
     """P2 regression: the engine sends the agent's answer as an `output` object, so
     row.response was permanently None."""

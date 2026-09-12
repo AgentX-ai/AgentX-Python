@@ -84,7 +84,7 @@ class AgentXCrewObserver:
             if task_timings:
                 execution_steps, _ = self._build_steps_from_timings(task_timings, task_outputs)
             elif task_outputs:
-                execution_steps, _ = self._build_steps_evenly_divided(task_outputs, latency_ms)
+                execution_steps, _ = self._build_steps_evenly_divided(task_outputs, latency_ms, start)
 
             # Each task becomes its own real child span. tool_calls isn't passed to
             # _merge_child_run here: _build_steps_from_timings/_build_steps_evenly_divided both
@@ -262,25 +262,33 @@ class AgentXCrewObserver:
 
         return execution_steps, tool_calls
 
-    def _build_steps_evenly_divided(self, task_outputs: List[Any], latency_ms: float) -> tuple:
+    def _build_steps_evenly_divided(self, task_outputs: List[Any], latency_ms: float, start: float) -> tuple:
         """
         Fallback for CrewAI versions predating the events module: no
         per-task timing is available, so attribute the total latency evenly
         across tasks so the timeline still sums to the measured wall-clock
-        duration.
+        duration. Each synthesized step also gets a real start_time/end_time
+        (consecutive per_step_s slices from the kickoff's start) so the
+        dashboard timeline can position it, not just size it.
         """
         tool_calls: List[Dict[str, Any]] = []
         execution_steps: List[Dict[str, Any]] = []
-        for task_out in task_outputs:
+        per_step_ms = latency_ms / len(task_outputs)
+        per_step_s = per_step_ms / 1000.0
+        for i, task_out in enumerate(task_outputs):
             description = getattr(task_out, "description", "task")
             name = description[:100]
             task_output = str(getattr(task_out, "raw", ""))
             tool_calls.append({"name": name, "input": description, "output": task_output})
-            execution_steps.append({"name": name, "duration_ms": 0, "input": description, "output": task_output})
-
-        per_step_ms = latency_ms / len(execution_steps)
-        for step in execution_steps:
-            step["duration_ms"] = per_step_ms
+            step_start = start + i * per_step_s
+            execution_steps.append({
+                "name": name,
+                "duration_ms": per_step_ms,
+                "start_time": step_start,
+                "end_time": step_start + per_step_s,
+                "input": description,
+                "output": task_output,
+            })
 
         return execution_steps, tool_calls
 
@@ -307,4 +315,6 @@ class AgentXCrewObserver:
             framework="crewai",
             session_id=session_id or self._session_id,
             sync=sync,
+            # Same statement kickoff() makes: the root of a crew run is the agent run itself.
+            span_kind="agent",
         )

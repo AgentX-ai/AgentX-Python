@@ -9,11 +9,16 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from agentx.exceptions import AgentXError
+from agentx.exceptions import AgentXError, AgentXAuthError, AgentXValidationError
 
 
 class AgentXScorerGroupsError(AgentXError):
-    pass
+    """``status_code`` carries the HTTP status when the error came from a server
+    response; ``None`` for transport-level failures."""
+
+    def __init__(self, message: str, status_code: Optional[int] = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class ScorerGroup(dict):
@@ -37,20 +42,44 @@ class ScorerGroup(dict):
 
 
 class ScorerGroupsClient:
-    def __init__(self, api_key: str, base_url: str):
+    def __init__(self, api_key: str, base_url: str, workspace_id: Optional[str] = None):
         self._api_key = api_key
+        # Same workspace pinning MonitorClient does - without it, group CRUD silently lands
+        # in whatever workspace the API key's user defaults to.
+        self._workspace_id = workspace_id
         self._base = base_url.rstrip("/") + "/agent-monitoring/scorer-groups"
 
     def _request(self, method: str, url: str, json: Optional[Dict[str, Any]] = None) -> Any:
+        params = None
+        if self._workspace_id:
+            # Mirrors MonitorClient._workspace_params/_with_workspace: GETs (and DELETEs)
+            # carry workspaceId as a query param, write bodies carry it as a field.
+            if method.upper() in ("POST", "PUT", "PATCH"):
+                if json is None:
+                    json = {"workspaceId": self._workspace_id}
+                elif not json.get("workspaceId"):
+                    json = {**json, "workspaceId": self._workspace_id}
+            else:
+                params = {"workspaceId": self._workspace_id}
         response = requests.request(
             method,
             url,
             headers={"x-api-key": self._api_key, "content-type": "application/json"},
             json=json,
+            params=params,
             timeout=30,
         )
+        # Canonical taxonomy (evaluations/monitor client precedent): auth and validation
+        # failures raise the top-level typed errors, so `except agentx.AgentXAuthError`
+        # works whichever sub-client raised.
+        if response.status_code == 401:
+            raise AgentXAuthError("Invalid or missing API key", status_code=401)
+        if response.status_code == 422:
+            raise AgentXValidationError(response.text, status_code=422)
         if response.status_code >= 400:
-            raise AgentXScorerGroupsError(f"HTTP {response.status_code}: {response.text}")
+            raise AgentXScorerGroupsError(
+                f"HTTP {response.status_code}: {response.text}", status_code=response.status_code
+            )
         # DELETE (and any other empty 2xx) has no body - .json() on it raises.
         return response.json() if response.text else {}
 

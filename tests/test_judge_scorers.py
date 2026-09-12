@@ -26,8 +26,8 @@ def recorded(monkeypatch):
     calls: List[Dict[str, Any]] = []
     responses: List[FakeResponse] = []
 
-    def fake_request(method, url, headers=None, json=None, timeout=None):
-        calls.append({"method": method, "url": url, "json": json})
+    def fake_request(method, url, headers=None, json=None, params=None, timeout=None):
+        calls.append({"method": method, "url": url, "json": json, "params": params})
         return responses.pop(0) if responses else FakeResponse({"judgeScorer": {"_id": "s1", "name": "n"}})
 
     monkeypatch.setattr("agentx.monitor.judge_scorers.requests.request", fake_request)
@@ -221,6 +221,19 @@ def test_builder_rejects_idle_seconds_without_session_scope():
     client = JudgeScorersClient(api_key="agtx_local_test", base_url="http://localhost:1")
     with pytest.raises(ValueError, match="idle_seconds requires scope='session'"):
         client.builder("Support quality", live=True, idle_seconds=300)
+
+
+def test_builder_rejects_online_kwargs_without_live():
+    """agent_ids and a non-default scope only reach the wire when live=True - explicit
+    values with live=False were silently discarded, so they are now hard errors, same
+    posture as the idle_seconds guard."""
+    client = JudgeScorersClient(api_key="agtx_local_test", base_url="http://localhost:1")
+    with pytest.raises(ValueError, match="agent_ids requires live=True"):
+        client.builder("Support quality", agent_ids=["support-agent"])
+    with pytest.raises(ValueError, match="scope requires live=True"):
+        client.builder("Support quality", scope="session")
+    with pytest.raises(ValueError, match="agent_ids and scope require live=True"):
+        client.builder("Support quality", agent_ids=["support-agent"], scope="session")
 
 
 def test_builder_sends_idle_seconds_and_requires_expected(monkeypatch):
