@@ -62,7 +62,11 @@ class ReviewQueueClient:
         payload: Dict[str, Any] = {"traceId": trace_id, "source": "manual"}
         if note:
             payload["note"] = note
-        data = self._client._request("POST", "/agent-monitoring/review-queue", base=self._client._api_root(), json=payload)
+        # retry=False: a lost response + transport retry would turn a successful queue
+        # into a spurious 409 (the trace is already pending).
+        data = self._client._request(
+            "POST", "/agent-monitoring/review-queue", base=self._client._api_root(), json=payload, retry=False
+        )
         return ReviewQueueItem(data.get("item", data))
 
     def label(
@@ -90,4 +94,8 @@ class ReviewQueueClient:
 
     def dismiss(self, item_id: str) -> None:
         """Remove an item from the queue without a verdict (does not feed calibration)."""
-        self._client._request("DELETE", f"/agent-monitoring/review-queue/{item_id}", base=self._client._api_root())
+        # retry=False: a lost response + transport retry would turn a successful
+        # delete into a spurious 404.
+        self._client._request(
+            "DELETE", f"/agent-monitoring/review-queue/{item_id}", base=self._client._api_root(), retry=False
+        )

@@ -28,7 +28,6 @@ from agentx.exceptions import AgentXError, AgentXAuthError, AgentXValidationErro
 SDK_NAME = "agentx-python"
 
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
-_MAX_RETRIES = 3
 _RETRY_BACKOFF = [1.0, 2.0, 4.0]
 
 
@@ -145,22 +144,34 @@ class MonitorClient:
         # CRUD and dry runs - full parity with the dashboard's Scorers page (P1.3).
         # Handed this client's own resolved API root, never the process-global default, so a
         # second AgentX() with a different base_url can't re-point it (deep-dive bug #1).
-        self.scorers = ScorersClient(api_key=api_key, base_url=self._api_root())
+        # Workspace pinning scope (the real rule): sub-clients constructed below own their own
+        # _request and carry workspaceId in every body for hosted parity - the self-host
+        # engine's .strip() schemas ignore it. Helpers that reuse MonitorClient._request on
+        # _api_root() (patterns update/delete, rules, review_queue, sessions) do not send it.
+        self.scorers = ScorersClient(
+            api_key=api_key, base_url=self._api_root(), workspace_id=self._workspace_id
+        )
         from agentx.monitor.judge_scorers import JudgeScorersClient
         # The unified LLM Judge Scorer (rubric + offline/online profiles in one entity) - the
         # surface that matches the product; evaluations.settings and online_evaluators below
         # remain as its profile-level views.
-        self.judge_scorers = JudgeScorersClient(api_key=api_key, base_url=self._api_root())
+        self.judge_scorers = JudgeScorersClient(
+            api_key=api_key, base_url=self._api_root(), workspace_id=self._workspace_id
+        )
         from agentx.monitor.scorer_groups import ScorerGroupsClient
 
         # Scorer groups: mixed-kind scorers composed into one 0-10 score (weights + must-pass
         # gates) - a group grades dataset runs (scorer_group_id) and, when online, live traffic.
-        self.scorer_groups = ScorerGroupsClient(api_key=api_key, base_url=self._api_root())
+        self.scorer_groups = ScorerGroupsClient(
+            api_key=api_key, base_url=self._api_root(), workspace_id=self._workspace_id
+        )
         from agentx.monitor.improvement_groups import ImprovementGroupsClient
 
         # Auto-improve: confirmed production failures -> improvement report -> code fix (via
         # the AgentX-Eval-Skill auto-improve skill). Self-host only.
-        self.improvement_groups = ImprovementGroupsClient(api_key=api_key, base_url=self._api_root())
+        self.improvement_groups = ImprovementGroupsClient(
+            api_key=api_key, base_url=self._api_root(), workspace_id=self._workspace_id
+        )
         self.profile = MonitorProfileClient(self)
         # Legacy view of an LLM Judge Scorer's online profile - constructed lazily so its
         # DeprecationWarning fires on first USE, not for every client that never touches it.
@@ -216,8 +227,8 @@ class MonitorClient:
             if resp.status_code == 422:
                 raise AgentXValidationError(resp.text, status_code=422)
             # Gate on the schedule itself so HTTP-status retries walk the SAME full backoff
-            # schedule connection errors do - the old `attempt < _MAX_RETRIES - 1` gate left
-            # the schedule's last entry unreachable for HTTP retries (ingest_client precedent).
+            # schedule connection errors do - an earlier fixed retry-count gate left the
+            # schedule's last entry unreachable for HTTP retries (ingest_client precedent).
             if retry and resp.status_code in _RETRYABLE_STATUS and attempt < len(schedule) - 1:
                 logger.debug(
                     "Retryable status %d (attempt %d)", resp.status_code, attempt + 1
@@ -293,8 +304,10 @@ class MonitorClient:
         return MonitorOnlineEvaluator(**data["evaluator"])
 
     def delete_online_evaluator(self, evaluator_id: str) -> None:
+        # retry=False: a lost response + transport retry would turn a successful
+        # delete into a spurious 404.
         self._request(
-            "DELETE", f"/online-evaluators/{evaluator_id}", params=self._workspace_params()
+            "DELETE", f"/online-evaluators/{evaluator_id}", params=self._workspace_params(), retry=False
         )
 
     def get_online_evaluator_ratings(self, evaluator_id: str, window: str) -> List[OnlineEvaluatorRatingPoint]:
@@ -433,7 +446,10 @@ class MonitorClient:
         return data.get("agents", []) if isinstance(data, dict) else data
 
     def create_agent(self, name: str) -> dict:
-        data = self._request("POST", "/agents", base=self._api_root(), json={"name": name})
+        # The engine's POST /agents ALWAYS creates a new row (never get-or-create), so a
+        # transport retry after a timeout multiplies agents - no retry, same posture as
+        # create_pattern.
+        data = self._request("POST", "/agents", base=self._api_root(), json={"name": name}, retry=False)
         return data.get("agent", data) if isinstance(data, dict) else data
 
     # ------------------------------------------------------------------

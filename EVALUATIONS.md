@@ -414,7 +414,7 @@ scorer = (
     client.monitor.judge_scorers
     .builder(
         name="Strict grading",
-        judge_model="claude-opus-4-8",                    # any model id your judge key can reach (list_models() on the hosted platform)
+        judge_model="claude-opus-5",                    # any model id your judge key can reach (list_models() on the hosted platform)
         judge_prompt="""You are grading a customer support response.
 
 **User Query:** {input}
@@ -863,7 +863,7 @@ report.statistics.rouge_score
 
 Cases where `expected_results` is empty or the agent returned an error are skipped from the average, so a sparse dataset still produces a meaningful score. If a toggle wasn't on for the dataset, that property returns `None`.
 
-These four metrics also appear per-model (as `average_bleu_score`/`average_rouge_score` alongside `average_vector_similarity`/`average_jaccard_similarity`) when a dataset selects multiple comparison models, in each model's row of `report.sovereignty_index.models`.
+These four metrics also appear per-model (as `average_bleu_score`/`average_rouge_score` alongside `average_vector_similarity`/`average_jaccard_similarity`) in each model's row of `report.sovereignty_index.models` when a run compares multiple models. Multi-model comparison comes from the judge scorer's sovereignty models - `client.monitor.judge_scorers.builder(sovereignty_models=[...])` - because self-host ignores `sovereigntyIndex` on the dataset and grading-config routes.
 
 ### CI gate (self-host)
 
@@ -902,7 +902,7 @@ This run + gate flow is the **self-host CI path**. The separate CI-runs API in [
 report = client.evaluations.run(...).execute(my_agent).finalize().analyze(
     mode="auto",                                    # "auto" | "sync" | "batch"
     quality_mode="quality_first",                   # "quality_first" | "balanced"
-    judges=["gpt-5.6-luna", "claude-opus-4-8"],      # 1-3 model ids; omit for the platform default judge
+    judges=["gpt-5.6-luna", "claude-opus-5"],      # 1-3 model ids; omit for the platform default judge
 )
 
 report.summary                 # str | None, overall narrative summary

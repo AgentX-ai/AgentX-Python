@@ -247,97 +247,106 @@ class AgentXLlamaIndexHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         payload = payload or {}
-        start_info = self._starts.pop(event_id, None)
-        parent_id = self._parents.pop(event_id, None)
-        is_root = self._roots.pop(event_id, False)
-        root_id = event_id if is_root else self._find_root(parent_id)
-        state = self._runs.get(root_id) if root_id else None
+        # The whole read-modify-write runs under _state_lock, mirroring langchain.py: a query
+        # engine and a bare llm.complete() on another thread share this singleton handler, so
+        # the token += and step appends below race (and the "LLM Call N" name computation can
+        # duplicate) without it. Only _send_trace happens outside the lock.
+        with self._state_lock:
+            start_info = self._starts.pop(event_id, None)
+            parent_id = self._parents.pop(event_id, None)
+            is_root = self._roots.pop(event_id, False)
+            root_id = event_id if is_root else self._find_root(parent_id)
+            state = self._runs.get(root_id) if root_id else None
 
-        if state is None:
-            return
+            if state is None:
+                return
 
-        exception = payload.get(EventPayload.EXCEPTION)
-        if exception is not None:
-            state["error"] = str(exception)
+            exception = payload.get(EventPayload.EXCEPTION)
+            if exception is not None:
+                state["error"] = str(exception)
 
-        start_t = start_info["start"] if start_info else time.time()
-        end_t = time.time()
+            start_t = start_info["start"] if start_info else time.time()
+            end_t = time.time()
 
-        if event_type == CBEventType.QUERY:
-            response = payload.get(EventPayload.RESPONSE)
-            if response is not None:
-                state["output"] = str(response)
-        elif event_type == CBEventType.LLM:
-            completion = payload.get(EventPayload.COMPLETION) or payload.get(EventPayload.RESPONSE)
-            output_text = _extract_llm_text(completion)
-            # LLM events don't actually set MODEL_NAME (it only appears on embedding events),
-            # so also read it off the start payload's SERIALIZED dict - the LLM's serialized
-            # config, same "model"/"model_name" ladder langchain.py's _record_llm_start walks.
-            model = payload.get(EventPayload.MODEL_NAME)
-            if not model and start_info:
-                serialized = start_info["payload"].get(EventPayload.SERIALIZED)
-                if isinstance(serialized, dict):
-                    model = serialized.get("model") or serialized.get("model_name")
-            model = str(model) if model else None
-            if model and not state["model"]:
-                state["model"] = model
-            input_tokens, output_tokens = _extract_usage_tokens(completion)
-            if input_tokens is not None:
-                state["input_tokens"] += int(input_tokens)
-            if output_tokens is not None:
-                state["output_tokens"] += int(output_tokens)
-            if output_text:
-                state["output"] = output_text
-            input_text = start_info["payload"].get(EventPayload.PROMPT) if start_info else None
-            state["execution_steps"].append({
-                "name": f"LLM Call {len(state['execution_steps']) + 1}",
-                "duration_ms": (end_t - start_t) * 1000,
-                "start_time": start_t,
-                "end_time": end_t,
-                "model": model,
-                "input": input_text,
-                "output": output_text or (f"ERROR: {exception}" if exception else None),
-                "inputTokenSize": input_tokens,
-                "outputTokenSize": output_tokens,
-            })
-        elif event_type == CBEventType.RETRIEVE:
-            nodes = payload.get(EventPayload.NODES)
-            doc_count, retrieved_text = _extract_retrieval_output(nodes)
-            query = start_info["payload"].get(EventPayload.QUERY_STR) if start_info else None
-            step: Dict[str, Any] = {
-                "name": f"Retrieval {len(state['retrieval_steps']) + 1}",
-                "duration_ms": (end_t - start_t) * 1000,
-                "start_time": start_t,
-                "end_time": end_t,
-            }
-            if query:
-                step["query"] = query
-            if doc_count is not None:
-                step["doc_count"] = doc_count
-            step["output"] = f"ERROR: {exception}" if exception else retrieved_text
-            state["retrieval_steps"].append(step)
-        elif event_type == CBEventType.FUNCTION_CALL:
-            start_payload = start_info["payload"] if start_info else {}
-            tool = start_payload.get(EventPayload.TOOL)
-            tool_name = getattr(tool, "name", None) or str(tool) if tool is not None else "unknown"
-            tool_input = start_payload.get(EventPayload.FUNCTION_CALL)
-            tool_output = payload.get(EventPayload.FUNCTION_OUTPUT)
-            state["tool_call_steps"].append({
-                "name": tool_name,
-                # tracer._merge_child_run's tool_calls loop reads "latency_ms"
-                # (not "duration_ms" like execution/retrieval steps).
-                "latency_ms": int((end_t - start_t) * 1000),
-                "start_time": start_t,
-                "end_time": end_t,
-                "input": _safe_serialize(tool_input) if tool_input is not None else None,
-                "output": f"ERROR: {exception}" if exception else (str(tool_output) if tool_output is not None else None),
-                # The engine's failure test is success === false; without this a
-                # failed tool call would read as passing.
-                "success": exception is None,
-            })
+            if event_type == CBEventType.QUERY:
+                response = payload.get(EventPayload.RESPONSE)
+                if response is not None:
+                    state["output"] = str(response)
+            elif event_type == CBEventType.LLM:
+                completion = payload.get(EventPayload.COMPLETION) or payload.get(EventPayload.RESPONSE)
+                output_text = _extract_llm_text(completion)
+                # LLM events don't actually set MODEL_NAME (it only appears on embedding events),
+                # so also read it off the start payload's SERIALIZED dict - the LLM's serialized
+                # config, same "model"/"model_name" ladder langchain.py's _record_llm_start walks.
+                model = payload.get(EventPayload.MODEL_NAME)
+                if not model and start_info:
+                    serialized = start_info["payload"].get(EventPayload.SERIALIZED)
+                    if isinstance(serialized, dict):
+                        model = serialized.get("model") or serialized.get("model_name")
+                model = str(model) if model else None
+                if model and not state["model"]:
+                    state["model"] = model
+                input_tokens, output_tokens = _extract_usage_tokens(completion)
+                if input_tokens is not None:
+                    state["input_tokens"] += int(input_tokens)
+                if output_tokens is not None:
+                    state["output_tokens"] += int(output_tokens)
+                if output_text:
+                    state["output"] = output_text
+                input_text = start_info["payload"].get(EventPayload.PROMPT) if start_info else None
+                state["execution_steps"].append({
+                    "name": f"LLM Call {len(state['execution_steps']) + 1}",
+                    "duration_ms": (end_t - start_t) * 1000,
+                    "start_time": start_t,
+                    "end_time": end_t,
+                    "model": model,
+                    "input": input_text,
+                    "output": output_text or (f"ERROR: {exception}" if exception else None),
+                    "inputTokenSize": input_tokens,
+                    "outputTokenSize": output_tokens,
+                })
+            elif event_type == CBEventType.RETRIEVE:
+                nodes = payload.get(EventPayload.NODES)
+                doc_count, retrieved_text = _extract_retrieval_output(nodes)
+                query = start_info["payload"].get(EventPayload.QUERY_STR) if start_info else None
+                step: Dict[str, Any] = {
+                    "name": f"Retrieval {len(state['retrieval_steps']) + 1}",
+                    "duration_ms": (end_t - start_t) * 1000,
+                    "start_time": start_t,
+                    "end_time": end_t,
+                }
+                if query:
+                    step["query"] = query
+                if doc_count is not None:
+                    step["doc_count"] = doc_count
+                step["output"] = f"ERROR: {exception}" if exception else retrieved_text
+                state["retrieval_steps"].append(step)
+            elif event_type == CBEventType.FUNCTION_CALL:
+                start_payload = start_info["payload"] if start_info else {}
+                tool = start_payload.get(EventPayload.TOOL)
+                tool_name = getattr(tool, "name", None) or str(tool) if tool is not None else "unknown"
+                tool_input = start_payload.get(EventPayload.FUNCTION_CALL)
+                tool_output = payload.get(EventPayload.FUNCTION_OUTPUT)
+                state["tool_call_steps"].append({
+                    "name": tool_name,
+                    # tracer._merge_child_run's tool_calls loop reads "latency_ms"
+                    # (not "duration_ms" like execution/retrieval steps).
+                    "latency_ms": int((end_t - start_t) * 1000),
+                    "start_time": start_t,
+                    "end_time": end_t,
+                    "input": _safe_serialize(tool_input) if tool_input is not None else None,
+                    "output": f"ERROR: {exception}" if exception else (str(tool_output) if tool_output is not None else None),
+                    # The engine's failure test is success === false; without this a
+                    # failed tool call would read as passing.
+                    "success": exception is None,
+                })
 
+            if is_root:
+                self._runs.pop(root_id, None)
+
+        # Network send happens outside the lock - it must not serialize other threads'
+        # event handling behind an HTTP enqueue.
         if is_root:
-            self._runs.pop(root_id, None)
             self._send_trace(state)
 
     # ------------------------------------------------------------------

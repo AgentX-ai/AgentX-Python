@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING, Union
 
@@ -21,7 +22,8 @@ class DatasetBuilder:
     ``judge_prompt``/``judge_model`` are LLM-as-judge overrides for the dataset's grading
     config. NOTE (self-host): the engine's dataset-create route currently ignores both -
     set them on a judge scorer / the evaluation settings instead. ``sovereignty_models``
-    is accepted on the wire but not acted on by the self-host engine.
+    is dropped by the self-host engine on this route - use
+    ``client.monitor.judge_scorers.builder(sovereignty_models=...)`` which persists it.
     """
 
     def __init__(
@@ -93,8 +95,9 @@ class DatasetBuilder:
         if rouge_score:
             self._payload["rougeScore"] = {"enabled": True}
         # Sovereignty & Portability - the models to compare on this dataset (use
-        # client.evaluations.list_models() to discover valid ids). Self-host: accepted on
-        # the wire but not acted on by the engine (see class docstring).
+        # client.evaluations.list_models() to discover valid ids). Self-host: dropped by
+        # the engine on this route - use client.monitor.judge_scorers.builder(
+        # sovereignty_models=...) which persists it (see class docstring).
         if sovereignty_models:
             self._payload["sovereigntyIndex"] = {
                 "enabled": True,
@@ -161,9 +164,11 @@ class DatasetBuilder:
             main["smokeTest"] = {"enabled": True, "count": smoke_test_count}
             if smoke_test_guidance:
                 main["smokeTest"]["guidance"] = smoke_test_guidance
-        if expected_tools:
+        # `is not None`, not truthiness: an explicit empty list is a real assertion (an empty
+        # expectedTrajectory means "this case calls no tools") and must reach the wire.
+        if expected_tools is not None:
             main["expectedTrajectory"] = {"tools": expected_tools, "mode": trajectory_match_mode}
-        if expected_retrieval_context:
+        if expected_retrieval_context is not None:
             main["expectedRetrievalContext"] = expected_retrieval_context
         if splits:
             main["splits"] = splits
@@ -178,6 +183,15 @@ class DatasetBuilder:
     def publish(self) -> Dataset:
         if not self._payload["questions"]:
             raise ValueError("Dataset must have at least one case before publishing")
+        # Warn at publish time, where the request is known: the engine's dataset-create
+        # route drops sovereigntyIndex, so comparison models set here never persist.
+        sov = self._payload.get("sovereigntyIndex")
+        if isinstance(sov, dict) and sov.get("models"):
+            warnings.warn(
+                "Self-host ignores sovereigntyIndex on datasets/grading configs - use "
+                "judge_scorers.builder(sovereignty_models=...) for model comparison runs.",
+                stacklevel=2,
+            )
         logger.info(
             "Publishing dataset '%s' with %d case(s)",
             self._payload["name"],

@@ -520,6 +520,8 @@ print(pattern.id)
 
 client.monitor.patterns.get(pattern.id)   # -> MonitorPattern
 client.monitor.patterns.list()            # -> list[MonitorPattern]
+client.monitor.patterns.update(pattern.id, enabled=False)  # sparse update, wire camelCase keys -> MonitorPattern
+client.monitor.patterns.delete(pattern.id)                 # historical signals remain as history
 ```
 
 #### `builder()` parameters
@@ -539,8 +541,11 @@ client.monitor.patterns.list()            # -> list[MonitorPattern]
 | `enabled` | `bool` | `True` | Whether the pattern is checked at all |
 | `sample_rate` | `float` | `1.0` | Fraction of matching traces to actually check, `0.0`-`1.0` |
 | `scope_mode` / `agent_ids` | `str` / `list[str]` | `"all"` / `[]` | Restrict this pattern to specific agents instead of the whole workspace |
+| `conditions` | `list[dict]` | `None` | Self-host: the engine's full N-condition model - a list of condition dicts, each with its own detector kind and match settings, passed through verbatim. When set, the engine honors it as the pattern's whole rule set and the flat fields above become display-only metadata |
 
 `publish()` returns a `MonitorPattern` with `.id`, which you pass in `pattern_ids` at trace time.
+
+Note: `match_mode` is write-only on self-host - the engine folds it into the pattern's stored conditions, and the pattern always reads back with `match_mode="any"` regardless of what was sent. The `"all"` semantics still apply when matching.
 
 ### `client.monitor.signals`
 

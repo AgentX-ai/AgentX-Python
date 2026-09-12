@@ -18,6 +18,9 @@ class MonitorPattern(BaseModel):
     entirely (they are legacy display fields kept for wire compatibility), so the flat
     ``include_terms``/``exclude_terms``/``regex``/``semantic_prompt`` attributes here stay
     empty/None - read the match settings from ``conditions``.
+
+    ``match_mode`` always reads back ``"any"`` (the engine's toWire hardcodes it) even
+    though ``"all"`` is honored on create - read the effective mode from ``conditions``.
     """
 
     id: str = Field(alias="_id")
@@ -145,6 +148,7 @@ class MonitorProfile(BaseModel):
     enabled: bool = True
     failure_detection_enabled: bool = Field(default=True, alias="failureDetectionEnabled")
     info_detection_enabled: bool = Field(default=True, alias="infoDetectionEnabled")
+    topics_enabled: bool = Field(default=False, alias="topicsEnabled")
     coverage_mode: str = Field(default="all", alias="coverageMode")
     sample_rate: float = Field(default=0.1, alias="sampleRate")
     channels: List[str] = Field(default_factory=list)

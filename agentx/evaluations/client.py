@@ -35,7 +35,6 @@ _DEFAULT_BASE_URL = f"{_UTIL_API_BASE}/custom-agent-evaluations"
 SDK_NAME = "agentx-python"
 
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
-_MAX_RETRIES = 3
 _RETRY_BACKOFF = [1.0, 2.0, 4.0]
 
 # The self-host analyze route judges every result before it responds, so the client has to
@@ -182,8 +181,8 @@ class EvaluationsClient:
             if resp.status_code == 422:
                 raise AgentXValidationError(resp.text)
             # Gate on the schedule itself so HTTP-status retries walk the SAME full backoff
-            # schedule connection errors do - the old `attempt < _MAX_RETRIES - 1` gate left
-            # the schedule's last entry unreachable for HTTP retries (ingest_client precedent).
+            # schedule connection errors do - an earlier fixed retry-count gate left the
+            # schedule's last entry unreachable for HTTP retries (ingest_client precedent).
             if (
                 resp.status_code in _RETRYABLE_STATUS
                 and retry
@@ -248,7 +247,9 @@ class EvaluationsClient:
         """Deletes the dataset, its grading config, and both version histories. Past runs are
         kept (their dataset reference degrades to a bare id). The engine refuses (409) when the
         dataset's config is attached to a live scorer."""
-        self._request("DELETE", f"/datasets/{dataset_id}")
+        # retry=False: a lost response + transport retry would turn a successful
+        # delete into a spurious 404.
+        self._request("DELETE", f"/datasets/{dataset_id}", retry=False)
 
     def list_datasets(self) -> List[Dataset]:
         data = self._request("GET", "/datasets", params=self._workspace_params())
@@ -440,6 +441,12 @@ class EvaluationsClient:
         quality_mode: Optional[str] = None,
         judges: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
+        """Start the qualitative AI-analysis job for a run.
+
+        ``mode`` ("auto"/"sync"/"batch") is hosted-only: self-host engines run the analysis
+        synchronously and ignore it - check the response's mode field for what actually ran
+        (mirrors EvaluationRun.analyze's docstring).
+        """
         # Starts the durable analysis job and returns immediately (e.g. {"jobId": ..., "status":
         # "pending"}); poll get_analysis_status() until it reaches a terminal status, then call
         # get_report(). mode/quality_mode/judges mirror the dashboard's AnalyzeEvaluationRequest.
@@ -506,9 +513,10 @@ class EvaluationsClient:
         return self._report_from_dashboard(run_id)
 
     def get_missing_results(self, run_id: str) -> List[Dict[str, Any]]:
-        """Deprecated: on self-host the route's response body has no top-level list, so this
-        always returns ``[]``. Use :meth:`get_submitted_keys` - the same route's
-        ``submittedKeys`` - to find out what a run still needs."""
+        """Deprecated: on self-host the route returns ``missing: []`` deliberately empty -
+        the engine cannot know the client's case list - so this always returns ``[]``.
+        Use :meth:`get_submitted_keys` - the same route's ``submittedKeys`` - to find out
+        what a run still needs."""
         import warnings
 
         warnings.warn(
@@ -517,8 +525,10 @@ class EvaluationsClient:
             DeprecationWarning,
             stacklevel=2,
         )
-        data = self._request("GET", f"/runs/{run_id}/missing-results")
-        return data if isinstance(data, list) else data.get("missing", [])
+        # No request at all: the route returns `missing: []` deliberately empty (the engine
+        # cannot know the client's case list), so the round-trip only ever bought an empty
+        # result.
+        return []
 
     def get_submitted_keys(self, run_id: str) -> List[str]:
         """Idempotency keys this run has already accepted - what execute() uses to resume a

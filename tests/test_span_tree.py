@@ -635,6 +635,79 @@ def test_concurrent_async_agents_do_not_mis_parent():
     assert len({w.get("session_id") for w in wires}) == 2
 
 
+def test_two_agentx_instances_share_no_span_state():
+    """Regression for the per-instance ContextVar leak (#6): the active-span stack now lives
+    in ONE module-level ContextVar keyed by tracer id - two AgentX() instances in one process
+    must still each see only their own spans, and an exited tracer must leave no entry behind
+    in the shared mapping."""
+    from agentx import AgentX
+    from agentx.tracing.tracer import _SPAN_STACKS
+
+    a = AgentX(api_key="k", base_url="http://engine-a:1111/api/v1")
+    b = AgentX(api_key="k", base_url="http://engine-b:2222/api/v1")
+    a.tracer._client = MagicMock()
+    b.tracer._client = MagicMock()
+
+    with a.tracer.trace("agent-a") as span_a:
+        # b's tracer must not adopt a's active span as its own...
+        assert b.tracer.current_span is None
+        with b.tracer.trace("agent-b") as span_b:
+            assert a.tracer.current_span is span_a
+            assert b.tracer.current_span is span_b
+        # ...and b's exit must not disturb a's stack.
+        assert a.tracer.current_span is span_a
+    assert a.tracer.current_span is None
+    assert b.tracer.current_span is None
+
+    # b's root grew no parent edge (and no shared session) from a's span being active.
+    b_wire = b.tracer._client.enqueue.call_args_list[0].args[0]
+    assert "parent_span_id" not in b_wire
+    a_wire = a.tracer._client.enqueue.call_args_list[0].args[0]
+    assert a_wire["session_id"] != b_wire["session_id"]
+
+    # Both stacks drained to empty, so neither tracer holds a slot in the module-level
+    # mapping any more - the exact leak the per-instance ContextVar had.
+    stacks = _SPAN_STACKS.get()
+    assert id(a.tracer) not in stacks
+    assert id(b.tracer) not in stacks
+
+
+def test_with_trace_in_a_thread_still_parents_correctly():
+    """The module-level span-stack ContextVar keeps the old per-thread semantics: a bare
+    thread starts with an EMPTY stack (no inherited active span), and nesting inside that
+    thread parents within the thread."""
+    import threading
+
+    tracer = make_tracer()
+    failures: list = []
+
+    def worker():
+        try:
+            # A bare thread starts a fresh Context - the main thread's active span
+            # must not leak in as an implicit parent.
+            assert tracer.current_span is None
+            with tracer.trace("outer-t"):
+                with tracer.trace("inner-t"):
+                    pass
+        except Exception as exc:  # pragma: no cover - surfaced via `failures` below
+            failures.append(exc)
+
+    with tracer.trace("main-root"):
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join()
+
+    assert failures == []
+    wires = enqueued_wires(tracer)
+    outer = next(w for w in wires if w["name"] == "outer-t")
+    inner = next(w for w in wires if w["name"] == "inner-t")
+    main_root = next(w for w in wires if w["name"] == "main-root")
+    assert "parent_span_id" not in outer  # not a child of the main thread's span
+    assert inner["parent_span_id"] == outer["span_id"]
+    assert inner["session_id"] == outer["session_id"]
+    assert outer["session_id"] != main_root["session_id"]
+
+
 def test_trace_memory_emits_a_memory_kind_child_span():
     tracer = make_tracer()
     with tracer.trace("agent") as span:

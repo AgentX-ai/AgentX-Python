@@ -15,6 +15,7 @@ Requires: ``pip install "agentx-python[litellm]"``
 """
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, Optional, Tuple
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
@@ -27,6 +28,20 @@ except ImportError as exc:  # pragma: no cover
         "litellm is required for AgentXLiteLLMLogger. "
         "Install it with: pip install \"agentx-python[litellm]\""
     ) from exc
+
+
+def _to_epoch_seconds(value: Any) -> float:
+    """LiteLLM usually hands the CustomLogger datetimes, but some code paths (and older
+    releases) pass raw epoch floats/ints or nothing at all - accept all three instead of
+    crashing the whole callback on a missing .timestamp()."""
+    if hasattr(value, "timestamp"):  # datetime
+        try:
+            return float(value.timestamp())
+        except Exception:
+            return time.time()
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return time.time()
 
 
 def _extract_output_text(response: Any) -> Optional[str]:
@@ -116,8 +131,8 @@ class AgentXLiteLLMLogger(CustomLogger):
             framework="litellm",
             metadata=self._metadata,
             session_id=self._session_id,
-            start_t=start_time.timestamp(),
-            end_t=end_time.timestamp(),
+            start_t=_to_epoch_seconds(start_time),
+            end_t=_to_epoch_seconds(end_time),
             input_repr=input_repr,
             output=output,
             model=model,

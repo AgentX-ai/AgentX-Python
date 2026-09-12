@@ -146,6 +146,9 @@ class AgentXTracingProcessor:
             framework="openai-agents",
             metadata=self._metadata,
             session_id=self._session_id,
+            # The root of a standalone Agents-SDK trace is the agent run itself
+            # (langchain/llamaindex/crewai/autogen parity).
+            span_kind="agent",
         )
         # Deliberately NOT root_span.__enter__(): enter pushes onto the CALLING thread's
         # active-span stack, but the Agents SDK fires on_trace_end on whatever thread it

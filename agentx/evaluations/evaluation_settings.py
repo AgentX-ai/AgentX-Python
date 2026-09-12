@@ -64,8 +64,9 @@ class EvaluationSettingsBuilder:
         if rouge_score:
             self._payload["rougeScore"] = {"enabled": True}
         # Sovereignty & Portability - the models to compare when this config runs
-        # (use client.evaluations.list_models() to discover valid ids). Self-host: accepted
-        # on the wire but not acted on by the engine (same caveat as DatasetBuilder's).
+        # (use client.evaluations.list_models() to discover valid ids). Self-host: dropped
+        # by the engine on this route - use client.monitor.judge_scorers.builder(
+        # sovereignty_models=...) which persists it (same caveat as DatasetBuilder's).
         if sovereignty_models:
             self._payload["sovereigntyIndex"] = {
                 "enabled": True,
@@ -91,6 +92,15 @@ class EvaluationSettingsBuilder:
             ]
 
     def publish(self) -> EvaluationSettings:
+        # Warn at publish time, where the request is known: the engine's settings-create
+        # route drops sovereigntyIndex, so comparison models set here never persist.
+        sov = self._payload.get("sovereigntyIndex")
+        if isinstance(sov, dict) and sov.get("models"):
+            warnings.warn(
+                "Self-host ignores sovereigntyIndex on datasets/grading configs - use "
+                "judge_scorers.builder(sovereignty_models=...) for model comparison runs.",
+                stacklevel=2,
+            )
         logger.info("Publishing evaluation settings '%s'", self._payload["name"])
         return self._client.create_evaluation_settings(self._payload)
 

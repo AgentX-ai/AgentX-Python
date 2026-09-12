@@ -383,9 +383,12 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         parent_run_id: Optional[UUID] = None,
         **kwargs,
     ) -> None:
-        self._parents[run_id] = parent_run_id
         is_top = parent_run_id is None
-        self._top_level[run_id] = is_top
+        # Written under the lock: _prune_stale_entries iterates these dicts from other
+        # threads. Taken and released BEFORE the prune below - the lock is not reentrant.
+        with self._state_lock:
+            self._parents[run_id] = parent_run_id
+            self._top_level[run_id] = is_top
         if is_top:
             self._prune_stale_entries()
             # Consume any retrieval steps that ran before this chain started
@@ -527,7 +530,10 @@ class AgentXCallbackHandler(BaseCallbackHandler):
                 input=step.get("query"),
                 output=step.get("output"),
                 error=step.get("error"),
-                metadata={"kind": "retrieval"},
+                metadata={
+                    "kind": "retrieval",
+                    **({"doc_count": step["doc_count"]} if step.get("doc_count") is not None else {}),
+                },
                 span_kind="retrieval",
             )
 
@@ -544,15 +550,19 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         # internals) fire on_chain_start/on_chain_end too - leaving their
         # entries behind here would leak forever in a long-lived singleton
         # handler, since nothing else ever cleans up a non-top-level run_id.
-        is_top = self._top_level.pop(run_id, None)
+        # Pops run under _state_lock: the prune sweep iterates these dicts.
+        with self._state_lock:
+            is_top = self._top_level.pop(run_id, None)
         if not is_top:
             # Close the node record before dropping this run's _parents entry - the top-ancestor
             # walk inside _finalize_node still needs it.
             self._finalize_node(run_id, output=_extract_output(outputs))
-            self._parents.pop(run_id, None)
+            with self._state_lock:
+                self._parents.pop(run_id, None)
             return
-        self._parents.pop(run_id, None)
-        state = self._runs.pop(run_id, None)
+        with self._state_lock:
+            self._parents.pop(run_id, None)
+            state = self._runs.pop(run_id, None)
         if state is None:
             return
         output = _extract_output(outputs)
@@ -622,14 +632,18 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         parent_run_id: Optional[UUID] = None,
         **kwargs,
     ) -> None:
-        # See on_chain_end's comment - pop for every chain run, not just top-level.
-        is_top = self._top_level.pop(run_id, None)
+        # See on_chain_end's comment - pop for every chain run, not just top-level,
+        # and under _state_lock (the prune sweep iterates these dicts).
+        with self._state_lock:
+            is_top = self._top_level.pop(run_id, None)
         if not is_top:
             self._finalize_node(run_id, error=str(error))
-            self._parents.pop(run_id, None)
+            with self._state_lock:
+                self._parents.pop(run_id, None)
             return
-        self._parents.pop(run_id, None)
-        state = self._runs.pop(run_id, None)
+        with self._state_lock:
+            self._parents.pop(run_id, None)
+            state = self._runs.pop(run_id, None)
         if state is None:
             return
 
@@ -688,7 +702,9 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         messages: Optional[List[Any]] = None,
     ) -> None:
         """Shared logic for on_llm_start and on_chat_model_start."""
-        self._parents[run_id] = parent_run_id
+        # Written under the lock - the pruner iterates _parents from other threads.
+        with self._state_lock:
+            self._parents[run_id] = parent_run_id
         kw = serialized.get("kwargs", {})
         model = (
             kw.get("model_name")
@@ -702,7 +718,10 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         if top_for_tools and top_for_tools in self._runs and not self._runs[top_for_tools].get("tool_definitions"):
             captured = capture_tool_definitions(kwargs.get("invocation_params", {}).get("tools"))
             if captured:
-                self._runs[top_for_tools]["tool_definitions"] = captured
+                # Write under _state_lock - the prune sweep iterates _runs.
+                with self._state_lock:
+                    if top_for_tools in self._runs:
+                        self._runs[top_for_tools]["tool_definitions"] = captured
         # Insert under the lock _prune_stale_entries' iteration holds - LangGraph can start
         # LLM runs from worker threads while another thread's on_chain_start prunes.
         with self._state_lock:
@@ -745,8 +764,10 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         parent_run_id: Optional[UUID] = None,
         **kwargs,
     ) -> None:
-        llm_state = self._runs.pop(run_id, None)
-        self._parents.pop(run_id, None)
+        # Pops under _state_lock - the prune sweep iterates these dicts.
+        with self._state_lock:
+            llm_state = self._runs.pop(run_id, None)
+            self._parents.pop(run_id, None)
         if llm_state:
             start_t = llm_state.get("llm_start")
             end_t = time.time()
@@ -806,9 +827,9 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         parent_run_id: Optional[UUID] = None,
         **kwargs,
     ) -> None:
-        self._parents[run_id] = parent_run_id
-        # Insert under the prune's lock - see _record_llm_start.
+        # Both writes under the prune's lock - see _record_llm_start.
         with self._state_lock:
+            self._parents[run_id] = parent_run_id
             self._runs[run_id] = {
                 "tool_name": serialized.get("name", "unknown"),
                 "tool_input": input_str,
@@ -823,8 +844,10 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         parent_run_id: Optional[UUID] = None,
         **kwargs,
     ) -> None:
-        state = self._runs.pop(run_id, None)
-        self._parents.pop(run_id, None)
+        # Pops under _state_lock - the prune sweep iterates these dicts.
+        with self._state_lock:
+            state = self._runs.pop(run_id, None)
+            self._parents.pop(run_id, None)
         if state is None:
             return
         end_t = time.time()
@@ -856,8 +879,10 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         parent_run_id: Optional[UUID] = None,
         **kwargs,
     ) -> None:
-        state = self._runs.pop(run_id, None)
-        self._parents.pop(run_id, None)
+        # Pops under _state_lock - the prune sweep iterates these dicts.
+        with self._state_lock:
+            state = self._runs.pop(run_id, None)
+            self._parents.pop(run_id, None)
         if state is None:
             return
         end_t = time.time()
@@ -890,9 +915,9 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         parent_run_id: Optional[UUID] = None,
         **kwargs,
     ) -> None:
-        self._parents[run_id] = parent_run_id
-        # Insert under the prune's lock - see _record_llm_start.
+        # Both writes under the prune's lock - see _record_llm_start.
         with self._state_lock:
+            self._parents[run_id] = parent_run_id
             self._retrieval_starts[run_id] = {"start": time.time(), "query": query}
 
     def on_retriever_end(
@@ -903,8 +928,10 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         parent_run_id: Optional[UUID] = None,
         **kwargs,
     ) -> None:
-        state = self._retrieval_starts.pop(run_id, None)
-        self._parents.pop(run_id, None)
+        # Pops under _state_lock - the prune sweep iterates these dicts.
+        with self._state_lock:
+            state = self._retrieval_starts.pop(run_id, None)
+            self._parents.pop(run_id, None)
         if state is None:
             return
         end_t = time.time()
@@ -947,8 +974,10 @@ class AgentXCallbackHandler(BaseCallbackHandler):
         parent_run_id: Optional[UUID] = None,
         **kwargs,
     ) -> None:
-        state = self._retrieval_starts.pop(run_id, None)
-        self._parents.pop(run_id, None)
+        # Pops under _state_lock - the prune sweep iterates these dicts.
+        with self._state_lock:
+            state = self._retrieval_starts.pop(run_id, None)
+            self._parents.pop(run_id, None)
         if state is None:
             return
         end_t = time.time()
