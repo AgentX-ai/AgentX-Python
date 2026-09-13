@@ -1,5 +1,5 @@
 from typing import Optional, List, Dict, Any, Iterator
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, PrivateAttr, Field
 import requests
 import os
 import json
@@ -46,19 +46,44 @@ class Workforce(BaseModel):
         populate_by_name = True
         extra = "ignore"
 
+
+    # Hosted credentials threaded from the constructing AgentX client. The module-level
+    # api_base()/get_headers() read only env vars, and the client deliberately stopped
+    # writing its constructor args into os.environ - without binding, a client created with
+    # api_key=/base_url= issued these calls unauthenticated against the default host.
+    _api_key: Optional[str] = PrivateAttr(default=None)
+    _base_url: Optional[str] = PrivateAttr(default=None)
+
+    def _bind(self, api_key: Optional[str], base_url: Optional[str]) -> "Workforce":
+        self._api_key = api_key
+        self._base_url = base_url
+        # The nested Agent objects issue their own calls (new_conversation,
+        # list_conversations) - left unbound they silently fall back to env credentials
+        # against the default host, the exact leak _bind exists to close.
+        self.manager._bind(api_key, base_url)
+        for agent in self.agents:
+            agent._bind(api_key, base_url)
+        return self
+
+    def _api_base(self) -> str:
+        return self._base_url or api_base()
+
+    def _headers(self):
+        return get_headers(self._api_key)
+
     def new_conversation(self) -> Conversation:
         """Create a new conversation for this workforce."""
-        url = f"{api_base()}/access/teams/{self.id}/conversations/new"
+        url = f"{self._api_base()}/access/teams/{self.id}/conversations/new"
         response = requests.post(
             url,
-            headers=get_headers(),
+            headers=self._headers(),
             json={"type": "chat"},
         )
         if response.status_code == 200:
             conv_data = response.json()
             # Set the agent_id to the manager's ID since this is a workforce conversation
             conv_data["agent_id"] = self.manager.id
-            return Conversation(**conv_data)
+            return Conversation(**conv_data)._bind(self._api_key, self._base_url)
         else:
             raise Exception(
                 f"Failed to create new conversation: {response.status_code} - {response.reason}"
@@ -66,14 +91,14 @@ class Workforce(BaseModel):
 
     def list_conversations(self) -> List[Conversation]:
         """List all conversations for this workforce."""
-        url = f"{api_base()}/access/teams/{self.id}/conversations"
-        response = requests.get(url, headers=get_headers())
+        url = f"{self._api_base()}/access/teams/{self.id}/conversations"
+        response = requests.get(url, headers=self._headers())
         if response.status_code == 200:
             conversations = []
             for conv_data in response.json():
                 # Set the agent_id to the manager's ID since this is a workforce conversation
                 conv_data["agent_id"] = self.manager.id
-                conversations.append(Conversation(**conv_data))
+                conversations.append(Conversation(**conv_data)._bind(self._api_key, self._base_url))
             return conversations
         else:
             raise Exception(
@@ -85,10 +110,10 @@ class Workforce(BaseModel):
     ) -> Iterator[ChatResponse]:
         """Send a message to a team conversation and stream the response."""
         url = (
-            f"{api_base()}/access/teams/conversations/{conversation_id}/jsonmessagesse"
+            f"{self._api_base()}/access/teams/conversations/{conversation_id}/jsonmessagesse"
         )
         response = requests.post(
-            url, headers=get_headers(), json={"message": message, "context": context}
+            url, headers=self._headers(), json={"message": message, "context": context}
         )
         result = ""
         if response.status_code == 200:

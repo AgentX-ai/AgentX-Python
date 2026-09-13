@@ -10,6 +10,9 @@ from agentx.monitor.judge_scorers import (
 from agentx.monitor.models import MonitorPattern, MonitorProfile, MonitorSignal, SignalOccurrence
 from agentx.monitor.patterns import MonitorPatternBuilder, MonitorPatternClient
 from agentx.monitor.profile import MonitorProfileClient
+from agentx.monitor.review_queue import ReviewQueueClient, ReviewQueueItem
+from agentx.monitor.rules import MonitorRule, MonitorRulesClient
+from agentx.monitor.scorers import AgentXScorersError, ScorersClient
 from agentx.monitor.scorer_groups import AgentXScorerGroupsError, ScorerGroup, ScorerGroupsClient
 from agentx.monitor.sessions import MonitorSessionClient
 from agentx.monitor.signals import MonitorSignalClient
@@ -19,6 +22,7 @@ __all__ = [
     "AgentXJudgeScorersError",
     "AgentXMonitorError",
     "AgentXScorerGroupsError",
+    "AgentXScorersError",
     "ImprovementGroupsClient",
     "JudgeScorer",
     "JudgeScorerBuilder",
@@ -30,10 +34,15 @@ __all__ = [
     "MonitorPatternClient",
     "MonitorProfile",
     "MonitorProfileClient",
+    "MonitorRule",
+    "MonitorRulesClient",
     "MonitorSessionClient",
     "MonitorSignal",
     "MonitorSignalClient",
+    "ReviewQueueClient",
+    "ReviewQueueItem",
     "ScorerGroup",
+    "ScorersClient",
     "ScorerGroupsClient",
     "SignalOccurrence",
 ]

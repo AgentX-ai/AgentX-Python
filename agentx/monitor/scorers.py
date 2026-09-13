@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import requests
 
+from agentx.monitor._transport import request_with_retries
 from agentx.util import api_base, get_headers
 from agentx.exceptions import AgentXError, AgentXAuthError, AgentXValidationError
 
@@ -52,7 +53,9 @@ class ScorersClient:
         # Captured once at construction (deep-dive round 3, bug #1).
         self._base_url = (base_url or api_base()).rstrip("/")
 
-    def _request(self, method: str, path: str, json: Any = None, params: Any = None) -> Any:
+    def _request(
+        self, method: str, path: str, json: Any = None, params: Any = None, retry: bool = True
+    ) -> Any:
         if self._workspace_id:
             # Mirrors MonitorClient._workspace_params/_with_workspace: GETs (and DELETEs)
             # carry workspaceId as a query param, write bodies carry it as a field.
@@ -63,9 +66,12 @@ class ScorersClient:
                     json = {**json, "workspaceId": self._workspace_id}
             elif not (params or {}).get("workspaceId"):
                 params = {**(params or {}), "workspaceId": self._workspace_id}
-        resp = requests.request(
+        # retry=False for ANY non-idempotent write (creates, deletes, dry-run executions) -
+        # MonitorClient._request's posture, via the shared monitor transport.
+        resp = request_with_retries(
             method,
             f"{self._base_url}/agent-monitoring{path}",
+            retry=retry,
             headers={**get_headers(self._api_key), "Content-Type": "application/json"},
             json=json,
             params=params,
@@ -147,7 +153,8 @@ class ScorersClient:
         ``None`` to skip; a score below ``alert_below`` raises a signal."""
         if language not in ("python", "javascript"):
             raise AgentXScorersError('language must be "python" or "javascript"')
-        return self._request("POST", "/custom-evaluators", json={
+        # Server-side create: a timeout + transport retry would deploy the scorer twice.
+        return self._request("POST", "/custom-evaluators", retry=False, json={
             "name": name,
             "kind": "code",
             "language": language,
@@ -173,7 +180,8 @@ class ScorersClient:
         agent_ids: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
         """Register an external scorer endpoint (POSTed the v2 payload per sampled trace)."""
-        return self._request("POST", "/custom-evaluators", json={
+        # Server-side create: a timeout + transport retry would register the scorer twice.
+        return self._request("POST", "/custom-evaluators", retry=False, json={
             "name": name,
             "url": url,
             "sampleRate": sample_rate,
@@ -191,7 +199,9 @@ class ScorersClient:
         return self._request("PUT", f"/custom-evaluators/{scorer_id}", json=wire)["evaluator"]
 
     def delete(self, scorer_id: str) -> None:
-        self._request("DELETE", f"/custom-evaluators/{scorer_id}")
+        # retry=False: a lost response + transport retry would turn a successful delete
+        # into a spurious 404.
+        self._request("DELETE", f"/custom-evaluators/{scorer_id}", retry=False)
 
     def events(self, scorer_id: str, window: str = "24h") -> List[Dict[str, Any]]:
         """The scorer's per-check history (score, matched, justification, trace ids)."""
@@ -201,7 +211,9 @@ class ScorersClient:
         """Execute a scorer against the built-in sample without persisting: pass either
         ``url=...`` (external) or ``kind="code", language=..., script=...`` (code)."""
         wire = {_SNAKE_TO_WIRE.get(k, k): v for k, v in payload.items()}
-        return self._request("POST", "/custom-evaluators/dry-run", json=wire)
+        # Executes real scorer work (and, for external, hits the user's endpoint) - a
+        # client-side timeout must not fire it twice.
+        return self._request("POST", "/custom-evaluators/dry-run", json=wire, retry=False)
 
 
 _SNAKE_TO_WIRE = {

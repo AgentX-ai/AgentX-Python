@@ -12,6 +12,7 @@ the default) or is passed straight to tracer._client.send_trace_sync (sync=True)
 """
 from __future__ import annotations
 
+import logging
 from unittest.mock import MagicMock
 
 import pytest
@@ -770,7 +771,8 @@ def test_record_memory_with_no_active_span_drops_instead_of_queueing():
     """Memory must never ride the pending retrieval queue: it lands in
     performance_summary.retrieval_steps, which feeds the engine's retrieval-context
     extraction for RAG judges - recalled state is not knowledge grounding. With no active
-    span the record is dropped (debug-logged), not attached to the next trace."""
+    span the record is dropped (warns once per process, then debug), not attached to the
+    next trace."""
     tracer = make_tracer()
     tracer.record_memory("orphan prefs", operation="read", query="u-1", output="secret")
     with tracer.trace("agent"):
@@ -779,6 +781,33 @@ def test_record_memory_with_no_active_span_drops_instead_of_queueing():
     assert len(wires) == 1
     assert wires[0]["name"] == "agent"
     assert_no_performance_summary(wires)
+
+
+@pytest.fixture()
+def reset_memory_warn_flag():
+    """The warn-once flag is process-global; reset it around the test so the assertion holds
+    regardless of which earlier test (or test ordering) already tripped it."""
+    import agentx.tracing.tracer as tracer_mod
+
+    tracer_mod._WARNED_MEMORY_NO_SPAN = False
+    yield
+    tracer_mod._WARNED_MEMORY_NO_SPAN = False
+
+
+def test_record_memory_no_span_warns_once_then_goes_quiet(reset_memory_warn_flag, caplog):
+    """A dropped memory record is a lost write: the FIRST orphan record_memory must log one
+    WARNING (visible by default), and every later one only debug-logs - otherwise a worker
+    thread without use_span read as 'memory spans don't work' with no log line anywhere."""
+    tracer = make_tracer()
+    with caplog.at_level(logging.WARNING, logger="agentx.tracing.tracer"):
+        tracer.record_memory("orphan-1", operation="read", query="u-1")
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "no active span" in warnings[0].getMessage()
+
+        caplog.clear()
+        tracer.record_memory("orphan-2", operation="read", query="u-2")
+        assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
 
 
 def test_merge_child_run_execution_steps_honor_their_stated_kind():

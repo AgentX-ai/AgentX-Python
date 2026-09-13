@@ -20,8 +20,8 @@ class AgentX:
         # The api_key is NOT written back into os.environ (it used to be): every sub-client
         # below receives it explicitly, and mutating process-global state from a constructor
         # re-pointed unrelated code - the same leak the base_url write below had (deep-dive
-        # round 3, bug #1). Static flows that still read the env (AgentX.list_workforces,
-        # bare get_headers()) now require the caller to set AGENTX_API_KEY themselves.
+        # round 3, bug #1). Flows that still read the env (bare get_headers()) now require
+        # the caller to set AGENTX_API_KEY themselves.
         self.api_key = api_key or os.getenv("AGENTX_API_KEY")
 
         # base_url overrides AGENTX_API_BASE_URL env var (and the SDK default). It is
@@ -147,7 +147,7 @@ class AgentX:
         response = requests.get(url, headers=get_headers(self.api_key))
         # Check if response was successful
         if response.status_code == 200:
-            return Agent(**response.json())
+            return Agent(**response.json())._bind(self.api_key, self.base_url)
         else:
             raise AgentXError(
                 f"Failed to retrieve agent: {response.reason}. This endpoint is "
@@ -165,22 +165,26 @@ class AgentX:
         response = requests.get(url, headers=get_headers(self.api_key))
         # Check if response was successful
         if response.status_code == 200:
-            return [Agent(**agent) for agent in response.json()]
+            return [Agent(**agent)._bind(self.api_key, self.base_url) for agent in response.json()]
         else:
             raise AgentXError(
                 f"Failed to list agents: {response.reason}. This endpoint is "
                 "hosted-platform only - on self-host use client.monitor.agents.list()."
             )
 
-    @staticmethod
-    def list_workforces() -> List["Workforce"]:
-        """List all workforces/teams. Static, so it reads AGENTX_API_KEY from the environment
-        directly - the constructor no longer writes ``api_key`` into os.environ, so set the
-        env var yourself before calling this."""
-        url = f"{api_base()}/access/teams"
-        response = requests.get(url, headers=get_headers())
+    def list_workforces(self) -> List["Workforce"]:
+        """List all workforces/teams, each bound to this client's credentials - including each
+        workforce's ``manager`` and ``agents``, so their calls authenticate the same way.
+
+        This used to be documented as a static call (``AgentX.list_workforces()``); that form
+        was broken (the old staticmethod body referenced ``self`` and raised NameError on any
+        non-empty response). Construct a client instead - ``AgentX().list_workforces()`` picks
+        up AGENTX_API_KEY / AGENTX_API_BASE_URL from the environment, which is what the static
+        form effectively did."""
+        url = f"{self.base_url or api_base()}/access/teams"
+        response = requests.get(url, headers=get_headers(self.api_key))
         if response.status_code == 200:
-            return [Workforce(**workforce) for workforce in response.json()]
+            return [Workforce(**workforce)._bind(self.api_key, self.base_url) for workforce in response.json()]
         else:
             raise Exception(
                 f"Failed to list workforces: {response.status_code} - {response.reason}"

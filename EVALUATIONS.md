@@ -356,11 +356,11 @@ scorer = client.monitor.judge_scorers.builder(
 |---|---|---|---|
 | `live` | `bool` | `False` | Create the online profile and start scoring live traffic |
 | `sample_rate` | `float` | `0.1` | Fraction of traffic actually scored |
-| `scope` | `str` | `"trace"` | `"trace"` scores individual traces at ingest; `"session"` scores whole conversations |
+| `scope` | `str` | `"trace"` | `"trace"` scores individual traces at ingest; `"session"` scores whole conversations. Non-default values require `live=True` |
 | `alert_threshold` | `float \| None` | `5` | A score below this raises a signal. `None` scores without ever raising one |
 | `severity` | `str` | `"medium"` | `"low"`, `"medium"`, `"high"` or `"critical"`, applied to signals it raises |
-| `agent_ids` | `list[str]` | `None` | Restrict scoring to specific agents instead of the whole workspace |
-| `idle_seconds` | `int` | `120` | For `scope="session"`: how long a session must be quiet before it is judged |
+| `agent_ids` | `list[str]` | `None` | Restrict scoring to specific agents instead of the whole workspace. Requires `live=True` |
+| `idle_seconds` | `int` | `None` (server stores `120`) | For `scope="session"`: how long a session must be quiet before it is judged. Requires `live=True` and `scope="session"` - the builder raises otherwise |
 
 Calibration, tuning and the live-scoring history hang off the same scorer id - the SDK resolves the online profile for you:
 
@@ -848,7 +848,7 @@ report = client.evaluations.run(...).execute(my_agent).finalize().analyze()
 
 # Top-level convenience accessors - return None when the metric was not
 # enabled on the dataset, or no case has a value yet.
-report.average_rating       # float | None  - same as report.statistics.average_rating
+report.average_rating       # float | None - None only when no analysis exists; an analyzed run that scored nothing reads 0.0
 report.cosine_similarity    # float | None  - averaged across cases (0-1)
 report.jaccard_similarity   # float | None  - averaged across cases (0-1)
 report.bleu_score           # float | None  - averaged across cases (0-1)

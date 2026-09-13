@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
+from agentx.monitor._transport import request_with_retries
 from agentx.util import api_base, get_headers
 from agentx.exceptions import AgentXError, AgentXAuthError, AgentXValidationError
 
@@ -97,7 +98,9 @@ class JudgeScorersClient:
         # Captured once at construction so two clients with different bases can coexist.
         self._base_url = (base_url or api_base()).rstrip("/")
 
-    def _request(self, method: str, path: str, json: Any = None, timeout: int = 60) -> Any:
+    def _request(
+        self, method: str, path: str, json: Any = None, timeout: int = 60, retry: bool = True
+    ) -> Any:
         params = None
         if self._workspace_id:
             # Mirrors MonitorClient._workspace_params/_with_workspace: GETs (and DELETEs)
@@ -109,9 +112,13 @@ class JudgeScorersClient:
                     json = {**json, "workspaceId": self._workspace_id}
             else:
                 params = {"workspaceId": self._workspace_id}
-        resp = requests.request(
+        # retry=False for ANY non-idempotent write (creates, deletes) and judge-spending POST
+        # (tune/validate/publish) - MonitorClient._request's posture, via the shared monitor
+        # transport.
+        resp = request_with_retries(
             method,
             f"{self._base_url}/agent-monitoring{path}",
+            retry=retry,
             headers={**get_headers(self._api_key), "Content-Type": "application/json"},
             json=json,
             params=params,
@@ -263,7 +270,10 @@ class JudgeScorersClient:
             payload["offline"] = offline
         if online is not None:
             payload["online"] = online
-        return JudgeScorer(self._request("POST", "/judge-scorers", json=payload)["judgeScorer"])
+        # Server-side create: a timeout + transport retry would create the scorer twice.
+        return JudgeScorer(
+            self._request("POST", "/judge-scorers", json=payload, retry=False)["judgeScorer"]
+        )
 
     def get(self, scorer_id: str) -> JudgeScorer:
         return JudgeScorer(self._request("GET", f"/judge-scorers/{scorer_id}")["judgeScorer"])
@@ -300,7 +310,9 @@ class JudgeScorersClient:
     def delete(self, scorer_id: str) -> None:
         """Delete the scorer: rubric, version history, and online profile together.
         Irreversible; refused for the built-in Session Baseline Judge."""
-        self._request("DELETE", f"/judge-scorers/{scorer_id}")
+        # retry=False: a lost response + transport retry would turn a successful delete
+        # into a spurious 404.
+        self._request("DELETE", f"/judge-scorers/{scorer_id}", retry=False)
 
     # ------------------------------------------------------------------
     # Online-profile pass-throughs (calibration / tuning / ratings / events)
@@ -334,8 +346,14 @@ class JudgeScorersClient:
     def tune(self, scorer_id: str, window: str = "7d") -> dict:
         """Propose a rewrite of the rubric from calibration disagreements (LLM call, slow).
         ``window`` accepts the same values as :meth:`calibration`, including "rubric"."""
+        # retry=False (judge-spending POST, MonitorClient.propose_online_evaluator_tuning's
+        # posture): a client-side timeout must not fire the same LLM-billing work twice.
         data = self._request(
-            "POST", f"/online-evaluators/{self._profile_id(scorer_id)}/tune", json={"window": window}, timeout=300
+            "POST",
+            f"/online-evaluators/{self._profile_id(scorer_id)}/tune",
+            json={"window": window},
+            timeout=300,
+            retry=False,
         )
         # The wire wraps the proposal ({"proposal": {...}}); unwrap like the legacy client so
         # proposal["reasoning"] / the criteria fields are directly addressable.
@@ -344,11 +362,13 @@ class JudgeScorersClient:
     def validate_tuning(self, scorer_id: str, criteria: Dict[str, Any], window: str = "7d") -> dict:
         """Re-judge the disagreement + control cases with candidate criteria (LLM calls, slow)."""
         # The wire takes the criteria fields at the TOP level of the body, not nested.
+        # retry=False (judge-spending POST) - same posture as tune() above.
         return self._request(
             "POST",
             f"/online-evaluators/{self._profile_id(scorer_id)}/tune/validate",
             json={**criteria, "window": window},
             timeout=600,
+            retry=False,
         )
 
     def publish_tuning(
@@ -382,7 +402,14 @@ class JudgeScorersClient:
             payload["validation"] = validation_payload
         if force:
             payload["force"] = True
-        return self._request("POST", f"/online-evaluators/{self._profile_id(scorer_id)}/tune/publish", json=payload)
+        # retry=False: a non-idempotent write (each publish appends a rubric version) -
+        # MonitorClient.publish_online_evaluator_tuning's posture.
+        return self._request(
+            "POST",
+            f"/online-evaluators/{self._profile_id(scorer_id)}/tune/publish",
+            json=payload,
+            retry=False,
+        )
 
     def ratings(self, scorer_id: str, window: str = "7d") -> "List[OnlineEvaluatorRatingPoint]":
         """Bucketed average-rating-over-time for this scorer's live checks - same typed points

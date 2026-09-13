@@ -70,9 +70,22 @@ class MonitorRulesClient:
 
     def update(self, rule_id: str, **fields: Any) -> MonitorRule:
         """Sparse update. snake_case keys are mapped to the wire (``sample_rate`` ->
-        ``sampleRate``, ``action_config`` -> ``actionConfig``)."""
+        ``sampleRate``, ``action_config`` -> ``actionConfig``); an unrecognized snake_case
+        key raises instead of 200ing with the rule unchanged (the engine reads only camelCase
+        and silently keeps the stored value for keys it does not know)."""
         aliases = {"sample_rate": "sampleRate", "action_config": "actionConfig"}
-        payload = {aliases.get(k, k): v for k, v in fields.items()}
+        payload: Dict[str, Any] = {}
+        for key, value in fields.items():
+            wire_key = aliases.get(key, key)
+            if "_" in wire_key:
+                raise ValueError(
+                    f"Unknown rule field {key!r} - the engine reads camelCase keys and would "
+                    "silently ignore this (see MonitorRule for the field names)."
+                )
+            payload[wire_key] = value
+        # PUT /rules/:id is an idempotent full-body merge (same payload, same result), so the
+        # transport's default retry is safe - and skipping it just drops legitimate edits on a
+        # transient failure.
         data = self._request("PUT", f"/agent-monitoring/rules/{rule_id}", json=payload)
         return MonitorRule(data.get("rule", data))
 

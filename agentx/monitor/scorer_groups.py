@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from agentx.exceptions import AgentXError, AgentXAuthError, AgentXValidationError
+from agentx.monitor._transport import request_with_retries
 
 
 class AgentXScorerGroupsError(AgentXError):
@@ -49,7 +50,9 @@ class ScorerGroupsClient:
         self._workspace_id = workspace_id
         self._base = base_url.rstrip("/") + "/agent-monitoring/scorer-groups"
 
-    def _request(self, method: str, url: str, json: Optional[Dict[str, Any]] = None) -> Any:
+    def _request(
+        self, method: str, url: str, json: Optional[Dict[str, Any]] = None, retry: bool = True
+    ) -> Any:
         params = None
         if self._workspace_id:
             # Mirrors MonitorClient._workspace_params/_with_workspace: GETs (and DELETEs)
@@ -61,9 +64,12 @@ class ScorerGroupsClient:
                     json = {**json, "workspaceId": self._workspace_id}
             else:
                 params = {"workspaceId": self._workspace_id}
-        response = requests.request(
+        # retry=False for ANY non-idempotent write (creates, deletes) -
+        # MonitorClient._request's posture, via the shared monitor transport.
+        response = request_with_retries(
             method,
             url,
+            retry=retry,
             headers={"x-api-key": self._api_key, "content-type": "application/json"},
             json=json,
             params=params,
@@ -106,15 +112,33 @@ class ScorerGroupsClient:
             payload["description"] = description
         if online is not None:
             payload["online"] = online
-        return ScorerGroup(self._request("POST", self._base, json=payload)["scorerGroup"])
+        # Server-side create: a timeout + transport retry would create the group twice.
+        return ScorerGroup(
+            self._request("POST", self._base, json=payload, retry=False)["scorerGroup"]
+        )
 
     def update(self, group_id: str, **fields: Any) -> ScorerGroup:
-        """Sparse update - pass any of name/description/members/online (online=None detaches
-        live scoring)."""
+        """Sparse update - pass any of name/description/members/online. ``online`` itself may be
+        partial: ``online={"enabled": False}`` pauses live scoring, the engine merges the patch
+        over the stored profile. ``online=None`` detaches live scoring entirely. A partial
+        ``online=`` patch on a group with NO stored live profile is rejected by the engine
+        (400) - send the full profile the first time (the shape ``create`` documents)."""
+        # Same guard patterns.update/rules.update carry: the engine's schema strips keys it
+        # does not recognize, so a snake_case key would 200 with the group unchanged.
+        for key in fields:
+            if "_" in key:
+                first, *rest = key.split("_")
+                camel = first + "".join(part.capitalize() for part in rest)
+                raise ValueError(
+                    f"Unknown scorer group field {key!r} - the engine reads camelCase keys and "
+                    f"would silently ignore this; send {camel!r} instead."
+                )
         return ScorerGroup(self._request("PUT", f"{self._base}/{group_id}", json=fields)["scorerGroup"])
 
     def delete(self, group_id: str) -> None:
-        self._request("DELETE", f"{self._base}/{group_id}")
+        # retry=False: a lost response + transport retry would turn a successful delete
+        # into a spurious 404.
+        self._request("DELETE", f"{self._base}/{group_id}", retry=False)
 
     def ratings(self, group_id: str, window: str = "7d") -> Dict[str, Any]:
         """Live score history for a group - ``{"window", "points": [{ts, averageRating, count}]}``,

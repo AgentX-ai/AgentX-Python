@@ -43,7 +43,9 @@ Also see [SDK Developer Docs](https://developers.agentx.so), [API Reference Docs
 pip install --upgrade agentx-python
 ```
 
-Requires Python 3.9 or newer.
+Requires Python 3.9 or newer for the core SDK. Some integration extras have higher floors set
+by their upstream packages - `[crewai]`, `[autogen]`, and `[databricks]` need Python 3.10+ (`[all]`
+therefore does too); the core tracer and every REST surface stay 3.9-compatible.
 
 #### Run the self-host governance suite locally
 

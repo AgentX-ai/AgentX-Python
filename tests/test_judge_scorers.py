@@ -302,7 +302,7 @@ def test_validate_and_publish_send_criteria_at_top_level(monkeypatch):
     monkeypatch.setattr(client, "_profile_id", lambda scorer_id: "prof-1")
     captured = {}
 
-    def fake_request(method, path, json=None, timeout=60):
+    def fake_request(method, path, json=None, timeout=60, retry=True):
         captured[path.rsplit("/", 1)[-1]] = json
         return {}
 

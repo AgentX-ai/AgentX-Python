@@ -205,9 +205,11 @@ class MonitorClient:
     def _request(
         self, method: str, path: str, timeout: int = 30, base: Optional[str] = None, retry: bool = True, **kwargs
     ) -> Any:
-        # retry=False for non-idempotent judge-spending POSTs (sweep, coherence, portability,
-        # tuning): a client-side timeout must not fire the same LLM-billing work a second time
-        # while the first invocation is still running server-side. Same precedent as
+        # retry=False for ANY non-idempotent write - duplicating creates, deletes (a lost
+        # response + retry turns success into a spurious 404), and judge-spending POSTs
+        # (sweep, coherence, portability, tuning: a client-side timeout must not fire the
+        # same LLM-billing work twice while the first invocation still runs server-side).
+        # The judge list is the example set, not the rule. Same precedent as
         # EvaluationsClient._request / analyze_run.
         url = f"{base or self._base_url}{path}"
         last_exc: Optional[Exception] = None

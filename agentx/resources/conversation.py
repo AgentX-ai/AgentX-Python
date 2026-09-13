@@ -1,7 +1,7 @@
 import json
 import requests
 from typing import Optional, List, Any, Iterator
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, PrivateAttr, Field
 from agentx.util import get_headers, api_base
 
 
@@ -42,28 +42,49 @@ class Conversation(BaseModel):
         populate_by_name = True
         extra = "ignore"
 
+
+    # Hosted credentials threaded from the constructing AgentX client. The module-level
+    # api_base()/get_headers() read only env vars, and the client deliberately stopped
+    # writing its constructor args into os.environ - without binding, a client created with
+    # api_key=/base_url= issued these calls unauthenticated against the default host.
+    _api_key: Optional[str] = PrivateAttr(default=None)
+    _base_url: Optional[str] = PrivateAttr(default=None)
+
+    def _bind(self, api_key: Optional[str], base_url: Optional[str]) -> "Conversation":
+        self._api_key = api_key
+        self._base_url = base_url
+        return self
+
+    def _api_base(self) -> str:
+        return self._base_url or api_base()
+
+    def _headers(self):
+        return get_headers(self._api_key)
+
     def __init__(self, **data):
         super().__init__(**data)
 
     def new_conversation(self) -> "Conversation":
-        url = f"{api_base()}/access/agents/{self.agent_id}/conversations/new"
+        url = f"{self._api_base()}/access/agents/{self.agent_id}/conversations/new"
         response = requests.post(
             url,
-            headers=get_headers(),
+            headers=self._headers(),
             json={"type": "chat"},
         )
         if response.status_code == 200:
             new_conv = response.json()
             new_conv["agent_id"] = self.agent_id
-            return Conversation(**new_conv)
+            # Bound to this conversation's own credentials - unbound, the sibling
+            # conversation fell back to env credentials against the default host.
+            return Conversation(**new_conv)._bind(self._api_key, self._base_url)
         else:
             raise Exception(
                 f"Failed to create new conversation: {response.status_code} - {response.reason}"
             )
 
     def list_messages(self) -> List[Message]:
-        url = f"{api_base()}/access/agents/{self.agent_id}/conversations/{self.id}"
-        response = requests.get(url, headers=get_headers())
+        url = f"{self._api_base()}/access/agents/{self.agent_id}/conversations/{self.id}"
+        response = requests.get(url, headers=self._headers())
         if response.status_code == 200:
             res = response.json()
             if res.get("messages"):
@@ -83,18 +104,18 @@ class Conversation(BaseModel):
             )
 
     def chat(self, message: str, context: Optional[int] = None):
-        url = f"{api_base()}/access/conversations/{self.id}/message"
+        url = f"{self._api_base()}/access/conversations/{self.id}/message"
         response = requests.post(
             url,
-            headers=get_headers(),
+            headers=self._headers(),
             json={"message": message, "context": context},
         )
         return response.json()
 
     def chat_stream(self, message: str, context: Optional[int] = None) -> Iterator[ChatResponse]:
-        url = f"{api_base()}/access/conversations/{self.id}/jsonmessagesse"
+        url = f"{self._api_base()}/access/conversations/{self.id}/jsonmessagesse"
         response = requests.post(
-            url, headers=get_headers(), json={"message": message, "context": context}
+            url, headers=self._headers(), json={"message": message, "context": context}
         )
         result = ""
         if response.status_code == 200:
