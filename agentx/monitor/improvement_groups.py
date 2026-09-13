@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
+from agentx.monitor._transport import request_with_retries
 from agentx.util import api_base, get_headers
 from agentx.exceptions import AgentXError, AgentXAuthError, AgentXValidationError
 
@@ -45,7 +46,9 @@ class ImprovementGroupsClient:
         self._workspace_id = workspace_id
         self._base_url = (base_url or api_base()).rstrip("/")
 
-    def _request(self, method: str, path: str, json: Any = None, timeout: int = 120) -> Any:
+    def _request(
+        self, method: str, path: str, json: Any = None, timeout: int = 120, retry: bool = True
+    ) -> Any:
         params = None
         if self._workspace_id:
             # Mirrors MonitorClient._workspace_params/_with_workspace: GETs (and DELETEs)
@@ -57,9 +60,12 @@ class ImprovementGroupsClient:
                     json = {**json, "workspaceId": self._workspace_id}
             else:
                 params = {"workspaceId": self._workspace_id}
-        resp = requests.request(
+        # retry=False for ANY non-idempotent write (member deletes, the report-generating
+        # POST) - MonitorClient._request's posture, via the shared monitor transport.
+        resp = request_with_retries(
             method,
             f"{self._base_url}/agent-monitoring{path}",
+            retry=retry,
             headers={**get_headers(self._api_key), "Content-Type": "application/json"},
             json=json,
             params=params,
@@ -92,7 +98,9 @@ class ImprovementGroupsClient:
 
     def remove_member(self, group_id: str, member_id: str) -> None:
         """Prune a member before spending the group (a confirm that turned out uninteresting)."""
-        self._request("DELETE", f"/improvement-groups/{group_id}/members/{member_id}")
+        # retry=False: a lost response + transport retry would turn a successful delete
+        # into a spurious 404.
+        self._request("DELETE", f"/improvement-groups/{group_id}/members/{member_id}", retry=False)
 
     def generate_report(self, group_id: str, model: Optional[str] = None) -> Dict[str, Any]:
         """Spend the group: one real LLM call clustering the confirmed failures into issues
@@ -101,7 +109,11 @@ class ImprovementGroupsClient:
         payload: Dict[str, Any] = {}
         if model is not None:
             payload["model"] = model
-        return self._request("POST", f"/improvement-groups/{group_id}/report", json=payload, timeout=300)["report"]
+        # retry=False: spends the group (real LLM billing) - a client-side timeout must not
+        # fire the same generation twice while the first still runs server-side.
+        return self._request(
+            "POST", f"/improvement-groups/{group_id}/report", json=payload, timeout=300, retry=False
+        )["report"]
 
     def list_reports(self) -> List[Dict[str, Any]]:
         return self._request("GET", "/improvement-reports").get("improvementReports", [])

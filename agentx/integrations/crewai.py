@@ -144,14 +144,14 @@ class AgentXCrewObserver:
                     TaskFailedEvent,
                     TaskStartedEvent,
                 )
-            except ImportError:
+            except Exception:  # noqa: BLE001 - crewai import raises TypeError (PEP 604) on py3.9, not just ImportError
                 from crewai.utilities.events import crewai_event_bus
                 from crewai.utilities.events.task_events import (
                     TaskCompletedEvent,
                     TaskFailedEvent,
                     TaskStartedEvent,
                 )
-        except ImportError:
+        except Exception:  # noqa: BLE001 - crewai import raises TypeError (PEP 604) on py3.9, not just ImportError
             if not _warned_no_event_bus:
                 _warned_no_event_bus = True
                 logger.warning(

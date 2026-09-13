@@ -380,7 +380,7 @@ with tracer.trace("support-agent") as span:
     span.output = answer
 ```
 
-`tracer.record_memory(name, operation=..., query=..., output=..., duration_ms=...)` is the after-the-fact form. `operation` is free text - conventionally `"read"` or `"write"` - carried in the span's metadata, while the kind itself stays one value so dashboards and scorers can select all memory activity at once. With no active span the record is dropped (with a debug log) - the pending queue rides the next trace's retrieval steps, and memory content must never feed the RAG judges' retrieval context - so wrap the call in `tracer.trace()`.
+`tracer.record_memory(name, operation=..., query=..., output=..., duration_ms=...)` is the after-the-fact form. `operation` is free text - conventionally `"read"` or `"write"` - carried in the span's metadata, while the kind itself stays one value so dashboards and scorers can select all memory activity at once. With no active span the record is dropped (warned once per process, then logged at debug), not queued: there are two pending queues (tool calls ride the next trace's `tool_calls`, retrievals its `retrieval_steps`) and neither fits - `retrieval_steps` feeds the engine's RAG `{context}` extraction, which recalled state must never reach, and no memory-shaped queue has been built yet - so wrap the call in `tracer.trace()`.
 
 ---
 
@@ -520,7 +520,11 @@ print(pattern.id)
 
 client.monitor.patterns.get(pattern.id)   # -> MonitorPattern
 client.monitor.patterns.list()            # -> list[MonitorPattern]
-client.monitor.patterns.update(pattern.id, enabled=False)  # sparse update, wire camelCase keys -> MonitorPattern
+client.monitor.patterns.update(pattern.id, enabled=False)  # sparse update -> MonitorPattern
+# update() takes snake_case kwargs (or wire camelCase); an unknown snake_case key raises.
+# Sending regex / semantic_prompt / include_terms rebuilds the pattern's conditions for that
+# detector kind; exclude_terms, match_mode, or match_target sent alone raise ValueError
+# (the engine would silently ignore them) - pass conditions=[...] or a trigger field instead.
 client.monitor.patterns.delete(pattern.id)                 # historical signals remain as history
 ```
 

@@ -1,6 +1,8 @@
 import os
 from typing import Optional
 
+from agentx.exceptions import AgentXAuthError
+
 _DEFAULT_API_BASE = "https://api.agentx.so/api/v1"
 
 _EVALUATIONS_SUFFIX = "/custom-agent-evaluations"
@@ -26,4 +28,10 @@ def api_base() -> str:
 
 
 def get_headers(api_key: Optional[str] = None):
-    return {"accept": "*/*", "x-api-key": api_key or os.getenv("AGENTX_API_KEY")}
+    key = api_key or os.getenv("AGENTX_API_KEY")
+    if not key:
+        # A None header serializes as the literal string "None" (or drops), turning a config
+        # mistake into an opaque 401 from the server - fail loud at the call site instead,
+        # with the SDK's canonical auth error so `except agentx.AgentXAuthError` catches it.
+        raise AgentXAuthError("No API key: pass api_key= or set AGENTX_API_KEY")
+    return {"accept": "*/*", "x-api-key": key}

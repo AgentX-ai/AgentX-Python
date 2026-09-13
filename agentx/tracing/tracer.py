@@ -931,9 +931,11 @@ class Tracer:
         Deliberately NOT a retrieval: retrieval spans feed the RAG judges' ``{context}``
         (knowledge grounding), while memory is recalled state - see the engine's spanKind.ts.
 
-        With no active span the record is DROPPED (with a debug log), not queued: the only
-        pending queue rides the next trace's ``retrieval_steps``, and memory content must
-        never reach the engine's retrieval-context extraction for RAG judges. Wrap the call
+        With no active span the record is DROPPED (warns once per process, then logs at
+        debug), not queued. There are two pending queues (tool calls -> ``tool_calls``,
+        retrievals -> ``retrieval_steps``) and neither fits: ``retrieval_steps`` feeds the
+        engine's RAG ``{context}`` extraction, which recalled state must never reach, and no
+        memory-shaped queue has been built yet. Wrap the call
         in ``tracer.trace()`` to keep it - or, on a worker thread, wrap the worker body in
         ``tracer.use_span(span)`` - a bare thread starts with an empty span stack.
         (``record_tool_call``/``record_retrieval`` queue instead - see their docstrings.)
@@ -980,7 +982,7 @@ class Tracer:
             with tracer.trace_memory("user prefs", operation="read", query=user_id) as m:
                 m.output = memory.search(user_id, question)
 
-        With no active span the record is DROPPED (with a debug log), not queued - see
+        With no active span the record is DROPPED (warns once per process, then logs at debug), not queued - see
         :meth:`record_memory`. An exception escaping the block records the operation as
         failed (error set, output ``ERROR: ...``) and then propagates unchanged - same
         posture as :meth:`trace_tool_call`.
