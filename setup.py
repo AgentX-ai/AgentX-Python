@@ -51,6 +51,8 @@ setup(
         "crewai": ["crewai>=0.80.0"],
         "openai-agents": ["openai-agents>=0.0.3"],
         "openai": ["openai>=1.0.0"],
+        # NIM endpoints speak the OpenAI-compatible API; the client package IS openai.
+        "nvidia-nim": ["openai>=1.0.0"],
         "anthropic": ["anthropic>=0.25.0"],
         "google-adk": ["google-adk>=1.0.0"],
         "google-genai": ["google-genai>=1.0.0"],

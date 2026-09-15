@@ -185,6 +185,7 @@ extra:
 | CrewAI                | `pip install "agentx-python[crewai]"`        | `AgentXCrewObserver`      |
 | OpenAI Agents SDK     | `pip install "agentx-python[openai-agents]"` | `AgentXTracingProcessor`  |
 | OpenAI (raw client)   | `pip install "agentx-python[openai]"`        | `patch_openai_client`     |
+| NVIDIA NIM            | `pip install "agentx-python[nvidia-nim]"`    | `patch_nim_client`        |
 | Anthropic             | `pip install "agentx-python[anthropic]"`     | `patch_anthropic_client`  |
 | Google ADK            | `pip install "agentx-python[google-adk]"`    | `AgentXADKPlugin`         |
 | Google GenAI (Gemini) | `pip install "agentx-python[google-genai]"`  | `patch_genai_client`      |

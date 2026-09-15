@@ -513,6 +513,185 @@ def test_openai_sync_client_records_errors():
     assert kwargs["error"] == "rate limited"
 
 
+def test_openai_patch_stamps_openai_framework():
+    # Regression guard for the shared-machinery refactor: _patch_chat_completions_create
+    # grew a framework parameter for nvidia_nim.py, and the OpenAI default must stay "openai".
+    from agentx.integrations.openai import patch_openai_client
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return _FakeOpenAIChatCompletion("hello")
+
+    client = _fake_openai_client(FakeCompletions())
+    tracer = make_tracer()
+    patch_openai_client(client, tracer, name="gpt-agent")
+    client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}])
+
+    _, kwargs = tracer._send.call_args
+    assert kwargs["framework"] == "openai"
+
+
+# ---------------------------------------------------------------------------
+# 6b. nvidia_nim.py — the OpenAI-compatible patch with the NIM framework label
+# ---------------------------------------------------------------------------
+
+def test_nim_sync_client_traces_call_with_nim_framework():
+    from agentx.integrations.nvidia_nim import patch_nim_client
+
+    response = _FakeOpenAIChatCompletion("hello from nim")
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return response
+
+    client = _fake_openai_client(FakeCompletions())
+    tracer = make_tracer()
+    patch_nim_client(client, tracer, name="nim-agent")
+
+    result = client.chat.completions.create(
+        model="meta/llama-3.1-8b-instruct", messages=[{"role": "user", "content": "hi"}]
+    )
+
+    assert result is response
+    tracer._send.assert_called_once()
+    _, kwargs = tracer._send.call_args
+    assert kwargs["framework"] == "nvidia-nim"
+    assert kwargs["name"] == "nim-agent"
+    assert kwargs["output"] == "hello from nim"
+    assert kwargs["model"] == "meta/llama-3.1-8b-instruct"
+    assert kwargs["input_tokens"] == 12
+    assert kwargs["output_tokens"] == 6
+    # NIM reports no prompt-cache fields; the counts must stay unset, not become 0.
+    assert not kwargs.get("cache_read_tokens")
+
+
+def test_nim_async_client_traces_the_real_response():
+    from agentx.integrations.nvidia_nim import patch_nim_client
+
+    response = _FakeOpenAIChatCompletion("hello from async nim")
+
+    class FakeAsyncCompletions:
+        async def create(self, **kwargs):
+            await asyncio.sleep(0.01)
+            return response
+
+    client = _fake_openai_client(FakeAsyncCompletions())
+    tracer = make_tracer()
+    patch_nim_client(client, tracer, name="nim-agent")
+
+    result = asyncio.run(
+        client.chat.completions.create(model="meta/llama-3.1-8b-instruct", messages=[{"role": "user", "content": "hi"}])
+    )
+
+    assert result is response
+    tracer._send.assert_called_once()
+    _, kwargs = tracer._send.call_args
+    assert kwargs["framework"] == "nvidia-nim"
+    assert kwargs["output"] == "hello from async nim"
+    assert kwargs["input_tokens"] == 12
+
+
+def test_nim_streaming_calls_are_passed_through_untraced():
+    from agentx.integrations.nvidia_nim import patch_nim_client
+
+    sentinel_stream = object()
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            assert kwargs.get("stream") is True
+            return sentinel_stream
+
+    client = _fake_openai_client(FakeCompletions())
+    tracer = make_tracer()
+    patch_nim_client(client, tracer, name="nim-agent")
+
+    result = client.chat.completions.create(
+        model="meta/llama-3.1-8b-instruct", messages=[{"role": "user", "content": "hi"}], stream=True
+    )
+
+    assert result is sentinel_stream
+    tracer._send.assert_not_called()
+
+
+def test_nim_sync_client_records_errors():
+    from agentx.integrations.nvidia_nim import patch_nim_client
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            raise ValueError("nim endpoint unavailable")
+
+    client = _fake_openai_client(FakeCompletions())
+    tracer = make_tracer()
+    patch_nim_client(client, tracer, name="nim-agent")
+
+    with pytest.raises(ValueError, match="nim endpoint unavailable"):
+        client.chat.completions.create(model="meta/llama-3.1-8b-instruct", messages=[{"role": "user", "content": "hi"}])
+
+    tracer._send.assert_called_once()
+    _, kwargs = tracer._send.call_args
+    assert kwargs["error"] == "nim endpoint unavailable"
+    assert kwargs["framework"] == "nvidia-nim"
+
+
+def test_nim_patch_is_idempotent_and_first_patch_wins():
+    from agentx.integrations.nvidia_nim import patch_nim_client
+    from agentx.integrations.openai import patch_openai_client
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return _FakeOpenAIChatCompletion("once")
+
+    client = _fake_openai_client(FakeCompletions())
+    tracer = make_tracer()
+    patch_nim_client(client, tracer, name="nim-agent")
+    # Double NIM patch and a later OpenAI patch are both no-ops (shared _agentx_patched guard):
+    # exactly one trace per call, and the first patch's framework label stays.
+    patch_nim_client(client, tracer, name="nim-agent")
+    patch_openai_client(client, tracer, name="gpt-agent")
+
+    client.chat.completions.create(model="meta/llama-3.1-8b-instruct", messages=[{"role": "user", "content": "hi"}])
+
+    tracer._send.assert_called_once()
+    _, kwargs = tracer._send.call_args
+    assert kwargs["framework"] == "nvidia-nim"
+
+
+def test_nim_rejects_client_without_chat_completions():
+    from agentx.integrations.nvidia_nim import patch_nim_client
+
+    with pytest.raises(ValueError, match="chat.completions"):
+        patch_nim_client(object(), make_tracer())
+
+
+def test_nim_request_tools_land_in_trace_metadata():
+    # The docs promise the request's tools=[...] definitions feed the unregistered-tool
+    # listing via metadata.tools - pin the shared capture path (openai.py machinery) here.
+    from agentx.integrations.nvidia_nim import patch_nim_client
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return _FakeOpenAIChatCompletion("used a tool")
+
+    tool_def = {
+        "type": "function",
+        "function": {"name": "lookup_order", "parameters": {"type": "object", "properties": {}}},
+    }
+    client = _fake_openai_client(FakeCompletions())
+    tracer = make_tracer()
+    patch_nim_client(client, tracer, name="nim-agent", metadata={"env": "test"})
+
+    client.chat.completions.create(
+        model="meta/llama-3.1-8b-instruct",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[tool_def],
+    )
+
+    _, kwargs = tracer._send.call_args
+    assert kwargs["metadata"]["tools"] == [tool_def]
+    # The caller's own static metadata must survive the tools merge.
+    assert kwargs["metadata"]["env"] == "test"
+
+
 # ---------------------------------------------------------------------------
 # 7. langchain.py — nested-run state cleanup + TTL safety net
 # ---------------------------------------------------------------------------
