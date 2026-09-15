@@ -192,6 +192,7 @@ works. The label resolves in priority order:
    | `AgentXCrewObserver` | `crewai` |
    | `AgentXTracingProcessor` (OpenAI Agents SDK) | `openai-agents` |
    | `patch_openai_client` | `openai` |
+   | `patch_nim_client` (NVIDIA NIM) | `nvidia-nim` |
    | `patch_anthropic_client` | `anthropic` |
    | `patch_genai_client` | `google-genai` |
    | `AgentXADKPlugin` | `google-adk` |

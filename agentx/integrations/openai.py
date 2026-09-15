@@ -113,7 +113,11 @@ def _patch_chat_completions_create(
     name: str,
     metadata: Optional[Dict[str, Any]],
     session_id: Optional[str],
+    framework: str = "openai",
 ) -> None:
+    # `framework` exists for OpenAI-compatible endpoints served by other vendors
+    # (agentx.integrations.nvidia_nim stamps "nvidia-nim" through here) - the request/response
+    # shapes are identical, so they share this machinery instead of duplicating it.
     original = completions_resource.create
     if getattr(original, "_agentx_patched", False):
         return  # already patched
@@ -148,7 +152,7 @@ def _patch_chat_completions_create(
             finish_llm_call(
                 tracer,
                 name=name,
-                framework="openai",
+                framework=framework,
                 metadata=metadata,
                 session_id=session_id,
                 start_t=start_t,
