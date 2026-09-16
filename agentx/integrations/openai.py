@@ -17,8 +17,11 @@ Usage::
 
 Works with both ``openai.OpenAI`` and ``openai.AsyncOpenAI`` clients.
 
-Streaming calls (``stream=True``) are passed through untouched and are not
-currently traced - see ``patch_openai_client``'s docstring.
+Streaming calls (``stream=True``) are traced too: the returned stream is
+wrapped in a transparent proxy that assembles the reply from the chunks as the
+caller consumes them, so the trace carries the full text, tool calls, and
+(with ``stream_options={"include_usage": True}``) token usage, plus the time
+to first token.
 
 Requires: ``pip install "agentx-python[openai]"``
 """
@@ -28,7 +31,13 @@ import time
 from typing import Any, Dict, Optional, Tuple
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
-from agentx.integrations._traced_call import capture_tool_definitions, call_and_trace, finish_llm_call
+from agentx.integrations._traced_call import (
+    StreamAccumulator,
+    capture_tool_definitions,
+    call_and_trace,
+    finish_llm_call,
+    trace_stream,
+)
 
 
 def _extract_output_text(response: Any) -> Optional[str]:
@@ -75,6 +84,68 @@ def _extract_usage_tokens(usage: Any) -> Tuple[Optional[int], Optional[int], Opt
     return getattr(usage, "prompt_tokens", None), getattr(usage, "completion_tokens", None), cached_tokens
 
 
+class _ChatCompletionStreamAccumulator(StreamAccumulator):
+    """
+    Rebuild a ``ChatCompletion``-shaped result from ``ChatCompletionChunk``s:
+    text deltas concatenate per choice, tool-call deltas merge by index (name
+    arrives once, arguments arrive as fragments), and the ``usage`` block -
+    present only on the final chunk, and only when the caller asked for it
+    with ``stream_options={"include_usage": True}`` - is kept when it appears.
+    """
+
+    def __init__(self, start_t: float) -> None:
+        self._start_t = start_t
+        self._texts: Dict[int, list] = {}
+        self._tool_calls: Dict[int, Dict[str, Any]] = {}
+        self._usage: Any = None
+        self._model: Optional[str] = None
+
+    def feed(self, chunk: Any) -> None:
+        usage = getattr(chunk, "usage", None)
+        if usage is not None:
+            self._usage = usage
+        model = getattr(chunk, "model", None)
+        if model and not self._model:
+            self._model = model
+        for choice in getattr(chunk, "choices", None) or []:
+            index = getattr(choice, "index", 0) or 0
+            delta = getattr(choice, "delta", None)
+            if delta is None:
+                continue
+            content = getattr(delta, "content", None)
+            if content:
+                self._texts.setdefault(index, []).append(content)
+            for tc in getattr(delta, "tool_calls", None) or []:
+                key = getattr(tc, "index", 0) or 0
+                entry = self._tool_calls.setdefault(key, {"name": None, "arguments": []})
+                fn = getattr(tc, "function", None)
+                fn_name = getattr(fn, "name", None) if fn is not None else None
+                fn_args = getattr(fn, "arguments", None) if fn is not None else None
+                if fn_name:
+                    entry["name"] = fn_name
+                if fn_args:
+                    entry["arguments"].append(fn_args)
+
+    def result(self) -> Dict[str, Any]:
+        texts = ["".join(parts) for _, parts in sorted(self._texts.items())]
+        output: Optional[str] = "\n".join(t for t in texts if t) or None
+        if output is None and self._tool_calls:
+            described = [
+                f"{entry['name'] or 'unknown'}({''.join(entry['arguments'])})"
+                for _, entry in sorted(self._tool_calls.items())
+            ]
+            output = "[tool call] " + ", ".join(described)
+        input_tokens, output_tokens, cache_read_tokens = _extract_usage_tokens(self._usage)
+        return {
+            "_start_t": self._start_t,
+            "output": output,
+            "model": self._model,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cache_read_tokens": cache_read_tokens,
+        }
+
+
 def patch_openai_client(
     client: Any,
     tracer: Tracer,
@@ -92,12 +163,14 @@ def patch_openai_client(
     client's ``create()`` returns a coroutine, which is detected and awaited
     before the trace is built.
 
-    Calls made with ``stream=True`` are passed through untouched and are not
-    traced by this function: safely wrapping a (sync or async) chunk
-    iterator without disrupting the caller's own consumption of it needs
-    different handling than a single request/response call, so it's left
-    unpatched rather than risking a partially-consumed or double-consumed
-    stream for the caller.
+    Calls made with ``stream=True`` return a transparent proxy over the
+    provider's stream (see ``_traced_call.TracedStream``): iteration, ``with``,
+    ``close()`` and attribute access all pass through to the real stream, and
+    the trace is built from the chunks the caller actually consumed - text and
+    tool calls assembled from the deltas, token usage from the final chunk
+    when ``stream_options={"include_usage": True}`` was requested (OpenAI omits
+    usage from streams otherwise), latency to the last chunk, and the time to
+    first token in the trace metadata.
     """
     chat = getattr(client, "chat", None)
     completions = getattr(chat, "completions", None) if chat is not None else None
@@ -123,16 +196,40 @@ def _patch_chat_completions_create(
         return  # already patched
 
     def patched_create(*args, **kwargs):
-        if kwargs.get("stream"):
-            # Not traced - see patch_openai_client's docstring. Passed
-            # through completely untouched, sync or async.
-            return original(*args, **kwargs)
-
         start_t = time.time()
         input_messages = kwargs.get("messages") or (args[0] if args else None)
         model = kwargs.get("model")
         input_repr = _safe_serialize(input_messages)
         tool_definitions = capture_tool_definitions(kwargs.get("tools"))
+
+        if kwargs.get("stream"):
+            def on_stream_finish(collected: Dict[str, Any], error: Optional[str]) -> None:
+                ttft = collected.get("time_to_first_token_ms")
+                finish_llm_call(
+                    tracer,
+                    name=name,
+                    framework=framework,
+                    metadata=metadata,
+                    call_metadata={"streaming": True, "timeToFirstTokenMs": ttft},
+                    session_id=session_id,
+                    start_t=start_t,
+                    end_t=collected.get("end_t") or time.time(),
+                    input_repr=input_repr,
+                    output=collected.get("output"),
+                    model=collected.get("model") or model,
+                    input_tokens=collected.get("input_tokens"),
+                    output_tokens=collected.get("output_tokens"),
+                    cache_read_tokens=collected.get("cache_read_tokens"),
+                    error=error,
+                    tool_definitions=tool_definitions,
+                )
+
+            try:
+                result = original(*args, **kwargs)
+            except Exception as exc:
+                on_stream_finish({}, str(exc))
+                raise
+            return trace_stream(result, _ChatCompletionStreamAccumulator(start_t), on_stream_finish)
 
         def on_finish(response: Optional[Any], error: Optional[str]) -> None:
             end_t = time.time()

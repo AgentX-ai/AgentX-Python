@@ -297,6 +297,7 @@ class _TraceSpan:
         output_tokens: Optional[int] = None,
         cache_read_tokens: Optional[int] = None,
         cache_write_tokens: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Record one LLM-call child span (e.g. one patched Anthropic call) under this span -
         name left unset so _merge_child_run auto-numbers it "LLM Call N". ``framework`` lets the
@@ -315,6 +316,9 @@ class _TraceSpan:
                 "outputTokenSize": output_tokens,
                 "cacheReadTokenSize": cache_read_tokens,
                 "cacheWriteTokenSize": cache_write_tokens,
+                # Per-call facts that belong on the child row (a streamed call's time to first
+                # token), not on the parent trace's metadata.
+                "metadata": metadata,
             }],
             input=input,
             output=output,
@@ -479,6 +483,7 @@ class _TraceSpan:
                     output_tokens=step.get("outputTokenSize"),
                     cache_read_tokens=step.get("cacheReadTokenSize"),
                     cache_write_tokens=step.get("cacheWriteTokenSize"),
+                    metadata=step.get("metadata") or None,
                     # Stated, so a step named anything other than "LLM Call N" still classifies -
                     # the backend's name regex was the only thing holding this together. Steps
                     # may state their own kind (crewai.py's task steps carry "agent"); the

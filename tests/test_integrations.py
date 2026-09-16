@@ -189,6 +189,154 @@ def test_anthropic_async_client_traces_the_real_response():
     assert kwargs["latency_ms"] >= 5
 
 
+def _anthropic_events(with_tool=False):
+    ns = types.SimpleNamespace
+    events = [
+        ns(type="message_start", message=ns(model="claude-x", usage=_FakeAnthropicUsage(input_tokens=20, output_tokens=1, cache_read_input_tokens=8))),
+        ns(type="content_block_start", index=0, content_block=ns(type="text", text="")),
+        ns(type="content_block_delta", index=0, delta=ns(type="text_delta", text="Hel")),
+        ns(type="content_block_delta", index=0, delta=ns(type="text_delta", text="lo")),
+        ns(type="content_block_stop", index=0),
+    ]
+    if with_tool:
+        events += [
+            ns(type="content_block_start", index=1, content_block=ns(type="tool_use", name="lookup_order")),
+            ns(type="content_block_delta", index=1, delta=ns(type="input_json_delta", partial_json='{"id":')),
+            ns(type="content_block_delta", index=1, delta=ns(type="input_json_delta", partial_json=' "A1"}')),
+            ns(type="content_block_stop", index=1),
+        ]
+    events += [
+        ns(type="message_delta", delta=ns(stop_reason="end_turn"), usage=ns(output_tokens=7)),
+        ns(type="message_stop"),
+    ]
+    return events
+
+
+def test_anthropic_raw_create_stream_is_traced_from_events():
+    from agentx.integrations.anthropic import patch_anthropic_client
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            assert kwargs.get("stream") is True
+            return _FakeStream(_anthropic_events(with_tool=True))
+
+    client = types.SimpleNamespace(messages=FakeMessages())
+    tracer = make_tracer()
+    patch_anthropic_client(client, tracer, name="claude-agent")
+
+    events = list(client.messages.create(model="claude-x", system="be brief", messages=[{"role": "user", "content": "hi"}], stream=True))
+    assert len(events) == 11
+
+    tracer._send.assert_called_once()
+    _, kwargs = tracer._send.call_args
+    # Text wins over the tool description when both exist, matching _extract_output_text.
+    assert kwargs["output"] == "Hello"
+    assert kwargs["model"] == "claude-x"
+    # input total folds the cached subset in (20 + 8), cache_read reported alongside.
+    assert kwargs["input_tokens"] == 28
+    assert kwargs["cache_read_tokens"] == 8
+    assert kwargs["output_tokens"] == 7
+    assert kwargs["framework"] == "anthropic"
+    assert kwargs["metadata"]["streaming"] is True
+    # The system kwarg still lands in the traced input for streams.
+    assert "be brief" in str(kwargs["input"])
+
+
+def test_anthropic_raw_stream_tool_only_reply_is_described():
+    from agentx.integrations.anthropic import patch_anthropic_client
+    ns = types.SimpleNamespace
+    events = [
+        ns(type="message_start", message=ns(model="claude-x", usage=_FakeAnthropicUsage())),
+        ns(type="content_block_start", index=0, content_block=ns(type="tool_use", name="lookup_order")),
+        ns(type="content_block_delta", index=0, delta=ns(type="input_json_delta", partial_json='{"id": "A1"}')),
+        ns(type="message_delta", delta=ns(stop_reason="tool_use"), usage=ns(output_tokens=3)),
+        ns(type="message_stop"),
+    ]
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            return _FakeStream(events)
+
+    client = types.SimpleNamespace(messages=FakeMessages())
+    tracer = make_tracer()
+    patch_anthropic_client(client, tracer, name="claude-agent")
+    list(client.messages.create(model="claude-x", messages=[], stream=True))
+    _, kwargs = tracer._send.call_args
+    assert kwargs["output"] == '[tool call] lookup_order({"id": "A1"})'
+
+
+def test_anthropic_stream_helper_records_the_final_message():
+    # Regression: the helper wrapper used to call get_final_message() on the stream MANAGER
+    # (which has no such method) after exit had closed it, so every .stream() trace silently
+    # carried no output and no tokens.
+    from agentx.integrations.anthropic import patch_anthropic_client
+
+    final = _FakeAnthropicMessage("streamed reply", usage=_FakeAnthropicUsage(input_tokens=11, output_tokens=4))
+
+    class FakeMessageStream:
+        def __init__(self):
+            self.closed = False
+            self.text_stream = iter(["streamed ", "reply"])
+
+        def get_final_message(self):
+            assert not self.closed, "must be read before the manager closes the stream"
+            return final
+
+    class FakeManager:
+        def __init__(self):
+            self.stream = FakeMessageStream()
+
+        def __enter__(self):
+            return self.stream
+
+        def __exit__(self, *exc):
+            self.stream.closed = True
+            return False
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            raise AssertionError("not used")
+
+        def stream(self, **kwargs):
+            return FakeManager()
+
+    client = types.SimpleNamespace(messages=FakeMessages())
+    tracer = make_tracer()
+    patch_anthropic_client(client, tracer, name="claude-agent")
+
+    with client.messages.stream(model="claude-x", messages=[{"role": "user", "content": "hi"}]) as s:
+        assert "".join(s.text_stream) == "streamed reply"
+
+    tracer._send.assert_called_once()
+    _, kwargs = tracer._send.call_args
+    assert kwargs["output"] == "streamed reply"
+    assert kwargs["input_tokens"] == 11
+    assert kwargs["output_tokens"] == 4
+
+
+def test_abandoned_stream_still_records_what_it_saw_when_collected():
+    import gc
+    from agentx.integrations.openai import patch_openai_client
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return _FakeStream(_stream_chunks())
+
+    client = _fake_openai_client(FakeCompletions())
+    tracer = make_tracer()
+    patch_openai_client(client, tracer, name="gpt-agent")
+
+    result = client.chat.completions.create(model="gpt-4o-mini", messages=[], stream=True)
+    next(result)
+    next(result)
+    tracer._send.assert_not_called()
+    del result
+    gc.collect()
+    tracer._send.assert_called_once()
+    _, kwargs = tracer._send.call_args
+    assert kwargs["output"] == "Hello"
+
+
 def test_anthropic_async_client_propagates_and_records_errors():
     from agentx.integrations.anthropic import patch_anthropic_client
 
@@ -472,26 +620,254 @@ def test_openai_async_client_traces_the_real_response():
     assert kwargs["latency_ms"] >= 5
 
 
-def test_openai_streaming_calls_are_passed_through_untraced():
+# ---------------------------------------------------------------------------
+# 6a. Streaming: the wrapped stream is transparent to the caller and the trace
+#     is assembled from the chunks actually consumed.
+# ---------------------------------------------------------------------------
+
+def _chunk(content=None, tool_calls=None, usage=None, model="gpt-4o-mini", with_choice=True):
+    delta = types.SimpleNamespace(content=content, tool_calls=tool_calls)
+    choices = [types.SimpleNamespace(index=0, delta=delta)] if with_choice else []
+    return types.SimpleNamespace(choices=choices, usage=usage, model=model)
+
+
+class _FakeStream:
+    """Mimics openai.Stream: iterable, context manager, closeable, with an attribute to delegate."""
+
+    def __init__(self, chunks, fail_after=None):
+        self._chunks = list(chunks)
+        self._fail_after = fail_after
+        self.closed = False
+        self.response = "raw-http-response"
+
+    def __iter__(self):
+        for i, chunk in enumerate(self._chunks):
+            if self._fail_after is not None and i == self._fail_after:
+                raise RuntimeError("connection reset mid-stream")
+            yield chunk
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeAsyncStream:
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+
+    def __aiter__(self):
+        return self._gen()
+
+    async def _gen(self):
+        for chunk in self._chunks:
+            await asyncio.sleep(0)
+            yield chunk
+
+
+def _stream_chunks():
+    return [
+        _chunk(content="Hel"),
+        _chunk(content="lo"),
+        _chunk(content=" there"),
+        # Final usage chunk (stream_options={"include_usage": True}): no choices, usage present.
+        _chunk(with_choice=False, usage=_FakeOpenAIUsage(prompt_tokens=9, completion_tokens=4)),
+    ]
+
+
+def test_openai_stream_is_traced_from_consumed_chunks():
     from agentx.integrations.openai import patch_openai_client
 
-    sentinel_stream = object()
+    stream = _FakeStream(_stream_chunks())
 
     class FakeCompletions:
         def create(self, **kwargs):
             assert kwargs.get("stream") is True
-            return sentinel_stream
+            return stream
 
     client = _fake_openai_client(FakeCompletions())
     tracer = make_tracer()
     patch_openai_client(client, tracer, name="gpt-agent")
 
     result = client.chat.completions.create(
-        model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}], stream=True
+        model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}], stream=True, stream_options={"include_usage": True}
     )
+    # Transparent: the caller sees every chunk unchanged, attributes delegate to the real stream,
+    # and nothing is sent until the stream is exhausted.
+    seen = []
+    for chunk in result:
+        seen.append(chunk)
+        tracer._send.assert_not_called()
+    assert len(seen) == 4
+    assert result.response == "raw-http-response"
 
-    assert result is sentinel_stream
-    tracer._send.assert_not_called()
+    tracer._send.assert_called_once()
+    _, kwargs = tracer._send.call_args
+    assert kwargs["output"] == "Hello there"
+    assert kwargs["input_tokens"] == 9
+    assert kwargs["output_tokens"] == 4
+    assert kwargs["model"] == "gpt-4o-mini"
+    assert kwargs["framework"] == "openai"
+    assert kwargs["metadata"]["streaming"] is True
+    assert isinstance(kwargs["metadata"]["timeToFirstTokenMs"], int)
+    assert kwargs["error"] is None
+
+
+def test_openai_stream_assembles_tool_call_deltas():
+    from agentx.integrations.openai import patch_openai_client
+
+    def tc(index, name=None, arguments=None):
+        return types.SimpleNamespace(index=index, function=types.SimpleNamespace(name=name, arguments=arguments))
+
+    stream = _FakeStream([
+        _chunk(tool_calls=[tc(0, name="lookup_order")]),
+        _chunk(tool_calls=[tc(0, arguments='{"order_id":')]),
+        _chunk(tool_calls=[tc(0, arguments=' "A1"}')]),
+    ])
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return stream
+
+    client = _fake_openai_client(FakeCompletions())
+    tracer = make_tracer()
+    patch_openai_client(client, tracer, name="gpt-agent")
+    list(client.chat.completions.create(model="gpt-4o-mini", messages=[], stream=True))
+
+    _, kwargs = tracer._send.call_args
+    assert kwargs["output"] == '[tool call] lookup_order({"order_id": "A1"})'
+    # No usage chunk requested: token counts stay unset, never a fabricated 0.
+    assert kwargs["input_tokens"] is None
+
+
+def test_openai_stream_records_partial_output_when_caller_stops_early():
+    from agentx.integrations.openai import patch_openai_client
+
+    stream = _FakeStream(_stream_chunks())
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return stream
+
+    client = _fake_openai_client(FakeCompletions())
+    tracer = make_tracer()
+    patch_openai_client(client, tracer, name="gpt-agent")
+
+    with client.chat.completions.create(model="gpt-4o-mini", messages=[], stream=True) as result:
+        for chunk in result:
+            if chunk.choices and chunk.choices[0].delta.content == "lo":
+                break
+    # `with` exit closes the real stream and finalizes ONCE with what was seen.
+    assert stream.closed is True
+    tracer._send.assert_called_once()
+    _, kwargs = tracer._send.call_args
+    assert kwargs["output"] == "Hello"
+    # A later explicit close() must not send a second trace.
+    result.close()
+    tracer._send.assert_called_once()
+
+
+def test_openai_stream_records_a_mid_stream_error():
+    from agentx.integrations.openai import patch_openai_client
+
+    stream = _FakeStream(_stream_chunks(), fail_after=2)
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return stream
+
+    client = _fake_openai_client(FakeCompletions())
+    tracer = make_tracer()
+    patch_openai_client(client, tracer, name="gpt-agent")
+
+    with pytest.raises(RuntimeError, match="connection reset"):
+        list(client.chat.completions.create(model="gpt-4o-mini", messages=[], stream=True))
+
+    tracer._send.assert_called_once()
+    _, kwargs = tracer._send.call_args
+    assert kwargs["error"] == "connection reset mid-stream"
+    assert kwargs["output"] == "Hello"
+
+
+def test_openai_async_stream_is_traced():
+    from agentx.integrations.openai import patch_openai_client
+
+    class FakeAsyncCompletions:
+        async def create(self, **kwargs):
+            await asyncio.sleep(0.005)
+            return _FakeAsyncStream(_stream_chunks())
+
+    client = _fake_openai_client(FakeAsyncCompletions())
+    tracer = make_tracer()
+    patch_openai_client(client, tracer, name="gpt-agent")
+
+    async def consume():
+        stream = await client.chat.completions.create(model="gpt-4o-mini", messages=[], stream=True)
+        parts = []
+        async for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                parts.append(chunk.choices[0].delta.content)
+        return parts
+
+    assert asyncio.run(consume()) == ["Hel", "lo", " there"]
+    tracer._send.assert_called_once()
+    _, kwargs = tracer._send.call_args
+    assert kwargs["output"] == "Hello there"
+    assert kwargs["output_tokens"] == 4
+    assert kwargs["latency_ms"] >= 5
+
+
+def test_openai_stream_inside_active_span_becomes_child_llm_call():
+    from agentx.integrations.openai import patch_openai_client
+
+    stream = _FakeStream(_stream_chunks())
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return stream
+
+    client = _fake_openai_client(FakeCompletions())
+    tracer = make_tracer()
+    tracer._dispatch = MagicMock(return_value=None)  # child rows bypass _send and go here
+    patch_openai_client(client, tracer, name="gpt-agent")
+
+    with tracer.trace("agent-loop") as span:
+        list(client.chat.completions.create(model="gpt-4o-mini", messages=[], stream=True))
+        # Folded into the enclosing span: no independent trace was sent mid-span.
+        assert tracer._send.call_count == 0
+        assert span._model == "gpt-4o-mini" or span._captured_model == "gpt-4o-mini"
+    tracer._send.assert_called_once()
+    # The child LLM row carries the streaming markers; the parent's metadata does not.
+    child_rows = [c.args[0] for c in tracer._dispatch.call_args_list if c.args and c.args[0].get("parent_span_id")]
+    assert len(child_rows) == 1
+    assert child_rows[0]["metadata"]["streaming"] is True
+    assert isinstance(child_rows[0]["metadata"]["timeToFirstTokenMs"], int)
+    _, parent_kwargs = tracer._send.call_args
+    assert not (parent_kwargs.get("metadata") or {}).get("streaming")
+
+
+def test_nim_stream_is_traced_with_nim_framework():
+    from agentx.integrations.nvidia_nim import patch_nim_client
+
+    stream = _FakeStream(_stream_chunks())
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return stream
+
+    client = _fake_openai_client(FakeCompletions())
+    tracer = make_tracer()
+    patch_nim_client(client, tracer, name="nim-agent")
+    list(client.chat.completions.create(model="meta/llama-3.1-8b-instruct", messages=[], stream=True))
+
+    _, kwargs = tracer._send.call_args
+    assert kwargs["framework"] == "nvidia-nim"
+    assert kwargs["output"] == "Hello there"
 
 
 def test_openai_sync_client_records_errors():
@@ -589,28 +965,6 @@ def test_nim_async_client_traces_the_real_response():
     assert kwargs["framework"] == "nvidia-nim"
     assert kwargs["output"] == "hello from async nim"
     assert kwargs["input_tokens"] == 12
-
-
-def test_nim_streaming_calls_are_passed_through_untraced():
-    from agentx.integrations.nvidia_nim import patch_nim_client
-
-    sentinel_stream = object()
-
-    class FakeCompletions:
-        def create(self, **kwargs):
-            assert kwargs.get("stream") is True
-            return sentinel_stream
-
-    client = _fake_openai_client(FakeCompletions())
-    tracer = make_tracer()
-    patch_nim_client(client, tracer, name="nim-agent")
-
-    result = client.chat.completions.create(
-        model="meta/llama-3.1-8b-instruct", messages=[{"role": "user", "content": "hi"}], stream=True
-    )
-
-    assert result is sentinel_stream
-    tracer._send.assert_not_called()
 
 
 def test_nim_sync_client_records_errors():

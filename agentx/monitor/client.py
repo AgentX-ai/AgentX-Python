@@ -139,6 +139,11 @@ class MonitorClient:
 
         # Automation rules: route matching traffic into review / a dataset / a webhook.
         self.rules = MonitorRulesClient(self)
+        from agentx.monitor.alert_rules import AlertRulesClient
+
+        # KPI alert rules: threshold pages (Slack/Teams/PagerDuty/email/webhook) on failure
+        # rate, p95 latency, spend, judge failures, and traffic volume over a window.
+        self.alert_rules = AlertRulesClient(self)
         from agentx.monitor.scorers import ScorersClient
         # Scorers-catalog administration as code: template enable/disable, code/external scorer
         # CRUD and dry runs - full parity with the dashboard's Scorers page (P1.3).
