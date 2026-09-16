@@ -19,14 +19,14 @@ from agentx.monitor.sessions import MonitorSessionClient
 from agentx.monitor.signals import MonitorSignalClient
 
 __all__ = [
-    "AlertEvent",
-    "AlertRule",
-    "AlertRulesClient",
     "AgentXImprovementGroupsError",
     "AgentXJudgeScorersError",
     "AgentXMonitorError",
     "AgentXScorerGroupsError",
     "AgentXScorersError",
+    "AlertEvent",
+    "AlertRule",
+    "AlertRulesClient",
     "ImprovementGroupsClient",
     "JudgeScorer",
     "JudgeScorerBuilder",

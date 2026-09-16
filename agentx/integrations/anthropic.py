@@ -232,13 +232,21 @@ def _patch_create(
         input_repr = _safe_serialize(input_messages)
 
         if kwargs.get("stream"):
+            # Parent fixed at call time - see openai.py's patched_create for why.
+            parent = tracer.current_span
+
             def on_stream_finish(collected: Dict[str, Any], error: Optional[str]) -> None:
+                ttft = collected.get("time_to_first_token_ms")
+                call_metadata: Dict[str, Any] = {"streaming": True}
+                if ttft is not None:
+                    call_metadata["timeToFirstTokenMs"] = ttft
                 finish_llm_call(
                     tracer,
                     name=name,
                     framework="anthropic",
                     metadata=metadata,
-                    call_metadata={"streaming": True, "timeToFirstTokenMs": collected.get("time_to_first_token_ms")},
+                    call_metadata=call_metadata,
+                    active_span=parent,
                     session_id=session_id,
                     start_t=start_t,
                     end_t=collected.get("end_t") or time.time(),
@@ -318,8 +326,9 @@ def _patch_stream(
         # only shows up in whether `with`/`async with` and
         # `get_final_message()` are used, handled inside `_TracedStream`.
         start_t = time.time()
+        parent = tracer.current_span
         ctx = original_stream(*args, **kwargs)
-        input_repr = _safe_serialize(_prepend_system(kwargs.get("messages"), kwargs.get("system")))
+        input_repr = _safe_serialize(_prepend_system(kwargs.get("messages") or (args[0] if args else None), kwargs.get("system")))
         model = kwargs.get("model")
         tool_definitions = capture_tool_definitions(kwargs.get("tools"))
 
@@ -365,6 +374,29 @@ def _patch_stream(
             """
 
             _inner: Any = None
+            _sent: bool = False
+
+            # What streamed so far, WITHOUT draining the rest of the response: the SDK's
+            # get_final_message() calls until_done(), which would turn an early `break` into a
+            # blocking read of every remaining token. The snapshot is the final message once the
+            # stream was consumed, and honestly partial when the caller stopped early.
+            def _snapshot(self_inner):
+                inner = self_inner._inner
+                if inner is None:
+                    return None
+                try:
+                    return getattr(inner, "current_message_snapshot", None)
+                except Exception:
+                    return None
+
+            def _send_once(self_inner, end_t: float, error: Optional[str], snapshot: Any) -> None:
+                if self_inner._sent:
+                    return
+                self_inner._sent = True
+                try:
+                    build_and_send(end_t, error, snapshot)
+                except Exception:
+                    pass  # tracing never raises into the caller
 
             def __enter__(self_inner):
                 self_inner._inner = ctx.__enter__()
@@ -373,15 +405,12 @@ def _patch_stream(
             def __exit__(self_inner, exc_type, exc_val, tb):
                 end_t = time.time()
                 error = str(exc_val) if exc_val else None
-                final_message = None
-                if error is None and self_inner._inner is not None:
-                    try:
-                        final_message = self_inner._inner.get_final_message()
-                    except Exception:
-                        pass
-                result = ctx.__exit__(exc_type, exc_val, tb)
-                build_and_send(end_t, error, final_message)
-                return result
+                # Snapshot BEFORE the manager closes the stream (the earlier bug read it after).
+                snapshot = self_inner._snapshot()
+                try:
+                    return ctx.__exit__(exc_type, exc_val, tb)
+                finally:
+                    self_inner._send_once(end_t, error, snapshot)
 
             async def __aenter__(self_inner):
                 self_inner._inner = await ctx.__aenter__()
@@ -390,16 +419,19 @@ def _patch_stream(
             async def __aexit__(self_inner, exc_type, exc_val, tb):
                 end_t = time.time()
                 error = str(exc_val) if exc_val else None
-                final_message = None
-                if error is None and self_inner._inner is not None:
-                    try:
-                        raw = self_inner._inner.get_final_message()
-                        final_message = await raw if inspect.isawaitable(raw) else raw
-                    except Exception:
-                        pass
-                result = await ctx.__aexit__(exc_type, exc_val, tb)
-                build_and_send(end_t, error, final_message)
-                return result
+                snapshot = self_inner._snapshot()
+                try:
+                    return await ctx.__aexit__(exc_type, exc_val, tb)
+                finally:
+                    self_inner._send_once(end_t, error, snapshot)
+
+            def __del__(self_inner):
+                # A helper stream that was entered but never exited still records what it saw.
+                try:
+                    if self_inner._inner is not None:
+                        self_inner._send_once(time.time(), None, self_inner._snapshot())
+                except Exception:
+                    pass
 
             def __iter__(self_inner):
                 return iter(ctx)

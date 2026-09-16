@@ -30,7 +30,14 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, Optional, Tuple
 
+import logging
+
 from agentx.tracing.tracer import Tracer, _safe_serialize
+
+logger = logging.getLogger(__name__)
+# Warn once per process, not per call: a streamed OpenAI call carries no usage unless the caller
+# asked for it, and a silent zero would under-report every streaming app's spend.
+_warned_stream_usage = False
 from agentx.integrations._traced_call import (
     StreamAccumulator,
     capture_tool_definitions,
@@ -203,14 +210,30 @@ def _patch_chat_completions_create(
         tool_definitions = capture_tool_definitions(kwargs.get("tools"))
 
         if kwargs.get("stream"):
+            # The parent is fixed at call time: the stream finalizes later, possibly inside an
+            # unrelated span (or none), and must not attach to whatever is active then.
+            parent = tracer.current_span
+
             def on_stream_finish(collected: Dict[str, Any], error: Optional[str]) -> None:
+                global _warned_stream_usage
                 ttft = collected.get("time_to_first_token_ms")
+                call_metadata: Dict[str, Any] = {"streaming": True}
+                if ttft is not None:
+                    call_metadata["timeToFirstTokenMs"] = ttft
+                if error is None and collected.get("input_tokens") is None and not _warned_stream_usage:
+                    _warned_stream_usage = True
+                    logger.warning(
+                        "Streamed %s call carried no token usage - pass stream_options={\"include_usage\": True} "
+                        "so traces (and cost) reflect streamed traffic.",
+                        framework,
+                    )
                 finish_llm_call(
                     tracer,
                     name=name,
                     framework=framework,
                     metadata=metadata,
-                    call_metadata={"streaming": True, "timeToFirstTokenMs": ttft},
+                    call_metadata=call_metadata,
+                    active_span=parent,
                     session_id=session_id,
                     start_t=start_t,
                     end_t=collected.get("end_t") or time.time(),

@@ -89,6 +89,18 @@ def test_update_maps_snake_case_and_refuses_unknown_keys():
         AlertRulesClient(fake).update("a1", sample_rate=0.5)  # type: ignore[arg-type]
 
 
+def test_update_applies_the_same_local_checks_as_create():
+    fake = FakeMonitorClient([])
+    client = AlertRulesClient(fake)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="metric"):
+        client.update("a1", metric="vibes")
+    with pytest.raises(ValueError, match="operator"):
+        client.update("a1", operator="ge")
+    with pytest.raises(ValueError, match="channel kind"):
+        client.update("a1", channels=[{"kind": "sms", "target": "1"}])
+    assert fake.calls == []
+
+
 def test_events_test_preview_and_sweep_paths():
     fake = FakeMonitorClient(
         [

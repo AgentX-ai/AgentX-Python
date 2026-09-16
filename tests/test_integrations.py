@@ -278,9 +278,16 @@ def test_anthropic_stream_helper_records_the_final_message():
             self.closed = False
             self.text_stream = iter(["streamed ", "reply"])
 
-        def get_final_message(self):
+        @property
+        def current_message_snapshot(self):
             assert not self.closed, "must be read before the manager closes the stream"
             return final
+
+        def get_final_message(self):
+            # The SDK's get_final_message() drains the rest of the response (until_done()):
+            # an early `break` would block until the model finished. The wrapper must never
+            # call it.
+            raise AssertionError("get_final_message() drains the stream - use the snapshot")
 
     class FakeManager:
         def __init__(self):
@@ -312,6 +319,122 @@ def test_anthropic_stream_helper_records_the_final_message():
     assert kwargs["output"] == "streamed reply"
     assert kwargs["input_tokens"] == 11
     assert kwargs["output_tokens"] == 4
+
+
+def test_stream_root_trace_latency_ends_at_the_last_chunk_not_at_finalization():
+    # The proxy hands finish_llm_call the last-chunk time; the root span must honor it instead
+    # of measuring to whatever later moment the caller dropped the stream.
+    from agentx.integrations.openai import patch_openai_client
+
+    stream = _FakeStream(_stream_chunks())
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return stream
+
+    client = _fake_openai_client(FakeCompletions())
+    tracer = make_tracer()
+    patch_openai_client(client, tracer, name="gpt-agent")
+    result = client.chat.completions.create(model="gpt-4o-mini", messages=[], stream=True)
+    for _ in result:
+        pass
+    time.sleep(0.15)  # the caller holds the exhausted stream a while before closing it
+    result.close()
+    _, kwargs = tracer._send.call_args
+    assert kwargs["latency_ms"] < 100
+
+
+def test_stream_tracing_failure_never_escapes_into_the_callers_loop():
+    from agentx.integrations.openai import patch_openai_client
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return _FakeStream(_stream_chunks())
+
+    client = _fake_openai_client(FakeCompletions())
+    tracer = make_tracer()
+    tracer._send = MagicMock(side_effect=RuntimeError("ingest exploded"))
+    patch_openai_client(client, tracer, name="gpt-agent")
+    chunks = list(client.chat.completions.create(model="gpt-4o-mini", messages=[], stream=True))
+    assert len(chunks) == 4  # the loop ended normally despite the tracer raising
+
+
+def test_stream_parent_is_the_span_active_at_call_time_not_at_finalization():
+    from agentx.integrations.openai import patch_openai_client
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return _FakeStream(_stream_chunks())
+
+    client = _fake_openai_client(FakeCompletions())
+    tracer = make_tracer()
+    tracer._dispatch = MagicMock(return_value=None)
+    patch_openai_client(client, tracer, name="gpt-agent")
+
+    # Created with NO active span, consumed, then finalized while an unrelated span is active.
+    stream = client.chat.completions.create(model="gpt-4o-mini", messages=[], stream=True)
+    for _ in stream:
+        pass
+    with tracer.trace("unrelated-task") as unrelated:
+        stream.close()
+        assert unrelated._child_span_count == 0, "the stream must not graft onto the unrelated span"
+    # It became its own root trace instead (two _send calls: the stream's root + unrelated-task).
+    assert tracer._send.call_count == 2
+    names = [c.kwargs["name"] for c in tracer._send.call_args_list]
+    assert "gpt-agent" in names and "unrelated-task" in names
+
+
+def test_stream_proxy_private_attributes_never_delegate():
+    from agentx.integrations._traced_call import TracedStream
+
+    proxy = TracedStream.__new__(TracedStream)  # half-constructed: no _stream yet
+    with pytest.raises(AttributeError):
+        _ = proxy._done
+    del proxy  # __del__ on the half-built object must not recurse or raise
+
+
+def test_stream_keyboard_interrupt_records_partial_output_without_an_error():
+    from agentx.integrations.openai import patch_openai_client
+
+    class InterruptingStream(_FakeStream):
+        def __iter__(self):
+            yield _chunk(content="Hel")
+            raise KeyboardInterrupt()
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return InterruptingStream([])
+
+    client = _fake_openai_client(FakeCompletions())
+    tracer = make_tracer()
+    patch_openai_client(client, tracer, name="gpt-agent")
+    with pytest.raises(KeyboardInterrupt):
+        list(client.chat.completions.create(model="gpt-4o-mini", messages=[], stream=True))
+    _, kwargs = tracer._send.call_args
+    assert kwargs["output"] == "Hel"
+    assert kwargs["error"] is None
+
+
+def test_stream_without_a_first_chunk_omits_time_to_first_token():
+    from agentx.integrations.openai import patch_openai_client
+
+    class DeadStream(_FakeStream):
+        def __iter__(self):
+            raise RuntimeError("connection refused before the first chunk")
+            yield  # noqa: unreachable - makes this a generator like the real Stream
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return DeadStream([])
+
+    client = _fake_openai_client(FakeCompletions())
+    tracer = make_tracer()
+    patch_openai_client(client, tracer, name="gpt-agent")
+    with pytest.raises(RuntimeError):
+        list(client.chat.completions.create(model="gpt-4o-mini", messages=[], stream=True))
+    _, kwargs = tracer._send.call_args
+    assert kwargs["metadata"]["streaming"] is True
+    assert "timeToFirstTokenMs" not in kwargs["metadata"]
 
 
 def test_abandoned_stream_still_records_what_it_saw_when_collected():
