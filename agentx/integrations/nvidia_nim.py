@@ -27,8 +27,11 @@ Works with both ``openai.OpenAI`` and ``openai.AsyncOpenAI`` clients. Token
 usage comes straight off the response's OpenAI-shaped ``usage`` block; NIM
 reports no prompt-cache fields, so cache token counts stay unset.
 
-Streaming calls (``stream=True``) are passed through untouched and are not
-currently traced - same posture as ``patch_openai_client``, see its docstring.
+Streaming calls (``stream=True``) are traced too, exactly as
+``patch_openai_client`` traces them: the stream is wrapped in a transparent
+proxy that assembles the reply from the consumed chunks (token usage when the
+endpoint sends it on the final chunk, e.g. with
+``stream_options={"include_usage": True}``).
 
 Requires: ``pip install "agentx-python[nvidia-nim]"`` (installs the ``openai``
 client package; there is no separate NIM SDK dependency).
@@ -56,8 +59,9 @@ def patch_nim_client(
     call with ``framework="nvidia-nim"``.
 
     The original method is still called and its return value passed through
-    unchanged. Sync and async clients both work; ``stream=True`` calls pass
-    through untraced. Patching is idempotent - and because it shares the guard
+    unchanged. Sync and async clients both work; ``stream=True`` calls are
+    traced through the same stream proxy as ``patch_openai_client``. Patching
+    is idempotent - and because it shares the guard
     with ``patch_openai_client``, whichever of the two patched a given client
     first wins (patch each client with the integration that matches where its
     ``base_url`` actually points).

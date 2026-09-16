@@ -165,6 +165,9 @@ class _TraceSpan:
         self.tool_calls: list = []
 
         self._start: Optional[float] = None
+        # Set by callers that know when the work actually ended (a streamed LLM call's last
+        # chunk) so __exit__ does not measure to "now" - see finish_llm_call's root path.
+        self._end_override: Optional[float] = None
         self._error: Optional[str] = None
 
         self._captured_model: Optional[str] = None
@@ -212,7 +215,8 @@ class _TraceSpan:
 
     def __exit__(self, exc_type, exc_val, tb):
         self._tracer._pop_active_span(self)
-        latency_ms = int((time.time() - self._start) * 1000) if self._start else None
+        ended_at = self._end_override if self._end_override is not None else time.time()
+        latency_ms = int((ended_at - self._start) * 1000) if self._start else None
         if exc_val is not None and self._error is None:
             self._error = str(exc_val)
 

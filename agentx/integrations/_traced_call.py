@@ -14,8 +14,15 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
+import threading
 import time
 from typing import Any, Callable, Dict, Optional
+
+logger = logging.getLogger(__name__)
+
+# Sentinel for finish_llm_call's `active_span`: "not passed" is distinct from "passed None".
+_UNSET: Any = object()
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
 
@@ -109,6 +116,7 @@ def finish_llm_call(
     cache_write_tokens: Optional[int] = None,
     tool_definitions: Optional[list] = None,
     call_metadata: Optional[Dict[str, Any]] = None,
+    active_span: Any = _UNSET,
 ) -> None:
     """
     Close out one raw-client LLM call - shared by the ``on_finish``/exit
@@ -129,7 +137,11 @@ def finish_llm_call(
     if tool_definitions:
         metadata = {**(metadata or {}), "tools": tool_definitions}
 
-    active_span = tracer.current_span
+    # The parent is the span that was active when the CALL was made. Streaming patches pass it
+    # explicitly: a stream finalizes later (exhaustion, close, or garbage collection), by which
+    # time a different span may be active, and the call must not be grafted onto it.
+    if active_span is _UNSET:
+        active_span = tracer.current_span
     if active_span is not None:
         # The definitions describe the whole call's toolbox - attach them to the enclosing
         # span's metadata (first capture wins) so the ROOT trace carries them for the
@@ -168,6 +180,9 @@ def finish_llm_call(
     )
     span.__enter__()
     span._start = start_t
+    # The call ended at end_t (a stream's last chunk), not at whatever later moment this
+    # runs - __exit__ honors the override instead of measuring to time.time().
+    span._end_override = end_t
     span.input = input_repr
     span.output = output
     if error:
@@ -217,7 +232,13 @@ class TracedStream:
 
     Attribute access falls through to the wrapped stream (``.response``,
     provider helpers), and ``__iter__``/``__aiter__`` return ``self`` so early
-    ``break`` leaves no half-driven generator behind.
+    ``break`` leaves no half-driven generator behind. It is a proxy, not a
+    subclass: ``isinstance(stream, openai.Stream)`` is False and ``repr()``
+    shows the proxy - branch on ``stream=True`` in your own code, not on type.
+
+    Tracing never breaks the caller: a failure while building or sending the
+    trace is logged and swallowed, and the stream's own iteration/close
+    semantics are untouched.
     """
 
     def __init__(
@@ -230,6 +251,8 @@ class TracedStream:
         self._accumulator = accumulator
         self._on_finish = on_finish
         self._done = False
+        # A watchdog close() racing the reader's StopIteration must not finalize twice.
+        self._done_lock = threading.Lock()
         self._first_chunk_t: Optional[float] = None
         self._last_chunk_t: Optional[float] = None
         self._sync_iter: Any = None
@@ -250,9 +273,10 @@ class TracedStream:
             pass
 
     def _finish(self, error: Optional[str]) -> None:
-        if self._done:
-            return
-        self._done = True
+        with self._done_lock:
+            if self._done:
+                return
+            self._done = True
         try:
             result = self._accumulator.result()
         except Exception:
@@ -264,7 +288,12 @@ class TracedStream:
         # The response "ended" at its last chunk, not at whatever later moment the caller closed
         # or dropped the stream - that is the latency the user experienced.
         result["end_t"] = self._last_chunk_t if self._last_chunk_t is not None else time.time()
-        self._on_finish(result, error)
+        try:
+            self._on_finish(result, error)
+        except Exception:
+            # Building or sending the trace failed. The caller's stream ended normally and must
+            # see it end normally - tracing is never allowed to raise into inference code.
+            logger.debug("Streamed call could not be traced", exc_info=True)
 
     @property
     def first_chunk_at(self) -> Optional[float]:
@@ -283,8 +312,13 @@ class TracedStream:
         except StopIteration:
             self._finish(None)
             raise
-        except BaseException as exc:
+        except Exception as exc:
             self._finish(str(exc))
+            raise
+        except BaseException:
+            # KeyboardInterrupt / GeneratorExit: a cancellation, not the provider failing -
+            # record what streamed so far without inventing an error message.
+            self._finish(None)
             raise
         self._observe(chunk)
         return chunk
@@ -302,8 +336,11 @@ class TracedStream:
         except StopAsyncIteration:
             self._finish(None)
             raise
-        except BaseException as exc:
+        except Exception as exc:
             self._finish(str(exc))
+            raise
+        except BaseException:
+            self._finish(None)
             raise
         self._observe(chunk)
         return chunk
@@ -338,7 +375,17 @@ class TracedStream:
         close = getattr(self._stream, "close", None)
         try:
             if close is not None:
-                close()
+                result = close()
+                if inspect.isawaitable(result):
+                    # openai's AsyncStream spells its close `async def close()`. A sync close()
+                    # on it (an easy slip inside async code) would drop the coroutine and leak
+                    # the connection; run it on the loop when there is one, else at least don't
+                    # leave an un-awaited coroutine behind.
+                    try:
+                        asyncio.get_running_loop().create_task(result)
+                    except RuntimeError:
+                        result.close()  # type: ignore[union-attr]
+                        logger.warning("close() called on an async stream outside an event loop - use aclose()")
         finally:
             self._finish(None)
 
@@ -355,6 +402,10 @@ class TracedStream:
             self._finish(None)
 
     def __getattr__(self, item: str) -> Any:
+        # Only public attributes delegate. Private names must resolve on the proxy itself, or a
+        # half-constructed instance (no _stream yet) would recurse forever looking for it.
+        if item.startswith("_"):
+            raise AttributeError(item)
         return getattr(self._stream, item)
 
     def __del__(self) -> None:

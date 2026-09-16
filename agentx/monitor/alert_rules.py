@@ -17,6 +17,22 @@ _ALIASES = {
 }
 
 
+def _validate(
+    metric: Optional[str] = None, operator: Optional[str] = None, channels: Optional[List[Dict[str, str]]] = None
+) -> None:
+    """Local checks for the fields the engine would otherwise 400 on - ``None`` means "not given"
+    (an update that leaves the field alone)."""
+    if metric is not None and metric not in ALERT_METRICS:
+        raise ValueError(f"metric must be one of {ALERT_METRICS}, got {metric!r}")
+    if operator is not None and operator not in ("gt", "lt"):
+        raise ValueError(f"operator must be 'gt' or 'lt', got {operator!r}")
+    if channels is not None:
+        for channel in channels:
+            kind = channel.get("kind") if isinstance(channel, dict) else None
+            if kind not in ALERT_CHANNEL_KINDS:
+                raise ValueError(f"channel kind must be one of {ALERT_CHANNEL_KINDS}, got {kind!r}")
+
+
 class AlertRule(dict):
     """Wire object for one KPI alert rule (dict subclass so unknown fields round-trip)."""
 
@@ -48,12 +64,12 @@ class AlertEvent(dict):
 
     @property
     def kind(self) -> str:
-        return str(self.get("kind"))
+        return str(self.get("kind") or "")
 
     @property
     def delivered(self) -> bool:
         deliveries = self.get("deliveries") or []
-        return bool(deliveries) and all(bool(d.get("ok")) for d in deliveries)
+        return bool(deliveries) and all(isinstance(d, dict) and bool(d.get("ok")) for d in deliveries)
 
 
 def slack(url: str) -> Dict[str, str]:
@@ -138,13 +154,7 @@ class AlertRulesClient:
         """Create a rule. ``operator`` is ``"gt"`` (above) or ``"lt"`` (below); rates are
         fractions (``0.10`` = 10%), latency is milliseconds, cost is USD. ``channels`` takes the
         dicts the module-level helpers build (``slack(url)``, ``pagerduty(key)``, ...)."""
-        if metric not in ALERT_METRICS:
-            raise ValueError(f"metric must be one of {ALERT_METRICS}, got {metric!r}")
-        if operator not in ("gt", "lt"):
-            raise ValueError(f"operator must be 'gt' or 'lt', got {operator!r}")
-        for channel in channels:
-            if channel.get("kind") not in ALERT_CHANNEL_KINDS:
-                raise ValueError(f"channel kind must be one of {ALERT_CHANNEL_KINDS}, got {channel.get('kind')!r}")
+        _validate(metric=metric, operator=operator, channels=channels)
         payload: Dict[str, Any] = {
             "name": name,
             "metric": metric,
@@ -165,7 +175,10 @@ class AlertRulesClient:
 
     def update(self, rule_id: str, **fields: Any) -> AlertRule:
         """Sparse update; snake_case kwargs are mapped to the wire. Changing the metric,
-        operator, threshold, window, or agent resets the rule's firing state."""
+        operator, threshold, window, or agent resets the rule's firing state, and a rule that
+        was firing sends its channels a final ``resolved`` notification first. The same local
+        checks as ``create`` apply to whichever of ``metric``, ``operator``, ``channels`` are
+        given."""
         payload: Dict[str, Any] = {}
         for key, value in fields.items():
             wire_key = _ALIASES.get(key, key)
@@ -175,12 +188,13 @@ class AlertRulesClient:
                     "silently ignore this (see AlertRulesClient.create for the field names)."
                 )
             payload[wire_key] = value
+        _validate(metric=payload.get("metric"), operator=payload.get("operator"), channels=payload.get("channels"))
         data = self._request("PUT", f"/agent-monitoring/alert-rules/{rule_id}", json=payload)
         return AlertRule(data.get("rule", data))
 
     def delete(self, rule_id: str) -> None:
-        """Deletes the rule and its history. A PagerDuty incident the rule opened is not
-        resolved by this - close it in PagerDuty."""
+        """Deletes the rule and its history. A rule that is firing sends its channels a final
+        ``resolved`` notification (closing the PagerDuty incident it opened) before it goes."""
         self._request("DELETE", f"/agent-monitoring/alert-rules/{rule_id}", retry=False)
 
     def events(self, rule_id: str, limit: int = 50) -> List[AlertEvent]:

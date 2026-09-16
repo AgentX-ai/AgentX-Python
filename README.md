@@ -193,6 +193,12 @@ extra:
 | LlamaIndex            | `pip install "agentx-python[llamaindex]"`    | `AgentXLlamaIndexHandler` |
 | AutoGen               | `pip install "agentx-python[autogen]"`       | `AgentXAutoGenObserver`   |
 
+Raw-client patches (`patch_openai_client`, `patch_nim_client`, `patch_anthropic_client`) trace
+streaming calls too: the returned stream is a transparent proxy that assembles the reply from the
+chunks you consume, with latency measured to the last chunk and the time to first token in the
+trace metadata. OpenAI-compatible endpoints only send token usage on streams when you pass
+`stream_options={"include_usage": True}`.
+
 > **Warning: pick ONE instrumentation layer per LLM call.** Do not combine
 > `AgentXCallbackHandler` (or any framework integration) with a patched provider client
 > (`patch_openai_client`, `patch_anthropic_client`, `patch_genai_client`) on the same code
