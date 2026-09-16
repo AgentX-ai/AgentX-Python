@@ -13,6 +13,12 @@ Usage::
 
 Works with both ``anthropic.Anthropic`` and ``anthropic.AsyncAnthropic`` clients.
 
+Both streaming shapes are traced: the ``client.messages.stream(...)`` helper
+(a context manager with ``get_final_message()``) and the raw
+``messages.create(..., stream=True)`` event stream, which is wrapped in a
+transparent proxy that assembles the reply, tool-use blocks, and token usage
+from the events as the caller consumes them.
+
 Requires: ``pip install "agentx-python[anthropic]"``
 """
 from __future__ import annotations
@@ -22,7 +28,13 @@ import time
 from typing import Any, Dict, Optional, Tuple
 
 from agentx.tracing.tracer import Tracer, _safe_serialize
-from agentx.integrations._traced_call import capture_tool_definitions, call_and_trace, finish_llm_call
+from agentx.integrations._traced_call import (
+    StreamAccumulator,
+    capture_tool_definitions,
+    call_and_trace,
+    finish_llm_call,
+    trace_stream,
+)
 
 
 def _extract_output_text(response: Any) -> Optional[str]:
@@ -92,6 +104,85 @@ def _extract_usage_tokens(
     return input_tokens, output_tokens, cache_read, cache_creation
 
 
+class _MessageEventStreamAccumulator(StreamAccumulator):
+    """
+    Rebuild a ``Message`` from the raw ``create(stream=True)`` event sequence:
+    ``message_start`` carries the input-side usage, ``content_block_start`` opens
+    a text or tool_use block, ``content_block_delta`` appends ``text_delta`` /
+    ``input_json_delta`` fragments to it, ``message_delta`` carries the
+    output-token count. Token accounting mirrors ``_extract_usage_tokens``.
+    """
+
+    def __init__(self, start_t: float) -> None:
+        self._start_t = start_t
+        self._blocks: Dict[int, Dict[str, Any]] = {}
+        self._input_tokens: Optional[int] = None
+        self._output_tokens: Optional[int] = None
+        self._cache_read: Optional[int] = None
+        self._cache_write: Optional[int] = None
+        self._model: Optional[str] = None
+
+    def feed(self, event: Any) -> None:
+        event_type = getattr(event, "type", None)
+        if event_type == "message_start":
+            message = getattr(event, "message", None)
+            self._model = getattr(message, "model", None) or self._model
+            input_tokens, output_tokens, cache_read, cache_write = _extract_usage_tokens(getattr(message, "usage", None))
+            self._input_tokens = input_tokens
+            self._cache_read = cache_read
+            self._cache_write = cache_write
+            if output_tokens:
+                self._output_tokens = output_tokens
+        elif event_type == "content_block_start":
+            index = getattr(event, "index", 0) or 0
+            block = getattr(event, "content_block", None)
+            self._blocks[index] = {
+                "type": getattr(block, "type", None),
+                "name": getattr(block, "name", None),
+                "text": [getattr(block, "text", None) or ""] if getattr(block, "type", None) == "text" else [],
+                "json": [],
+            }
+        elif event_type == "content_block_delta":
+            index = getattr(event, "index", 0) or 0
+            delta = getattr(event, "delta", None)
+            entry = self._blocks.setdefault(index, {"type": None, "name": None, "text": [], "json": []})
+            delta_type = getattr(delta, "type", None)
+            if delta_type == "text_delta":
+                entry["type"] = entry["type"] or "text"
+                entry["text"].append(getattr(delta, "text", None) or "")
+            elif delta_type == "input_json_delta":
+                entry["type"] = entry["type"] or "tool_use"
+                entry["json"].append(getattr(delta, "partial_json", None) or "")
+        elif event_type == "message_delta":
+            usage = getattr(event, "usage", None)
+            output_tokens = getattr(usage, "output_tokens", None) if usage is not None else None
+            if output_tokens is not None:
+                self._output_tokens = output_tokens
+
+    def result(self) -> Dict[str, Any]:
+        texts = []
+        tool_calls = []
+        for _, block in sorted(self._blocks.items()):
+            if block["type"] == "text":
+                text = "".join(block["text"])
+                if text:
+                    texts.append(text)
+            elif block["type"] == "tool_use":
+                tool_calls.append(f"{block['name'] or 'unknown'}({''.join(block['json'])})")
+        output: Optional[str] = "\n".join(texts) if texts else None
+        if output is None and tool_calls:
+            output = "[tool call] " + ", ".join(tool_calls)
+        return {
+            "_start_t": self._start_t,
+            "output": output,
+            "model": self._model,
+            "input_tokens": self._input_tokens,
+            "output_tokens": self._output_tokens,
+            "cache_read_tokens": self._cache_read,
+            "cache_write_tokens": self._cache_write,
+        }
+
+
 def patch_anthropic_client(
     client: Any,
     tracer: Tracer,
@@ -139,6 +230,35 @@ def _patch_create(
         tool_definitions = capture_tool_definitions(kwargs.get("tools"))
 
         input_repr = _safe_serialize(input_messages)
+
+        if kwargs.get("stream"):
+            def on_stream_finish(collected: Dict[str, Any], error: Optional[str]) -> None:
+                finish_llm_call(
+                    tracer,
+                    name=name,
+                    framework="anthropic",
+                    metadata=metadata,
+                    call_metadata={"streaming": True, "timeToFirstTokenMs": collected.get("time_to_first_token_ms")},
+                    session_id=session_id,
+                    start_t=start_t,
+                    end_t=collected.get("end_t") or time.time(),
+                    input_repr=input_repr,
+                    output=collected.get("output"),
+                    model=collected.get("model") or model,
+                    input_tokens=collected.get("input_tokens"),
+                    output_tokens=collected.get("output_tokens"),
+                    cache_read_tokens=collected.get("cache_read_tokens"),
+                    cache_write_tokens=collected.get("cache_write_tokens"),
+                    error=error,
+                    tool_definitions=tool_definitions,
+                )
+
+            try:
+                result = original(*args, **kwargs)
+            except Exception as exc:
+                on_stream_finish({}, str(exc))
+                raise
+            return trace_stream(result, _MessageEventStreamAccumulator(start_t), on_stream_finish)
 
         def on_finish(response: Optional[Any], error: Optional[str]) -> None:
             end_t = time.time()
@@ -237,36 +357,47 @@ def _patch_stream(
             )
 
         class _TracedStream:
-            """Thin wrapper that records timing when the stream context exits."""
+            """
+            Thin wrapper that records the final message when the stream context exits.
+            ``ctx`` is the SDK's stream *manager*; the ``MessageStream`` it yields on enter is
+            what carries ``get_final_message()``, and it must be read BEFORE the manager's exit
+            closes it - reading it off the manager after close silently yielded no output.
+            """
+
+            _inner: Any = None
 
             def __enter__(self_inner):
-                return ctx.__enter__()
+                self_inner._inner = ctx.__enter__()
+                return self_inner._inner
 
             def __exit__(self_inner, exc_type, exc_val, tb):
-                result = ctx.__exit__(exc_type, exc_val, tb)
                 end_t = time.time()
                 error = str(exc_val) if exc_val else None
                 final_message = None
-                try:
-                    final_message = ctx.get_final_message()
-                except Exception:
-                    pass
+                if error is None and self_inner._inner is not None:
+                    try:
+                        final_message = self_inner._inner.get_final_message()
+                    except Exception:
+                        pass
+                result = ctx.__exit__(exc_type, exc_val, tb)
                 build_and_send(end_t, error, final_message)
                 return result
 
             async def __aenter__(self_inner):
-                return await ctx.__aenter__()
+                self_inner._inner = await ctx.__aenter__()
+                return self_inner._inner
 
             async def __aexit__(self_inner, exc_type, exc_val, tb):
-                result = await ctx.__aexit__(exc_type, exc_val, tb)
                 end_t = time.time()
                 error = str(exc_val) if exc_val else None
                 final_message = None
-                try:
-                    raw = ctx.get_final_message()
-                    final_message = await raw if inspect.isawaitable(raw) else raw
-                except Exception:
-                    pass
+                if error is None and self_inner._inner is not None:
+                    try:
+                        raw = self_inner._inner.get_final_message()
+                        final_message = await raw if inspect.isawaitable(raw) else raw
+                    except Exception:
+                        pass
+                result = await ctx.__aexit__(exc_type, exc_val, tb)
                 build_and_send(end_t, error, final_message)
                 return result
 
