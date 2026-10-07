@@ -75,6 +75,22 @@ def _resolve_scorer_id(scorer_id: Optional[str], evaluation_settings_id: Optiona
     return scorer_id or evaluation_settings_id
 
 
+# "Argument not given" for update_tool_schema_meta, where None is itself a meaningful value
+# (clear the price).
+_UNSET: object = object()
+
+
+def _validated_tool_price(value: float) -> float:
+    """Local mirror of the engine's check: USD per call, finite and non-negative."""
+    try:
+        price = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"price_per_call_usd must be a number of USD per call, got {value!r}") from None
+    if price != price or price in (float("inf"), float("-inf")) or price < 0:
+        raise ValueError(f"price_per_call_usd must be a finite, non-negative number, got {value!r}")
+    return price
+
+
 class EvaluationsClient:
     def __init__(
         self,
@@ -723,12 +739,38 @@ class EvaluationsClient:
         data = self._request("GET", "/evaluate/tool-schemas", base=self._api_root)
         return data.get("toolSchemas", []) if isinstance(data, dict) else data
 
-    def create_tool_schema(self, *, name: str, definition: str, description: Optional[str] = None) -> dict:
+    def create_tool_schema(
+        self, *, name: str, definition: str, description: Optional[str] = None,
+        price_per_call_usd: Optional[float] = None,
+    ) -> dict:
         payload: dict = {"name": name, "definition": definition}
         if description is not None:
             payload["description"] = description
+        if price_per_call_usd is not None:
+            payload["pricePerCallUsd"] = _validated_tool_price(price_per_call_usd)
         # Server-side write - no transport retry (see init_run's comment).
         return self._request("POST", "/evaluate/tool-schemas", base=self._api_root, json=payload, retry=False)
+
+    def update_tool_schema_meta(
+        self, tool_schema_id: str, *, description: Optional[str] = None,
+        price_per_call_usd: Optional[float] = _UNSET, test_endpoint_url: Optional[str] = _UNSET,  # type: ignore[assignment]
+    ) -> dict:
+        """Metadata-only edit (PATCH): description, per-call price, test endpoint. Never touches
+        the version log. ``price_per_call_usd=None`` clears the price (the tool becomes free)."""
+        payload: dict = {}
+        if description is not None:
+            payload["description"] = description
+        if price_per_call_usd is not _UNSET:
+            payload["pricePerCallUsd"] = None if price_per_call_usd is None else _validated_tool_price(price_per_call_usd)
+        if test_endpoint_url is not _UNSET:
+            payload["testEndpointUrl"] = test_endpoint_url
+        return self._request(
+            "PATCH", f"/evaluate/tool-schemas/{tool_schema_id}", base=self._api_root, json=payload, retry=False,
+        )
+
+    def delete_tool_schema(self, tool_schema_id: str) -> None:
+        """Deletes the tool schema and its version history."""
+        self._request("DELETE", f"/evaluate/tool-schemas/{tool_schema_id}", base=self._api_root, retry=False)
 
     def get_tool_schema_examples(self, tool_schema_id: str, window: Optional[str] = None) -> dict:
         params = {"window": window} if window else None

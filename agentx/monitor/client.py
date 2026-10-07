@@ -360,6 +360,16 @@ class MonitorClient:
                 params[key] = value
         return self._request("GET", "/metrics", params=params)
 
+    def cost_trend(self, window: str = "7d") -> dict:
+        """Overview's "Total cost" chart over a window ("24h", "7d", "30d"): priced spend per
+        bucket and in total, stacked by model, with two reserved segments - ``"eval runs"``
+        (offline-evaluation spend) and ``"tool calls"`` (registered tools' per-call prices, split
+        per tool in ``totalsByTool``). Unpriced models and tools contribute $0."""
+        return self._request(
+            "GET", "/agent-monitoring/cost-trend",
+            base=self._api_root(), params={"window": window},
+        )
+
     def topics(self, window: str = "7d") -> dict:
         """The Topics view's data over a window ("24h", "7d", "30d"): LLM-classified themes of
         sampled production traffic with per-topic counts and sentiment. Empty until Topics is
