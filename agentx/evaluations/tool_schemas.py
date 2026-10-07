@@ -19,15 +19,39 @@ class ToolSchemaClient:
     def list(self) -> List[dict]:
         return self._client.list_tool_schemas()
 
-    def create(self, *, name: str, definition: str, description: Optional[str] = None) -> dict:
-        return self._client.create_tool_schema(name=name, definition=definition, description=description)
+    def create(
+        self, *, name: str, definition: str, description: Optional[str] = None,
+        price_per_call_usd: Optional[float] = None,
+    ) -> dict:
+        """``price_per_call_usd`` is what one call of this tool costs you (a paid external API
+        billed per request). Every recorded call is charged, failed ones included; the spend
+        shows as the "Tool calls" segment of the Overview cost chart and counts toward the
+        ``estimatedCostUsd`` alert metric. Leave it unset for a free tool."""
+        return self._client.create_tool_schema(
+            name=name, definition=definition, description=description, price_per_call_usd=price_per_call_usd,
+        )
 
-    def get_or_create(self, *, name: str, definition: str, description: Optional[str] = None) -> dict:
-        """Idempotent register: returns the existing schema of this name if present."""
+    def get_or_create(
+        self, *, name: str, definition: str, description: Optional[str] = None,
+        price_per_call_usd: Optional[float] = None,
+    ) -> dict:
+        """Idempotent register: returns the existing schema of this name if present (its stored
+        price wins - use :meth:`set_price` to change it)."""
         existing = next((t for t in self.list() if t.get("name") == name), None)
         if existing:
             return existing
-        return self.create(name=name, definition=definition, description=description)
+        return self.create(
+            name=name, definition=definition, description=description, price_per_call_usd=price_per_call_usd,
+        )
+
+    def set_price(self, tool_schema_id: str, price_per_call_usd: Optional[float]) -> dict:
+        """Set (or clear with ``None``) a registered tool's USD price per call. Metadata only -
+        the definition's version log is untouched."""
+        return self._client.update_tool_schema_meta(tool_schema_id, price_per_call_usd=price_per_call_usd)
+
+    def delete(self, tool_schema_id: str) -> None:
+        """Deletes the tool schema and its version history."""
+        self._client.delete_tool_schema(tool_schema_id)
 
     def examples(self, tool_schema_id: str, window: Optional[str] = None) -> dict:
         """Failure evidence recorded against this tool (agent-tool-failure signals, low-rated
